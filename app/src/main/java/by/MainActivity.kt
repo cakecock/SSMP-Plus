@@ -1,4 +1,4 @@
-package by.brest103.assistant
+package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
 import android.os.Bundle

@@ -10,6 +10,7 @@
         android:label="SSMP Plus"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
         <activity
             android:name=".MainActivity"

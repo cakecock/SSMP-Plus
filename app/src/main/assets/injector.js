@@ -3,14 +3,34 @@
         window.currentCardSnapshot = {};
     }
 
-    function isButtonActive(btn) {
-        if (!btn) return false;
+    // Железобетонная проверка активности кнопки (белый текст на бирюзовом фоне)
+    function isButtonActive(el) {
+        if (!el) return false;
+        const btn = el.closest('button, div[role="button"], [class*="btn"]') || el;
         const s = window.getComputedStyle(btn);
-        const bg = s.backgroundColor;
+        
+        // 1. Проверка системных классов активности
+        if (btn.classList.contains('active') || 
+            btn.classList.contains('q-btn--active') || 
+            btn.classList.contains('v-btn--active') ||
+            btn.getAttribute('aria-pressed') === 'true' ||
+            btn.getAttribute('aria-selected') === 'true') {
+            return true;
+        }
+
+        // 2. Визуальная сигнатура: белый текст на цветном фоне
         const color = s.color;
-        const isTeal = (bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || bg.includes("0, 77") || bg.includes("0, 150")) && !bg.includes("0, 0, 0, 0");
-        const isWhiteOnColor = color.includes("255, 255, 255") && !bg.includes("rgba(0, 0, 0, 0)") && !bg.includes("255, 255, 255");
-        return isTeal || isWhiteOnColor || btn.className.includes("active") || btn.getAttribute("aria-pressed") === "true";
+        const bg = s.backgroundColor;
+        const isWhiteText = color.includes('255, 255, 255') || color.includes('250, 250, 250');
+        const isColoredBg = !bg.includes('rgba(0, 0, 0, 0)') && !bg.includes('255, 255, 255') && !bg.includes('transparent');
+        if (isWhiteText && isColoredBg) return true;
+
+        // 3. Бирюзовые оттенки сайта 103
+        if (bg.includes('0, 121') || bg.includes('0, 105') || bg.includes('0, 137') || bg.includes('0, 77') || bg.includes('38, 166')) {
+            return true;
+        }
+
+        return false;
     }
 
     function findActiveOption(options) {
@@ -33,15 +53,32 @@
             if (target) break;
         }
         if (!target) return "";
-        let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
-        if (row) {
-            const btns = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
+        let parent = target.parentElement;
+        for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+            const btns = Array.from(parent.querySelectorAll('button, div[role="button"], [class*="btn"]'));
             for (let b of btns) {
                 const t = b.innerText.trim().toUpperCase();
                 if ((t === "ДА" || t === "НЕТ") && isButtonActive(b)) return t;
             }
+            parent = parent.parentElement;
         }
         return "";
+    }
+
+    function findInputNearLabel(keywords) {
+        const all = Array.from(document.querySelectorAll('label, div, span, p'));
+        for (let kw of keywords) {
+            const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+            if (target) {
+                let parent = target.parentElement;
+                for (let i = 0; i < 5 && parent && parent !== document.body; i++) {
+                    const inp = parent.querySelector('input:not([type="hidden"]), textarea');
+                    if (inp && !inp.value.includes('[object')) return inp;
+                    parent = parent.parentElement;
+                }
+            }
+        }
+        return null;
     }
 
     function extractBPBySlash(isAdapted) {
@@ -49,34 +86,15 @@
         const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
         
         for (let slash of slashes) {
-            let container = slash.closest('.row, [class*="row"], .q-field') || slash.parentElement?.parentElement || slash.parentElement;
-            if (container) {
-                const text = container.innerText.toLowerCase();
+            let parent = slash.parentElement;
+            for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+                const text = parent.innerText.toLowerCase();
                 const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное") && !text.includes("после"));
                 if (isMatch) {
-                    const inputs = Array.from(container.querySelectorAll('input')).filter(i => /^\d{1,3}$/.test(i.value.trim()));
+                    const inputs = Array.from(parent.querySelectorAll('input:not([type="hidden"])')).filter(i => /^\d{1,3}$/.test(i.value.trim()));
                     if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
                 }
-            }
-        }
-        return "";
-    }
-
-    function findInputFuzzy(keywords) {
-        const all = Array.from(document.querySelectorAll('label, div, span, p'));
-        for (let kw of keywords) {
-            const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw) && !el.textContent.toLowerCase().includes("поиск"));
-            if (target) {
-                let container = target.closest('.row, [class*="row"], .q-field, div');
-                if (container) {
-                    let input = container.querySelector('input, textarea');
-                    if (input && input.value && !input.value.includes('[object')) return input.value.trim();
-                    let next = target.nextElementSibling || container.nextElementSibling;
-                    if (next) {
-                        let nextInp = next.querySelector('input, textarea') || (next.tagName === 'INPUT' ? next : null);
-                        if (nextInp && nextInp.value && !nextInp.value.includes('[object')) return nextInp.value.trim();
-                    }
-                }
+                parent = parent.parentElement;
             }
         }
         return "";
@@ -90,19 +108,19 @@
             if (target) break;
         }
         if (!target) return "";
-        let container = target.closest('.row, [class*="row"], .q-field, div');
-        if (!container) return "";
-
-        let chips = Array.from(container.querySelectorAll('.q-chip, .v-chip, [class*="chip"], [class*="badge"], [class*="item"]'));
-        if (chips.length > 0) {
-            let chipTexts = chips.map(c => c.innerText.trim()).filter(t => t.length > 0 && !t.includes('[object') && t !== '✕' && t !== '×' && t !== 'close');
-            if (chipTexts.length > 0) return chipTexts.join(', ');
+        let parent = target.parentElement;
+        for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+            let chips = Array.from(parent.querySelectorAll('.q-chip, .v-chip, [class*="chip"], [class*="badge"], [class*="item"]'));
+            if (chips.length > 0) {
+                let chipTexts = chips.map(c => c.innerText.trim()).filter(t => t.length > 0 && !t.includes('[object') && t !== '✕' && t !== '×' && t !== 'close');
+                if (chipTexts.length > 0) return chipTexts.join(', ');
+            }
+            let lines = parent.innerText.split('\n')
+                .map(l => l.trim())
+                .filter(l => l.length > 0 && !keywords.some(k => l.toLowerCase().includes(k)) && l !== "Не выбрано" && !l.includes("[object") && !l.includes("▼") && !l.includes("keyboard_arrow") && !l.includes("arrow_drop_down"));
+            if (lines.length > 0) return lines.join(', ');
+            parent = parent.parentElement;
         }
-
-        let lines = container.innerText.split('\n')
-            .map(l => l.trim())
-            .filter(l => l.length > 0 && !keywords.some(k => l.toLowerCase().includes(k)) && l !== "Не выбрано" && !l.includes("[object") && !l.includes("▼") && !l.includes("keyboard_arrow") && !l.includes("arrow_drop_down"));
-        if (lines.length > 0) return lines.join(', ');
         return "";
     }
 
@@ -142,45 +160,22 @@
         return (text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
 
-    // Извлечение ФИО пациента (СТРОГО исключая поиск в шапке!)
-    function getCleanPatientFio() {
-        if (window.currentCardSnapshot && window.currentCardSnapshot.fio && window.currentCardSnapshot.fio.length >= 3) {
-            return window.currentCardSnapshot.fio;
-        }
-
-        const all = Array.from(document.querySelectorAll('label, div, span, p'));
-        for (let el of all) {
-            if (el.children.length === 0) {
-                const t = el.textContent.trim().toLowerCase();
-                if ((t === "фио пациента" || t === "фио" || t === "пациент") && !t.includes("поиск")) {
-                    const container = el.closest('.row, [class*="row"], .q-field, div');
-                    if (container) {
-                        const inp = container.querySelector('input, textarea');
-                        if (inp && inp.value && inp.value.trim().length >= 3 && !inp.placeholder?.toLowerCase().includes("поиск")) {
-                            return inp.value.trim();
-                        }
-                    }
-                }
-            }
-        }
-        return "";
-    }
-
     function scanAndMergeVisibleFields() {
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
-        const fio = getCleanPatientFio();
+        const fioInp = findInputNearLabel(["фио пациента", "фио"]);
+        const fio = fioInp ? fioInp.value.trim() : "";
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
             window.currentCardSnapshot.fio = fio;
         }
 
-        const bDate = findInputFuzzy(["дата рождения"]);
+        const bDate = findInputNearLabel(["дата рождения"])?.value.trim();
         if (bDate) snap.birthDate = bDate;
-        const addr = findInputFuzzy(["место жительства (пребывания)", "адрес вызова", "адрес"]);
+        const addr = findInputNearLabel(["место жительства (пребывания)", "адрес вызова", "адрес"])?.value.trim();
         if (addr) snap.address = addr;
-        const reason = findInputFuzzy(["повод к вызову"]) || getDropdownOrChipsValue(["повод к вызову"]);
+        const reason = findInputNearLabel(["повод к вызову"])?.value.trim() || getDropdownOrChipsValue(["повод к вызову"]);
         if (reason) snap.callReason = reason;
 
         const gender = findActiveOption(["МУЖЧИНА", "ЖЕНЩИНА"]);
@@ -189,11 +184,11 @@
         const apo = getDropdownOrChipsValue(["территориальная апо"]);
         if (apo) snap.apo = apo;
 
-        const complaints = findInputFuzzy(["жалобы"]);
+        const complaints = findInputNearLabel(["жалобы"])?.value.trim();
         if (complaints) snap.complaints = complaints;
-        const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
+        const anamnesis = findInputNearLabel(["анамнез заболевания", "анамнез"])?.value.trim();
         if (anamnesis) snap.anamnesis = anamnesis;
-        const past = findInputFuzzy(["перенесенные заболевания"]);
+        const past = findInputNearLabel(["перенесенные заболевания"])?.value.trim();
         if (past) snap.pastDiseases = past;
 
         const allergy = getYesNoToggle(["аллергия"]);
@@ -208,7 +203,7 @@
         const behavior = findActiveOption(["СПОКОЙНОЕ", "ВОЗБУЖДЕННОЕ", "АГРЕССИВНОЕ"]);
         if (behavior) snap.behavior = behavior;
 
-        const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
+        const gScore = findInputNearLabel(["шкала комы глазго (баллы)", "глазго (баллы)"])?.value.trim();
         if (gScore) snap.glasgowScore = gScore;
 
         const bp = extractBPBySlash(false);
@@ -216,16 +211,16 @@
         const bpAdapt = extractBPBySlash(true);
         if (bpAdapt) snap.bpAdapted = bpAdapt;
 
-        const pulse = findInputFuzzy(["комментарий (пульс", "пульс, ударов в минуту", "пульс"]);
+        const pulse = findInputNearLabel(["комментарий (пульс", "пульс, ударов в минуту", "пульс"])?.value.trim();
         if (pulse) snap.pulse = pulse;
-        const rr = findInputFuzzy(["частота дыхания (в минуту)", "частота дыхания", "чдд"]);
+        const rr = findInputNearLabel(["частота дыхания (в минуту)", "частота дыхания", "чдд"])?.value.trim();
         if (rr) snap.rr = rr;
-        const temp = findInputFuzzy(["температура тела", "температура"]);
+        const temp = findInputNearLabel(["температура тела", "температура"])?.value.trim();
         if (temp) snap.temp = temp;
 
-        const sat = findInputFuzzy(["сатурация 1", "сатурация", "spo2"]);
+        const sat = findInputNearLabel(["сатурация 1", "сатурация", "spo2"])?.value.trim();
         if (sat) snap.saturation = sat;
-        const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
+        const gluc = findInputNearLabel(["гликемия 1", "гликемия", "сахар"])?.value.trim();
         if (gluc) snap.glucose = gluc;
 
         const heart = getDropdownOrChipsValue(["тоны сердца"]);
@@ -236,7 +231,7 @@
         if (percussion) snap.percussion = percussion;
         const abdomen = getDropdownOrChipsValue(["живот"]);
         if (abdomen) snap.abdomen = abdomen;
-        const localStatus = findInputFuzzy(["локальный статус"]);
+        const localStatus = findInputNearLabel(["локальный статус"])?.value.trim();
         if (localStatus) snap.localStatus = localStatus;
 
         const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
@@ -254,9 +249,9 @@
 
         const skin = getDropdownOrChipsValue(["кожа"]);
         if (skin) snap.skin = skin;
-        const tongue = findInputFuzzy(["язык"]);
+        const tongue = findInputNearLabel(["язык"])?.value.trim();
         if (tongue) snap.tongue = tongue;
-        const mucous = findInputFuzzy(["слизистые"]);
+        const mucous = findInputNearLabel(["слизистые"])?.value.trim();
         if (mucous) snap.mucous = mucous;
 
         const peristalsis = getYesNoToggle(["перистальтика"]);
@@ -266,14 +261,14 @@
         const urination = findActiveOption(["НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ"]);
         if (urination) snap.urination = urination;
 
-        const ecgBefore = findInputFuzzy(["экг до оказания", "экг до"]);
+        const ecgBefore = findInputNearLabel(["экг до оказания", "экг до"])?.value.trim();
         if (ecgBefore) snap.ecgBefore = ecgBefore;
-        const ecgAfter = findInputFuzzy(["экг после оказания", "экг после"]);
+        const ecgAfter = findInputNearLabel(["экг после оказания", "экг после"])?.value.trim();
         if (ecgAfter) snap.ecgAfter = ecgAfter;
 
-        const diag = findInputFuzzy(["предварительный диагноз", "диагноз"]);
+        const diag = findInputNearLabel(["предварительный диагноз", "диагноз"])?.value.trim();
         if (diag) snap.diagnosis = diag;
-        const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
+        const mkb = findInputNearLabel(["код по мкб"])?.value.trim() || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
         const meds = extractMedicationsCards();
@@ -317,6 +312,35 @@
         }
     }
 
+    async function resolvePatientFio() {
+        if (window.currentCardSnapshot && window.currentCardSnapshot.fio && window.currentCardSnapshot.fio.length >= 3) {
+            return window.currentCardSnapshot.fio;
+        }
+
+        let inp = findInputNearLabel(["фио пациента", "фио"]);
+        if (inp && inp.value.trim().length >= 3) {
+            return inp.value.trim();
+        }
+
+        let tab1 = getTabElement('О ВЫЗОВЕ') || getTabElement('УТОЧНЕННЫЕ');
+        let currTab = getTabElement('ОБЪЕКТИВНЫЕ') || getTabElement('МЕДИЦИНСКАЯ');
+
+        if (tab1) {
+            tab1.click();
+            await new Promise(r => setTimeout(r, 160));
+            inp = findInputNearLabel(["фио пациента", "фио"]);
+            if (currTab) {
+                currTab.click();
+                await new Promise(r => setTimeout(r, 80));
+            }
+            if (inp && inp.value.trim().length >= 3) {
+                window.currentCardSnapshot.fio = inp.value.trim();
+                return inp.value.trim();
+            }
+        }
+        return "";
+    }
+
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -348,21 +372,11 @@
         `;
 
         bar.innerHTML = `
-            <button id="btn-best-db" title="Образцы карт" style="background:linear-gradient(135deg, #00897B, #F57F17);color:white;${roundStyle}">
-                ⭐
-            </button>
-            <button id="btn-mkb-db" title="Справочник МКБ-10" style="background:linear-gradient(135deg, #00796B, #0288D1);color:white;${roundStyle}">
-                📖
-            </button>
-            <button id="btn-search-db" title="Общий архив" style="background:linear-gradient(135deg, #00695C, #004D40);color:white;${roundStyle}">
-                📂
-            </button>
-            <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundStyle}">
-                💾
-            </button>
-            <button id="btn-fill-db" title="Автозаполнение" style="background:linear-gradient(135deg, #0288D1, #01579B);color:white;${roundStyle}">
-                ⚡
-            </button>
+            <button id="btn-best-db" title="Образцы карт" style="background:linear-gradient(135deg, #00897B, #F57F17);color:white;${roundStyle}">⭐</button>
+            <button id="btn-mkb-db" title="Справочник МКБ-10" style="background:linear-gradient(135deg, #00796B, #0288D1);color:white;${roundStyle}">📖</button>
+            <button id="btn-search-db" title="Общий архив" style="background:linear-gradient(135deg, #00695C, #004D40);color:white;${roundStyle}">📂</button>
+            <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundStyle}">💾</button>
+            <button id="btn-fill-db" title="Автозаполнение" style="background:linear-gradient(135deg, #0288D1, #01579B);color:white;${roundStyle}">⚡</button>
         `;
         document.body.appendChild(bar);
 
@@ -388,16 +402,18 @@
             if (window.AndroidBridge && snap.fio) {
                 AndroidBridge.saveCardData(JSON.stringify(snap));
             } else {
-                alert("Укажите ФИО пациента для сохранения");
+                AndroidBridge.notifyUser("Укажите фамилию пациента для сохранения");
             }
         };
 
-        // НАЖАТИЕ АВТОЗАПОЛНЕНИЯ ⚡
-        document.getElementById('btn-fill-db').onclick = function() {
-            const fio = getCleanPatientFio();
-            // Передаем ФИО в Android (если пусто — Android сам откроет выбор пациента)
+        document.getElementById('btn-fill-db').onclick = async function() {
+            const btn = document.getElementById('btn-fill-db');
+            btn.innerText = "⏳";
+            const fio = await resolvePatientFio();
+            btn.innerText = "⚡";
+
             if (window.AndroidBridge) {
-                AndroidBridge.requestAutofill(fio);
+                AndroidBridge.requestAutofill(fio || "");
             }
         };
     }
@@ -439,9 +455,7 @@
         setBtnAnimated(btnSave, inCard);
         setBtnAnimated(btnFill, inCard);
 
-        if (inCard) {
-            scanAndMergeVisibleFields();
-        }
+        if (inCard) scanAndMergeVisibleFields();
     }
 
     if (window.b103Observer) window.b103Observer.disconnect();
@@ -452,7 +466,7 @@
 })();
 
 // ==========================================
-// ИНТЕЛЛЕКТУАЛЬНЫЙ АВТОПИЛОТ (ВЫПОЛНЕНИЕ)
+// ИНТЕЛЛЕКТУАЛЬНЫЙ АВТОПИЛОТ (БЕЗ МИГАНИЯ И СБРОСОВ)
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
     try {
@@ -460,56 +474,80 @@ window.applyAutofill = async function(jsonStr) {
         const fillBtn = document.getElementById('btn-fill-db');
         if (fillBtn) fillBtn.innerText = "⏳";
 
-        function setReactValue(input, value) {
-            if (!input || value === undefined || value === null || value === "") return;
+        // Принудительная перезапись поля с предварительной очисткой старого мусора
+        function setInputValue(input, value) {
+            if (!input || value === undefined || value === null) return;
+            const strVal = String(value).trim();
+            if (strVal === "") return;
+            
+            // Если значение уже в точности такое же — не дергаем DOM
+            if (input.value.trim() === strVal) return;
+
             try {
-                input.dispatchEvent(new Event('focus', { bubbles: true }));
+                input.focus();
+                
+                // 1. Очищаем старое неверное значение
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+
+                // 2. Вставляем новое через нативный прототип
                 const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                 if (setter) {
-                    setter.call(input, value);
+                    setter.call(input, strVal);
                 } else {
-                    input.value = value;
+                    input.value = strVal;
                 }
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-                input.dispatchEvent(new Event('blur', { bubbles: true }));
+                
+                input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                input.blur();
             } catch (e) {
-                input.value = value;
+                input.value = strVal;
             }
         }
 
         function findInputForFill(keywords) {
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
             for (let kw of keywords) {
-                const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase() === kw.toLowerCase())
-                              || all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+                const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
                 if (target) {
-                    let container = target.closest('.row, [class*="row"], .q-field, div');
-                    let inp = container?.querySelector('input, textarea');
-                    if (inp) return inp;
-                    let next = target.nextElementSibling || container?.nextElementSibling;
-                    let nextInp = next?.querySelector('input, textarea') || (next?.tagName === 'INPUT' || next?.tagName === 'TEXTAREA' ? next : null);
-                    if (nextInp) return nextInp;
+                    let parent = target.parentElement;
+                    for (let i = 0; i < 5 && parent && parent !== document.body; i++) {
+                        const inp = parent.querySelector('input:not([type="hidden"]), textarea');
+                        if (inp) return inp;
+                        parent = parent.parentElement;
+                    }
                 }
             }
             return null;
         }
 
-        function clickOption(targetText) {
+        // БЕЗОПАСНЫЙ КЛИК ПО КНОПКЕ: если кнопка УЖЕ активна — мы её НЕ трогаем!
+        function selectOption(targetText) {
             if (!targetText) return;
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
-            const btn = buttons.find(b => b.children.length === 0 && b.innerText.trim().toUpperCase() === targetText.toUpperCase());
-            if (btn) {
-                const clickable = btn.closest('button, div[role="button"], [class*="btn"]') || btn;
+            const targetBtn = buttons.find(b => b.children.length === 0 && b.innerText.trim().toUpperCase() === targetText.toUpperCase());
+            if (targetBtn) {
+                const clickable = targetBtn.closest('button, div[role="button"], [class*="btn"]') || targetBtn;
+                
+                // Проверяем: если уже активна — кликать ЗАПРЕЩЕНО (чтобы не отжать обратно!)
                 const style = window.getComputedStyle(clickable);
-                const isAlreadyActive = style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || clickable.className.includes("active");
-                if (!isAlreadyActive) clickable.click();
+                const color = style.color;
+                const bg = style.backgroundColor;
+                const isWhiteText = color.includes('255, 255, 255');
+                const isColored = !bg.includes('rgba(0, 0, 0, 0)') && !bg.includes('255, 255, 255') && !bg.includes('transparent');
+                const isAlreadyOn = (isWhiteText && isColored) || clickable.className.includes('active');
+
+                if (!isAlreadyOn) {
+                    clickable.click();
+                }
             }
         }
 
-        function clickYesNo(labelKeywords, choice) {
-            if (!choice) return;
+        // БЕЗОПАСНЫЙ КЛИК ДА / НЕТ
+        function selectYesNo(labelKeywords, targetChoice) {
+            if (!targetChoice) return;
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
             let target = null;
             for (let kw of labelKeywords) {
@@ -517,16 +555,23 @@ window.applyAutofill = async function(jsonStr) {
                 if (target) break;
             }
             if (!target) return;
-            let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
-            if (row) {
-                const btns = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
-                for (let b of btns) {
-                    if (b.innerText.trim().toUpperCase() === choice.toUpperCase()) {
-                        const style = window.getComputedStyle(b);
-                        const isAlreadyActive = style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || b.className.includes("active");
-                        if (!isAlreadyActive) b.click();
+            
+            let parent = target.parentElement;
+            for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+                const btns = Array.from(parent.querySelectorAll('button, div[role="button"], [class*="btn"]'));
+                const desiredBtn = btns.find(b => b.innerText.trim().toUpperCase() === targetChoice.toUpperCase());
+                if (desiredBtn) {
+                    const style = window.getComputedStyle(desiredBtn);
+                    const isWhite = style.color.includes('255, 255, 255');
+                    const isColored = !style.backgroundColor.includes('rgba(0, 0, 0, 0)') && !style.backgroundColor.includes('255, 255, 255');
+                    const isAlreadyOn = (isWhite && isColored) || desiredBtn.className.includes('active');
+                    
+                    if (!isAlreadyOn) {
+                        desiredBtn.click();
                     }
+                    return;
                 }
+                parent = parent.parentElement;
             }
         }
 
@@ -536,73 +581,74 @@ window.applyAutofill = async function(jsonStr) {
             const all = Array.from(document.querySelectorAll('*'));
             const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
             for (let slash of slashes) {
-                let container = slash.closest('.row, [class*="row"], .q-field') || slash.parentElement?.parentElement || slash.parentElement;
-                if (container) {
-                    const text = container.innerText.toLowerCase();
+                let parent = slash.parentElement;
+                for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+                    const text = parent.innerText.toLowerCase();
                     const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное") && !text.includes("после"));
                     if (isMatch) {
-                        const inputs = Array.from(container.querySelectorAll('input')).filter(i => !i.type.includes('hidden'));
+                        const inputs = Array.from(parent.querySelectorAll('input:not([type="hidden"])')).filter(i => /^\d{1,3}$/.test(i.value.trim()) || i.value.trim() === '');
                         if (inputs.length >= 2) {
-                            setReactValue(inputs[0], parts[0].trim());
-                            setReactValue(inputs[1], parts[1].trim());
+                            setInputValue(inputs[0], parts[0].trim());
+                            setInputValue(inputs[1], parts[1].trim());
                             return;
                         }
                     }
+                    parent = parent.parentElement;
                 }
             }
         }
 
         function fillCurrentScreen() {
-            setReactValue(findInputForFill(["жалобы"]), data.complaints);
-            setReactValue(findInputForFill(["анамнез заболевания", "анамнез"]), data.anamnesis);
-            setReactValue(findInputForFill(["перенесенные заболевания"]), data.pastDiseases);
-            setReactValue(findInputForFill(["предварительный диагноз", "диагноз"]), data.diagnosis);
-            setReactValue(findInputForFill(["код по мкб"]), data.mkb);
-            setReactValue(findInputForFill(["локальный статус"]), data.localStatus);
+            setInputValue(findInputForFill(["жалобы"]), data.complaints);
+            setInputValue(findInputForFill(["анамнез заболевания", "анамнез"]), data.anamnesis);
+            setInputValue(findInputForFill(["перенесенные заболевания"]), data.pastDiseases);
+            setInputValue(findInputForFill(["предварительный диагноз", "диагноз"]), data.diagnosis);
+            setInputValue(findInputForFill(["код по мкб"]), data.mkb);
+            setInputValue(findInputForFill(["локальный статус"]), data.localStatus);
 
             if (data.bpAdapted) fillDualBP(true, data.bpAdapted);
 
-            setReactValue(findInputForFill(["экг до оказания", "экг до"]), data.ecgBefore);
-            setReactValue(findInputForFill(["экг после оказания", "экг после"]), data.ecgAfter);
+            setInputValue(findInputForFill(["экг до оказания", "экг до"]), data.ecgBefore);
+            setInputValue(findInputForFill(["экг после оказания", "экг после"]), data.ecgAfter);
 
-            setReactValue(findInputForFill(["шкала комы глазго (баллы)", "глазго (баллы)"]), data.glasgowScore || "15");
-            setReactValue(findInputForFill(["тонус мышц"]), "Норма");
-            setReactValue(findInputForFill(["патологические рефлексы"]), "Нет");
-            setReactValue(findInputForFill(["менингиальные знаки"]), "Нет");
-            setReactValue(findInputForFill(["плегии, парезы", "плегии"]), "Нет");
-            setReactValue(findInputForFill(["язык"]), data.tongue || "Влажный, не обложен");
-            setReactValue(findInputForFill(["слизистые"]), data.mucous || "Чистые");
+            setInputValue(findInputForFill(["шкала комы глазго (баллы)", "глазго (баллы)"]), data.glasgowScore || "15");
+            setInputValue(findInputForFill(["тонус мышц"]), "Норма");
+            setInputValue(findInputForFill(["патологические рефлексы"]), "Нет");
+            setInputValue(findInputForFill(["менингиальные знаки"]), "Нет");
+            setInputValue(findInputForFill(["плегии, парезы", "плегии"]), "Нет");
+            setInputValue(findInputForFill(["язык"]), data.tongue || "Влажный , не обложен");
+            setInputValue(findInputForFill(["слизистые"]), data.mucous || "Чистые");
 
-            if (data.gender) clickOption(data.gender);
-            clickOption(data.position || "АКТИВНОЕ");
-            clickOption(data.behavior || "СПОКОЙНОЕ");
-            clickOption(data.pupils || "МИОЗ");
-            clickOption(data.speech || "СОХРАНЕНА");
-            clickOption(data.face || "СИММЕТРИЧНОЕ");
-            clickOption(data.gait || "СВОБОДНАЯ");
-            clickOption(data.nystagmus || "НЕТ");
-            clickOption(data.liver || "НЕ УВЕЛИЧЕНА");
-            clickOption(data.urination || "НЕ НАРУШЕНО");
+            if (data.gender) selectOption(data.gender);
+            selectOption(data.position || "АКТИВНОЕ");
+            selectOption(data.behavior || "СПОКОЙНОЕ");
+            selectOption(data.pupils || "МИОЗ");
+            selectOption(data.speech || "СОХРАНЕНА");
+            selectOption(data.face || "СИММЕТРИЧНОЕ");
+            selectOption(data.gait || "СВОБОДНАЯ");
+            selectOption(data.nystagmus || "НЕТ");
+            selectOption(data.liver || "НЕ УВЕЛИЧЕНА");
+            selectOption(data.urination || "НЕ НАРУШЕНО");
 
-            clickOption(data.attack || "КУПИРОВАН");
-            clickOption(data.therapyEffect || "УЛУЧШЕНИЕ");
-            clickOption(data.callResult || "ОСТАВЛЕН НА МЕСТЕ");
+            selectOption(data.attack || "КУПИРОВАН");
+            selectOption(data.therapyEffect || "УЛУЧШЕНИЕ");
+            selectOption(data.callResult || "ОСТАВЛЕН НА МЕСТЕ");
 
-            clickYesNo(["аллергия"], data.allergy || "НЕТ");
-            clickYesNo(["реакция на свет"], data.lightReaction || "ДА");
-            clickYesNo(["высыпания"], "НЕТ");
-            clickYesNo(["перистальтика"], data.peristalsis || "ДА");
-            clickYesNo(["симптомы раздражения брюшины"], "НЕТ");
-            clickYesNo(["асцит"], "НЕТ");
-            clickYesNo(["периферические отеки", "отеки"], "НЕТ");
-            clickYesNo(["запах алкоголя"], "НЕТ");
-            clickYesNo(["запах ацетона"], "НЕТ");
+            selectYesNo(["аллергия"], data.allergy || "НЕТ");
+            selectYesNo(["реакция на свет"], data.lightReaction || "ДА");
+            selectYesNo(["высыпания"], "НЕТ");
+            selectYesNo(["перистальтика"], data.peristalsis || "ДА");
+            selectYesNo(["симптомы раздражения брюшины"], "НЕТ");
+            selectYesNo(["асцит"], "НЕТ");
+            selectYesNo(["периферические отеки", "отеки"], "НЕТ");
+            selectYesNo(["запах алкоголя"], "НЕТ");
+            selectYesNo(["запах ацетона"], "НЕТ");
         }
 
-        // Заполняем сначала текущий открытый экран
+        // 1. СНАЧАЛА ЗАПОЛНЯЕМ ЭКРАН, НА КОТОРОМ ТЫ СЕЙЧАС (МГНОВЕННО)
         fillCurrentScreen();
 
-        // Затем обходим остальные вкладки
+        // 2. ЗАТЕМ ТИХО ПРОХОДИМСЯ ТОЛЬКО ПО ДРУГИМ ВКЛАДКАМ (БЕЗ ДВОЙНЫХ ПЕРЕКЛЮЧЕНИЙ)
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
 
@@ -616,21 +662,22 @@ window.applyAutofill = async function(jsonStr) {
 
         let originalTab = getTab('ОБЪЕКТИВНЫЕ') || getTab('УТОЧНЕННЫЕ') || getTab('О ВЫЗОВЕ');
 
+        // Проходимся по вкладкам аккуратно
         for (let kw of tabKeywords) {
             let tab = getTab(kw);
-            if (tab) {
+            if (tab && tab !== originalTab) {
                 tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                 tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                 tab.click();
-                await new Promise(r => setTimeout(r, 200));
+                await new Promise(r => setTimeout(r, 180));
                 fillCurrentScreen();
             }
         }
 
+        // Возвращаемся на исходную вкладку
         if (originalTab) {
             originalTab.click();
             await new Promise(r => setTimeout(r, 80));
-            fillCurrentScreen();
         }
 
         if (fillBtn) fillBtn.innerText = "⚡";

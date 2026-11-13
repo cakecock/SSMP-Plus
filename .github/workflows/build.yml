@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,15 +22,25 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Create Permanent Keystore
+    - name: Ensure Permanent Keystore Exists
       run: |
-        keytool -genkeypair -v \
-          -keystore ssmp-release.jks \
-          -alias ssmp_plus_key \
-          -keyalg RSA -keysize 2048 -validity 10000 \
-          -storepass "SSMP_Brest_2026_Secure" \
-          -keypass "SSMP_Brest_2026_Secure" \
-          -dname "CN=SSMP Plus, OU=103 Brest, O=SSMP, L=Brest, C=BY"
+        if [ ! -f "ssmp-release.jks" ]; then
+          echo "Generating permanent keystore..."
+          keytool -genkeypair -v \
+            -keystore ssmp-release.jks \
+            -alias ssmp_plus_key \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "SSMP_Brest_2026_Secure" \
+            -keypass "SSMP_Brest_2026_Secure" \
+            -dname "CN=SSMP Plus, OU=103 Brest, O=SSMP, L=Brest, C=BY"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ssmp-release.jks
+          git commit -m "chore: save permanent keystore [skip ci]" || true
+          git push || true
+        else
+          echo "Permanent keystore already exists."
+        fi
 
     - name: Setup Gradle 8.5
       uses: gradle/actions/setup-gradle@v3

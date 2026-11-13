@@ -3,7 +3,6 @@
         window.currentCardSnapshot = {};
     }
 
-    // Нечеткий поиск поля по ключевым словам (спасет от опечаток и пробелов)
     function findInputFuzzy(keywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         for (let kw of keywords) {
@@ -28,7 +27,6 @@
         return "";
     }
 
-    // Извлечение выпадающих списков и мультиселектов
     function getDropdownOrChipsValue(keywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         let target = null;
@@ -88,7 +86,6 @@
         return "";
     }
 
-    // Умный поиск активных бирюзовых кнопок переключателей
     function getActiveButtonValue(keywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         let target = null;
@@ -98,7 +95,6 @@
         }
         if (!target) return "";
 
-        // Ищем строку с кнопками рядом с заголовком
         let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
         if (row) {
             let buttons = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
@@ -106,7 +102,6 @@
                 let style = window.getComputedStyle(btn);
                 let bg = style.backgroundColor;
                 let color = style.color;
-                // Активная кнопка: бирюзовый фон (#00796B / #00897B) или белый текст на заливке
                 if (bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || btn.className.includes("active") || (color.includes("255, 255, 255") && !bg.includes("0, 0, 0, 0"))) {
                     return btn.innerText.trim();
                 }
@@ -115,7 +110,6 @@
         return "";
     }
 
-    // Точный сбор медикаментов по единицам измерения
     function extractMedicationsList() {
         let rows = Array.from(document.querySelectorAll('tr, .q-table tbody tr, [class*="row"], [class*="item"]'));
         let medItems = [];
@@ -123,7 +117,6 @@
             let text = r.innerText.trim();
             if (text && !text.includes("Наименование") && !text.includes("ДОБАВИТЬ") && !text.includes("О ВЫЗОВЕ") && !text.includes("Состояние пациента")) {
                 let cleaned = text.split('\n').map(s => s.trim()).filter(Boolean).join(' ');
-                // Проверяем наличие дозировок и единиц (шт, мл, амп, пар, мг, г, таб)
                 if (cleaned.match(/\d+\s*(шт|мл|пар|амп|таб|г|мг|доз|фл)/i)) {
                     medItems.push(cleaned);
                 }
@@ -146,7 +139,6 @@
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
-        // Вкладка "О вызове"
         const fio = findInputFuzzy(["фио пациента", "фио"]);
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) {
@@ -165,7 +157,6 @@
         const gender = getActiveButtonValue(["пол"]);
         if (gender) snap.gender = gender;
 
-        // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
         if (complaints) snap.complaints = complaints;
         const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
@@ -176,7 +167,6 @@
         const allergy = getActiveButtonValue(["аллергия"]);
         if (allergy) snap.allergy = allergy;
 
-        // Вкладка "Объективные данные"
         const genState = getDropdownOrChipsValue(["общее состояние"]);
         if (genState) snap.generalState = genState;
         const consciousness = getDropdownOrChipsValue(["сознание"]);
@@ -200,7 +190,6 @@
         const temp = findInputFuzzy(["температура тела", "температура"]);
         if (temp) snap.temp = temp;
 
-        // Сатурация и Сахар (Fuzzy)
         const sat = findInputFuzzy(["сатурация 1", "сатурация", "spo2"]);
         if (sat) snap.saturation = sat;
         const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
@@ -222,7 +211,6 @@
         const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
-        // Вкладка "Медицинская помощь"
         const medHelp = getDropdownOrChipsValue(["медицинская помощь, оказанная", "медицинская помощь"]);
         if (medHelp) snap.medHelp = medHelp;
 
@@ -262,7 +250,7 @@
             let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
             if (target) {
                 target.click();
-                await new Promise(res => setTimeout(res, 180)); // 180мс для железного монтирования всех подтаблиц
+                await new Promise(res => setTimeout(res, 180));
                 scanAndMergeVisibleFields();
             }
         }
@@ -273,7 +261,7 @@
         }
     }
 
-    // Панель кнопок
+    // Премиальные плавающие кнопки
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -284,25 +272,35 @@
         bar.style.zIndex = '99999';
         bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
-        bar.style.gap = '8px';
+        bar.style.gap = '10px';
+
+        const btnStyle = `
+            border:none;
+            padding:12px 18px;
+            border-radius:28px;
+            box-shadow:0 6px 16px rgba(0,0,0,0.28);
+            font-size:13px;
+            font-weight:700;
+            cursor:pointer;
+            font-family:system-ui, -apple-system, Roboto, sans-serif;
+            transition:transform 0.15s ease;
+        `;
 
         bar.innerHTML = `
-            <button id="btn-search-db" style="display:none;background:#00695C;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
-                🔍 Поиск в архиве
+            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00796B, #004D40);color:white;${btnStyle}">
+                🔍 Архив вызовов
             </button>
-            <button id="btn-save-db" style="display:none;background:#00796B;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
+            <button id="btn-save-db" style="display:none;background:linear-gradient(135deg, #00897B, #00695C);color:white;${btnStyle}">
                 💾 Запомнить карту
             </button>
-            <button id="btn-fill-db" style="display:none;background:#0288D1;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
+            <button id="btn-fill-db" style="display:none;background:linear-gradient(135deg, #0288D1, #01579B);color:white;${btnStyle}">
                 ⚡ Автозаполнение
             </button>
         `;
         document.body.appendChild(bar);
 
         document.getElementById('btn-search-db').onclick = function() {
-            if (window.AndroidBridge) {
-                AndroidBridge.openSearchDialog();
-            }
+            if (window.AndroidBridge) AndroidBridge.openSearchDialog();
         };
 
         document.getElementById('btn-save-db').onclick = async function() {
@@ -354,7 +352,6 @@
     }
 })();
 
-// Автозаполнение
 window.applyAutofill = function(jsonStr) {
     try {
         const data = JSON.parse(jsonStr);

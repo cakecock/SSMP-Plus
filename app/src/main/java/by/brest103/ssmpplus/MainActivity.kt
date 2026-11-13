@@ -4,9 +4,12 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.webkit.*
-import android.widget.Toast
+import android.widget.*
 import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
@@ -15,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -30,58 +35,12 @@ class MainActivity : AppCompatActivity() {
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
 
-        // Обработка жестов "Назад" и физической кнопки
+        // Обработка кнопки и жеста "Назад"
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
-                    // Возвращаемся из карты назад к общему списку
                     webView.goBack()
                 } else {
-                    // Мы на главном экране: выход по двойному нажатию/свайпу
-                    if (System.currentTimeMillis() - backPressedTime < 2000) {
-                        finish()
-                    } else {
-                        backPressedTime = System.currentTimeMillis()
-package by.brest103.ssmpplus
-
-import android.annotation.SuppressLint
-import android.graphics.Bitmap
-import android.net.http.SslError
-import android.os.Bundle
-import android.webkit.*
-import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var webView: WebView
-    private lateinit var dbHelper: DatabaseHelper
-    private var backPressedTime: Long = 0
-
-    @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        dbHelper = DatabaseHelper(this)
-        webView = findViewById(R.id.webView)
-
-        // Обработка жестов "Назад" и физической кнопки
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (webView.canGoBack()) {
-                    // Возврат из карты вызова назад к списку карт
-                    webView.goBack()
-                } else {
-                    // Мы на главном экране: выход по двойному свайпу/нажатию
                     if (System.currentTimeMillis() - backPressedTime < 2000) {
                         finish()
                     } else {
@@ -92,7 +51,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Поддержка Cookies и авторизационных сессий
+        // Поддержка Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
@@ -110,7 +69,7 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Полифилл Notification: предотвращает падение React-движка сайта
+        // Полифилл Notification
         val polyfillScript = """
             if (typeof window.Notification === 'undefined') {
                 function MockNotification(title, options) {
@@ -168,8 +127,88 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Окно встроенного поиска по локальному архиву
+    private fun showSearchDialog() {
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 20, 40, 20)
+        }
+
+        val searchInput = EditText(this).apply {
+            hint = "Введите фамилию пациента..."
+        }
+        val listView = ListView(this)
+
+        dialogView.addView(searchInput)
+        dialogView.addView(listView)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Архив пациентов")
+            .setView(dialogView)
+            .setPositiveButton("Закрыть", null)
+            .create()
+
+        val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+
+        fun performSearch(query: String) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val results = dbHelper.searchPatients(query)
+                withContext(Dispatchers.Main) {
+                    val titles = results.map {
+                        val date = sdf.format(Date(it.timestamp))
+                        "${it.fio.uppercase()} ($date)"
+                    }
+                    val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_list_item_1, titles)
+                    listView.adapter = adapter
+                    listView.setOnItemClickListener { _, _, position, _ ->
+                        val card = results[position]
+                        showPatientDetails(card.jsonData)
+                    }
+                }
+            }
+        }
+
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                performSearch(s.toString())
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        })
+
+        dialog.show()
+        performSearch("")
+    }
+
+    private fun showPatientDetails(jsonData: String) {
+        try {
+            val json = JSONObject(jsonData)
+            val info = StringBuilder().apply {
+                append("ФИО: ${json.optString("fio")}\n")
+                if (json.optString("birthDate").isNotEmpty()) append("Дата рожд.: ${json.optString("birthDate")}\n")
+                if (json.optString("bpAdapted").isNotEmpty()) append("Адаптированное АД: ${json.optString("bpAdapted")}\n")
+                if (json.optString("complaints").isNotEmpty()) append("\nЖалобы:\n${json.optString("complaints")}\n")
+                if (json.optString("anamnesis").isNotEmpty()) append("\nАнамнез:\n${json.optString("anamnesis")}\n")
+            }
+
+            AlertDialog.Builder(this)
+                .setTitle("Данные из архива")
+                .setMessage(info.toString())
+                .setPositiveButton("Понятно", null)
+                .show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     inner class WebAppInterface {
-        // Принудительное сохранение по кнопке "Запомнить карту"
+        @JavascriptInterface
+        fun openSearchDialog() {
+            runOnUiThread {
+                showSearchDialog()
+            }
+        }
+
         @JavascriptInterface
         fun saveCardData(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -195,7 +234,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Автоматическое сохранение новых пациентов при первичном заполнении
         @JavascriptInterface
         fun autoSaveCardData(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -204,7 +242,6 @@ class MainActivity : AppCompatActivity() {
                     val fio = json.optString("fio").trim()
                     if (fio.length < 5) return@launch
 
-                    // Проверяем: есть ли уже этот пациент в локальной базе?
                     val existing = dbHelper.getBestCardForPatient(fio)
                     if (existing == null) {
                         val birthDate = json.optString("birthDate")
@@ -224,7 +261,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Автозаполнение по кнопке "Автозаполнение"
         @JavascriptInterface
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {

@@ -4,13 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import org.json.JSONObject
 
-data class SavedCard(
-    val id: Long,
+data class FoundCard(
     val fio: String,
+    val birthDate: String,
     val timestamp: Long,
-    val score: Int,
     val jsonData: String
 )
 
@@ -48,7 +46,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         db.insert("cards", null, values)
     }
 
-    // Алгоритм выбора последней или предпоследней карты по заполненности
     fun getBestCardForPatient(fio: String): String? {
         val db = readableDatabase
         val cursor = db.query(
@@ -76,11 +73,38 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         val latest = list[0]
         val previous = list[1]
 
-        // Если последняя заполнена слабо (< 40%), а предпоследняя подробная (>= 60%) — берем предпоследнюю
         return if (latest.first < 40 && previous.first >= 60) {
             previous.second
         } else {
             latest.second
         }
+    }
+
+    // Поиск по базе (по фрагменту ФИО)
+    fun searchPatients(query: String): List<FoundCard> {
+        val results = mutableListOf<FoundCard>()
+        val db = readableDatabase
+        val cursor = db.query(
+            "cards",
+            arrayOf("fio", "birth_date", "timestamp", "json_data"),
+            "fio LIKE ?",
+            arrayOf("%${query.trim().lowercase()}%"),
+            null,
+            null,
+            "timestamp DESC",
+            "15"
+        )
+        while (cursor.moveToNext()) {
+            results.add(
+                FoundCard(
+                    fio = cursor.getString(cursor.getColumnIndexOrThrow("fio")),
+                    birthDate = cursor.getString(cursor.getColumnIndexOrThrow("birth_date")),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
+                    jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+                )
+            )
+        }
+        cursor.close()
+        return results
     }
 }

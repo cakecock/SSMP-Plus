@@ -18,10 +18,11 @@ data class CardHistoryItem(
     val id: Long,
     val timestamp: Long,
     val score: Int,
-    val jsonData: String
+    val jsonData: String,
+    val isBuiltin: Boolean
 )
 
-class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db", null, 1) {
+class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -32,19 +33,23 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 birth_date TEXT,
                 timestamp INTEGER NOT NULL,
                 score INTEGER NOT NULL,
-                json_data TEXT NOT NULL
+                json_data TEXT NOT NULL,
+                is_builtin INTEGER DEFAULT 0
             )
             """.trimIndent()
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS cards")
-        onCreate(db)
+        if (oldVersion < 2) {
+            try {
+                db.execSQL("ALTER TABLE cards ADD COLUMN is_builtin INTEGER DEFAULT 0")
+            } catch (e: Exception) {}
+        }
     }
 
-    // Сохраняет вызов (если в пределах 6 часов — обновляет текущий, если позже — создает новый в историю)
-    fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String) {
+    // Сохранение вызова с маркером ручного/системного ввода
+    fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String, isBuiltin: Boolean = false) {
         val db = writableDatabase
         val cleanFio = fio.trim().lowercase()
         val now = System.currentTimeMillis()
@@ -64,6 +69,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
             put("timestamp", now)
             put("score", score)
             put("json_data", jsonData)
+            put("is_builtin", if (isBuiltin) 1 else 0)
         }
 
         if (existingId != null) {
@@ -73,7 +79,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Алгоритм выбора лучшей карты для автозаполнения (последней или предпоследней по полноте)
+    // Удаление карточки (только если она не системная!)
+    fun deleteCard(cardId: Long): Boolean {
+        val db = writableDatabase
+        val deletedRows = db.delete("cards", "id = ? AND is_builtin = 0", arrayOf(cardId.toString()))
+        return deletedRows > 0
+    }
+
     fun getBestCardForPatient(fio: String): String? {
         val db = readableDatabase
         val cursor = db.query(
@@ -108,7 +120,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Поиск уникальных пациентов со счетчиком вызовов
     fun searchPatientSummaries(query: String): List<PatientSummary> {
         val results = mutableListOf<PatientSummary>()
         val db = readableDatabase
@@ -143,19 +154,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return results
     }
 
-    // Получение полной хронологии всех вызовов к конкретному пациенту
     fun getPatientHistory(fio: String): List<CardHistoryItem> {
         val list = mutableListOf<CardHistoryItem>()
         val db = readableDatabase
         val cursor = db.query(
             "cards",
-            arrayOf("id", "timestamp", "score", "json_data"),
+            arrayOf("id", "timestamp", "score", "json_data", "is_builtin"),
             "fio = ?",
             arrayOf(fio.trim().lowercase()),
             null,
             null,
             "timestamp DESC",
-            "10" // Храним до 10 последних вызовов
+            "15"
         )
 
         while (cursor.moveToNext()) {
@@ -164,7 +174,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                     id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
                     timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
                     score = cursor.getInt(cursor.getColumnIndexOrThrow("score")),
-                    jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+                    jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data")),
+                    isBuiltin = cursor.getInt(cursor.getColumnIndexOrThrow("is_builtin")) == 1
                 )
             )
         }

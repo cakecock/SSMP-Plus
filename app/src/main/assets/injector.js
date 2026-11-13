@@ -16,8 +16,8 @@
         return null;
     }
 
-    // Надежное извлечение значений выпадающих списков (без [object Object])
-    function getDropdownValue(labelText) {
+    // Извлечение выпадающих списков и мультиселектов (Тоны, Дыхание, Живот)
+    function getDropdownOrChipsValue(labelText) {
         const labels = Array.from(document.querySelectorAll('label, div, span, p'));
         const target = labels.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase() === labelText.toLowerCase())
                       || labels.find(el => el.textContent.trim().toLowerCase() === labelText.toLowerCase());
@@ -26,16 +26,18 @@
         let container = target.closest('div');
         if (!container) return "";
 
-        // 1. Проверяем inputs, строго отсекая [object Object]
-        let inputs = Array.from(container.querySelectorAll('input'));
-        for (let inp of inputs) {
-            let val = inp.value;
-            if (val && !val.includes('[object') && val.trim() !== "Не выбрано" && val.trim() !== labelText) {
-                return val.trim();
+        // 1. Ищем выбранные чипсы/плашки внутри мультиселекта
+        let chips = Array.from(container.querySelectorAll('.q-chip, .v-chip, [class*="chip"], [class*="badge"], [class*="item"]'));
+        if (chips.length > 0) {
+            let chipTexts = chips
+                .map(c => c.innerText.trim())
+                .filter(t => t.length > 0 && !t.includes('[object') && t !== '✕' && t !== '×' && t !== 'close');
+            if (chipTexts.length > 0) {
+                return chipTexts.join(', ');
             }
         }
 
-        // 2. Ищем видимый текст в кастомных селекторах
+        // 2. Ищем видимый текст, исключая мусор [object Object]
         let lines = container.innerText.split('\n')
             .map(l => l.trim())
             .filter(l => l.length > 0 && 
@@ -43,16 +45,16 @@
                          l !== "Не выбрано" && 
                          !l.includes("[object") &&
                          !l.includes("▼") &&
-                         !l.includes("keyboard_arrow"));
+                         !l.includes("keyboard_arrow") &&
+                         !l.includes("arrow_drop_down"));
 
         if (lines.length > 0) {
-            return lines[0];
+            return lines.join(', ');
         }
 
         return "";
     }
 
-    // Извлечение двойных полей (например АД: 130 / 80)
     function getDualInputValue(labelText) {
         const labels = Array.from(document.querySelectorAll('label, div, span, p'));
         const target = labels.find(el => el.textContent.trim().toLowerCase() === labelText.toLowerCase());
@@ -88,31 +90,42 @@
         return "";
     }
 
-    // Извлечение таблицы лекарственных средств
+    // Точный сбор таблицы лекарственных препаратов (без меню сайта)
     function extractMedicationsList() {
-        const labels = Array.from(document.querySelectorAll('label, div, span, p, h6, h5'));
-        const target = labels.find(el => el.textContent.trim() === "Лекарственные средства" && el.children.length === 0)
-                      || labels.find(el => el.textContent.trim().startsWith("Лекарственные средства"));
-        if (!target) return "";
+        const all = Array.from(document.querySelectorAll('*'));
+        const header = all.find(el => {
+            const t = el.textContent.trim();
+            return (t === "Лекарственные средства" || t === "Лекарственные средства:") && el.children.length === 0;
+        });
 
-        let container = target.closest('div');
-        for (let i = 0; i < 4 && container; i++) {
-            if (container.parentElement && container.parentElement.innerText.includes("Лекарственные средства")) {
-                let text = container.parentElement.innerText;
-                let lines = text.split('\n')
-                    .map(l => l.trim())
-                    .filter(l => l.length > 2 && 
-                                 !l.includes("Лекарственные средства") && 
-                                 !l.includes("ДОБАВИТЬ") && 
-                                 !l.includes("УДАЛИТЬ") &&
-                                 !l.includes("Количество") &&
-                                 !l.includes("Наименование") &&
-                                 !l.includes("№"));
-                if (lines.length > 0) {
-                    return lines.slice(0, 12).join("; ");
+        if (!header) return "";
+
+        let section = header.parentElement;
+        for (let i = 0; i < 4 && section && section !== document.body; i++) {
+            const table = section.querySelector('table, tbody, .q-table, [class*="table"], [class*="list"]');
+            if (table) {
+                const rows = Array.from(table.querySelectorAll('tr, .q-tr, [class*="row"]'));
+                const items = [];
+                for (let row of rows) {
+                    const rowText = row.innerText.trim();
+                    if (rowText && !rowText.includes("Наименование") && !rowText.includes("Количество") && !rowText.includes("ДОБАВИТЬ") && !rowText.includes("О ВЫЗОВЕ")) {
+                        const cleaned = rowText.split('\n').map(s => s.trim()).filter(Boolean).join(' ');
+                        if (cleaned.length > 2) items.push(cleaned);
+                    }
+                }
+                if (items.length > 0) return items.join("; ");
+            }
+
+            if (section.nextElementSibling) {
+                const siblingText = section.nextElementSibling.innerText.trim();
+                if (siblingText && !siblingText.includes("О ВЫЗОВЕ") && !siblingText.includes("ЗАКЛЮЧЕНИЕ")) {
+                    const lines = siblingText.split('\n')
+                        .map(s => s.trim())
+                        .filter(s => s.length > 2 && !s.includes("ДОБАВИТЬ") && !s.includes("УДАЛИТЬ"));
+                    if (lines.length > 0) return lines.join("; ");
                 }
             }
-            container = container.parentElement;
+            section = section.parentElement;
         }
         return "";
     }
@@ -141,7 +154,7 @@
         if (bDate) snap.birthDate = bDate;
         const addr = findInputByLabel("Адрес вызова")?.value;
         if (addr) snap.address = addr;
-        const reason = findInputByLabel("Повод к вызову")?.value || getDropdownValue("Повод к вызову");
+        const reason = findInputByLabel("Повод к вызову")?.value || getDropdownOrChipsValue("Повод к вызову");
         if (reason) snap.callReason = reason;
 
         // Вкладка "Уточненные сведения"
@@ -153,9 +166,9 @@
         if (past) snap.pastDiseases = past;
 
         // Вкладка "Объективные данные"
-        const genState = getDropdownValue("Общее состояние");
+        const genState = getDropdownOrChipsValue("Общее состояние");
         if (genState) snap.generalState = genState;
-        const consciousness = getDropdownValue("Сознание");
+        const consciousness = getDropdownOrChipsValue("Сознание");
         if (consciousness) snap.consciousness = consciousness;
         const position = getActiveButtonValue("Положение");
         if (position) snap.position = position;
@@ -166,7 +179,6 @@
         const gScore = findInputByLabel("Шкала комы Глазго (баллы)")?.value;
         if (gScore) snap.glasgowScore = gScore;
 
-        // АД и пульс
         const bp = getDualInputValue("АД (мм.рт.ст.)") || findInputByLabel("АД (мм.рт.ст.)")?.value;
         if (bp) snap.bp = bp;
         const bpAdapt = getDualInputValue("Адаптированное АД (мм.рт.ст.)") || findInputByLabel("Адаптированное АД (мм.рт.ст.)")?.value;
@@ -182,25 +194,25 @@
         const gluc = findInputByLabel("Гликемия 1 (ммоль/л)")?.value;
         if (gluc) snap.glucose = gluc;
 
-        // Органы и системы (без [object Object])
-        const heart = getDropdownValue("Тоны сердца");
+        // Органы и системы (мультиселекты без [object Object])
+        const heart = getDropdownOrChipsValue("Тоны сердца");
         if (heart) snap.heartSounds = heart;
-        const lungs = getDropdownValue("Дыхание");
+        const lungs = getDropdownOrChipsValue("Дыхание");
         if (lungs) snap.lungs = lungs;
-        const percussion = getDropdownValue("Перкуссия легких");
+        const percussion = getDropdownOrChipsValue("Перкуссия легких");
         if (percussion) snap.percussion = percussion;
-        const abdomen = getDropdownValue("Живот");
+        const abdomen = getDropdownOrChipsValue("Живот");
         if (abdomen) snap.abdomen = abdomen;
         const localStatus = findInputByLabel("Локальный статус")?.value;
         if (localStatus) snap.localStatus = localStatus;
 
         const diag = findInputByLabel("Предварительный диагноз")?.value;
         if (diag) snap.diagnosis = diag;
-        const mkb = findInputByLabel("Код по МКБ")?.value || getDropdownValue("Код по МКБ");
+        const mkb = findInputByLabel("Код по МКБ")?.value || getDropdownOrChipsValue("Код по МКБ");
         if (mkb) snap.mkb = mkb;
 
         // Вкладка "Медицинская помощь"
-        const medHelp = getDropdownValue("Медицинская помощь, оказанная на месте и при транспортировке");
+        const medHelp = getDropdownOrChipsValue("Медицинская помощь, оказанная на месте и при транспортировке");
         if (medHelp) snap.medHelp = medHelp;
 
         const meds = extractMedicationsList();
@@ -214,39 +226,40 @@
         if (callResult) snap.callResult = callResult;
     }
 
-    // Экспресс-обход вкладок с надежной паузой 120мс
+    // Надежный обход всех вкладок (150 мс для уверенной загрузки компонентов)
     async function scanAllTabsCompletely() {
         const tabNames = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ СВЕДЕНИЯ', 'ОБЪЕКТИВНЫЕ ДАННЫЕ', 'МЕДИЦИНСКАЯ ПОМОЩЬ'];
-        const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
-        
-        let tabs = {};
-        for (let name of tabNames) {
-            let el = allElements.find(e => e.innerText && e.innerText.trim() === name && e.children.length === 0);
-            if (el) {
-                tabs[name] = el.closest('button, div[role="tab"]') || el;
-            }
+        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], div, a, span'));
+
+        function findTabBtn(name) {
+            return allElements.find(el => el.innerText && el.innerText.trim() === name && el.children.length === 0);
         }
 
         let activeTab = null;
         for (let name of tabNames) {
-            if (tabs[name]) {
-                let style = window.getComputedStyle(tabs[name]);
-                if (style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || tabs[name].className.includes("active")) {
-                    activeTab = tabs[name];
+            let el = findTabBtn(name);
+            let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
+            if (target) {
+                let style = window.getComputedStyle(target);
+                if (target.classList.contains('active') || style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105")) {
+                    activeTab = target;
                 }
             }
         }
 
         for (let name of tabNames) {
-            if (tabs[name]) {
-                tabs[name].click();
-                await new Promise(res => setTimeout(res, 120)); // Надежные 120мс для отрисовки DOM
+            let el = findTabBtn(name);
+            let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
+            if (target) {
+                target.click();
+                await new Promise(res => setTimeout(res, 150));
                 scanAndMergeVisibleFields();
             }
         }
 
         if (activeTab) {
             activeTab.click();
+            await new Promise(res => setTimeout(res, 80));
         }
     }
 
@@ -287,7 +300,7 @@
             btn.innerText = "⏳ Сбор данных...";
             await scanAllTabsCompletely();
             btn.innerText = "💾 Запомнить карту";
-            
+
             const snap = window.currentCardSnapshot;
             if (window.AndroidBridge && snap.fio) {
                 AndroidBridge.saveCardData(JSON.stringify(snap));

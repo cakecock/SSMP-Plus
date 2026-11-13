@@ -261,7 +261,7 @@
         }
     }
 
-    // Премиальные плавающие кнопки
+    // Блок плавающих кнопок
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -272,25 +272,31 @@
         bar.style.zIndex = '99999';
         bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
-        bar.style.gap = '10px';
+        bar.style.gap = '8px';
 
         const btnStyle = `
             border:none;
-            padding:12px 18px;
-            border-radius:28px;
-            box-shadow:0 6px 16px rgba(0,0,0,0.28);
-            font-size:13px;
+            padding:11px 16px;
+            border-radius:24px;
+            box-shadow:0 5px 15px rgba(0,0,0,0.25);
+            font-size:12px;
             font-weight:700;
             cursor:pointer;
             font-family:system-ui, -apple-system, Roboto, sans-serif;
-            transition:transform 0.15s ease;
+            text-align:right;
         `;
 
         bar.innerHTML = `
-            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00796B, #004D40);color:white;${btnStyle}">
-                🔍 Архив вызовов
+            <!-- Кнопки на Главном экране выбора карт -->
+            <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${btnStyle}">
+                ⭐ Образцы карт
             </button>
-            <button id="btn-save-db" style="display:none;background:linear-gradient(135deg, #00897B, #00695C);color:white;${btnStyle}">
+            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${btnStyle}">
+                📂 Общий архив
+            </button>
+
+            <!-- Кнопки внутри карты вызова -->
+            <button id="btn-save-db" style="display:none;background:linear-gradient(135deg, #00796B, #004D40);color:white;${btnStyle}">
                 💾 Запомнить карту
             </button>
             <button id="btn-fill-db" style="display:none;background:linear-gradient(135deg, #0288D1, #01579B);color:white;${btnStyle}">
@@ -299,10 +305,17 @@
         `;
         document.body.appendChild(bar);
 
+        // Нажатие: Образцы карт
+        document.getElementById('btn-best-db').onclick = function() {
+            if (window.AndroidBridge) AndroidBridge.openBestCardsDialog();
+        };
+
+        // Нажатие: Общий архив
         document.getElementById('btn-search-db').onclick = function() {
             if (window.AndroidBridge) AndroidBridge.openSearchDialog();
         };
 
+        // Нажатие: Запомнить карту
         document.getElementById('btn-save-db').onclick = async function() {
             const btn = document.getElementById('btn-save-db');
             btn.innerText = "⏳ Сбор данных...";
@@ -317,6 +330,7 @@
             }
         };
 
+        // Нажатие: Автозаполнение
         document.getElementById('btn-fill-db').onclick = function() {
             const fio = findInputFuzzy(["фио пациента", "фио"]);
             if (window.AndroidBridge && fio) {
@@ -329,17 +343,20 @@
 
     function updateVisibility() {
         const inCard = isInsideCard();
+        const btnBest = document.getElementById('btn-best-db');
         const btnSearch = document.getElementById('btn-search-db');
         const btnSave = document.getElementById('btn-save-db');
         const btnFill = document.getElementById('btn-fill-db');
 
-        if (btnSearch && btnSave && btnFill) {
+        if (btnBest && btnSearch && btnSave && btnFill) {
             if (inCard) {
+                btnBest.style.display = 'none';
                 btnSearch.style.display = 'none';
                 btnSave.style.display = 'block';
                 btnFill.style.display = 'block';
                 scanAndMergeVisibleFields();
             } else {
+                btnBest.style.display = 'block';
                 btnSearch.style.display = 'block';
                 btnSave.style.display = 'none';
                 btnFill.style.display = 'none';

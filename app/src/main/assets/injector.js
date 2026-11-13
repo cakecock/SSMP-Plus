@@ -3,17 +3,18 @@
         window.currentCardSnapshot = {};
     }
 
+    // Проверка активности бирюзовой кнопки
     function isButtonActive(btn) {
         if (!btn) return false;
-        const style = window.getComputedStyle(btn);
-        const bg = style.backgroundColor;
-        const color = style.color;
-        const isTeal = bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || bg.includes("0, 77");
-        const isWhiteOnBg = color.includes("255, 255, 255") && !bg.includes("0, 0, 0, 0") && !bg.includes("rgba(0, 0, 0, 0)");
-        return isTeal || isWhiteOnBg || btn.className.includes("active") || btn.getAttribute("aria-pressed") === "true";
+        const s = window.getComputedStyle(btn);
+        const bg = s.backgroundColor;
+        const color = s.color;
+        const isTeal = (bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || bg.includes("0, 77") || bg.includes("0, 150")) && !bg.includes("0, 0, 0, 0");
+        const isWhiteOnColor = color.includes("255, 255, 255") && !bg.includes("rgba(0, 0, 0, 0)") && !bg.includes("255, 255, 255");
+        return isTeal || isWhiteOnColor || btn.className.includes("active") || btn.getAttribute("aria-pressed") === "true";
     }
 
-    // Поиск активной кнопки по списку её возможных вариантов (100% попадание)
+    // Поиск активной кнопки по списку её уникальных вариантов
     function findActiveOption(options) {
         const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
         for (let opt of options) {
@@ -26,7 +27,7 @@
         return "";
     }
 
-    // Поиск переключателей ДА / НЕТ рядом с нужным заголовком
+    // Поиск переключателей ДА / НЕТ строго рядом с нужным полем
     function getYesNoToggle(labelKeywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         let target = null;
@@ -46,28 +47,26 @@
         return "";
     }
 
-    // Строгий сбор АД без захвата дат и адресов
-    function getBPStrict(isAdapted) {
-        const all = Array.from(document.querySelectorAll('label, div, span, p'));
-        const target = all.find(el => {
+    // Жесткий сбор АД: только 2-3-значные цифры (никаких дат, адресов и фамилий!)
+    function extractBPStrict(isAdapted) {
+        const labels = Array.from(document.querySelectorAll('label, div, span, p'));
+        const target = labels.find(el => {
             const t = el.textContent.trim().toLowerCase();
             if (isAdapted) {
                 return t.includes("адаптированное ад");
             } else {
-                return (t === "ад (мм.рт.ст.)" || t === "ад" || t.startsWith("ад (мм")) && !t.includes("адаптированное") && !t.includes("адрес");
+                return (t.includes("ад (мм.рт.ст.)") || t === "ад") && !t.includes("адаптированное") && !t.includes("после");
             }
         });
         if (!target) return "";
-        let container = target.closest('.row, [class*="row"], .q-field, div');
+        let container = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
         if (container) {
-            let inputs = Array.from(container.querySelectorAll('input')).filter(i => i.type !== 'hidden');
-            // Исключаем даты и время
-            inputs = inputs.filter(i => !i.value.includes('.202') && !i.value.includes(':'));
-            if (inputs.length >= 2 && (inputs[0].value || inputs[1].value)) {
-                return `${inputs[0].value || '_'}/${inputs[1].value || '_'}`;
-            } else if (inputs.length === 1 && inputs[0].value) {
-                return inputs[0].value;
-            }
+            const inputs = Array.from(container.querySelectorAll('input')).filter(i => {
+                const v = i.value.trim();
+                return /^\d{2,3}$/.test(v); // Только числа от 40 до 280
+            });
+            if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
+            if (inputs.length === 1) return inputs[0].value;
         }
         return "";
     }
@@ -77,7 +76,7 @@
         for (let kw of keywords) {
             const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
             if (target) {
-                let container = target.closest('div');
+                let container = target.closest('.row, [class*="row"], .q-field, div');
                 if (container) {
                     let input = container.querySelector('input, textarea');
                     if (input && input.value && !input.value.includes('[object')) return input.value.trim();
@@ -100,7 +99,7 @@
             if (target) break;
         }
         if (!target) return "";
-        let container = target.closest('div');
+        let container = target.closest('.row, [class*="row"], .q-field, div');
         if (!container) return "";
 
         let chips = Array.from(container.querySelectorAll('.q-chip, .v-chip, [class*="chip"], [class*="badge"], [class*="item"]'));
@@ -116,21 +115,30 @@
         return "";
     }
 
-    // Сбор препаратов вместе с названиями и количеством
-    function extractMedicationsList() {
-        let rows = Array.from(document.querySelectorAll('table tbody tr, .q-table tbody tr, .q-item, [class*="row"]'));
-        let medItems = [];
-        for (let r of rows) {
-            let text = r.innerText.trim();
-            if (text && !text.includes("ДОБАВИТЬ") && !text.includes("О ВЫЗОВЕ") && !text.includes("Состояние пациента") && !text.includes("Наименование")) {
-                if (text.match(/\d+\s*(шт|мл|пар|амп|таб|г|мг|доз|фл)/i)) {
-                    let cleaned = text.split('\n').map(s => s.trim()).filter(s => s && s !== "УДАЛИТЬ" && s !== "close" && s !== "✕").join(' ');
-                    medItems.push(cleaned);
+    // Точный сбор карточек медикаментов (название + дозировка + путь)
+    function extractMedicationsCards() {
+        const all = Array.from(document.querySelectorAll('*'));
+        const qtyElements = all.filter(el => el.children.length === 0 && el.textContent.trim().startsWith("Количество:"));
+        if (qtyElements.length === 0) return "";
+
+        const items = [];
+        for (let qEl of qtyElements) {
+            let card = qEl.closest('.q-card, [class*="card"], div');
+            if (card) {
+                const textLines = card.innerText.split('\n').map(s => s.trim()).filter(Boolean);
+                const drugName = textLines[0] || "";
+                const qtyLine = textLines.find(l => l.startsWith("Количество:")) || "";
+                const routeLine = textLines.find(l => l.startsWith("Путь введения:")) || "";
+                const route = routeLine.replace("Путь введения:", "").trim();
+                const routeShort = (route && !route.includes("не определен")) ? ` (${route})` : "";
+
+                if (drugName && qtyLine && !drugName.startsWith("Количество") && !drugName.includes("ДОБАВИТЬ")) {
+                    const qty = qtyLine.replace("Количество:", "").trim();
+                    items.push(`${drugName} — ${qty}${routeShort}`);
                 }
             }
         }
-        if (medItems.length > 0) return Array.from(new Set(medItems)).slice(0, 15).join(";\n• ");
-        return "";
+        return Array.from(new Set(items)).join(";\n• ");
     }
 
     function isInsideCard() {
@@ -151,13 +159,16 @@
 
         const bDate = findInputFuzzy(["дата рождения"]);
         if (bDate) snap.birthDate = bDate;
-        const addr = findInputFuzzy(["адрес вызова", "адрес"]);
+        const addr = findInputFuzzy(["место жительства (пребывания)", "адрес вызова", "адрес"]);
         if (addr) snap.address = addr;
         const reason = findInputFuzzy(["повод к вызову"]) || getDropdownOrChipsValue(["повод к вызову"]);
         if (reason) snap.callReason = reason;
 
         const gender = findActiveOption(["МУЖЧИНА", "ЖЕНЩИНА"]);
         if (gender) snap.gender = gender;
+
+        const apo = getDropdownOrChipsValue(["территориальная апо"]);
+        if (apo) snap.apo = apo;
 
         // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
@@ -177,17 +188,19 @@
         if (consciousness) snap.consciousness = consciousness;
         const position = findActiveOption(["АКТИВНОЕ", "ПАССИВНОЕ", "ВЫНУЖДЕННОЕ"]);
         if (position) snap.position = position;
+        const behavior = findActiveOption(["СПОКОЙНОЕ", "ВОЗБУЖДЕННОЕ", "АГРЕССИВНОЕ"]);
+        if (behavior) snap.behavior = behavior;
 
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
 
-        // Точный сбор АД
-        const bp = getBPStrict(false);
+        // Строгое АД
+        const bp = extractBPStrict(false);
         if (bp) snap.bp = bp;
-        const bpAdapt = getBPStrict(true);
+        const bpAdapt = extractBPStrict(true);
         if (bpAdapt) snap.bpAdapted = bpAdapt;
 
-        const pulse = findInputFuzzy(["пульс, ударов в минуту", "пульс"]);
+        const pulse = findInputFuzzy(["комментарий (пульс", "пульс, ударов в минуту", "пульс"]);
         if (pulse) snap.pulse = pulse;
         const rr = findInputFuzzy(["частота дыхания (в минуту)", "частота дыхания", "чдд"]);
         if (rr) snap.rr = rr;
@@ -211,13 +224,39 @@
         const localStatus = findInputFuzzy(["локальный статус"]);
         if (localStatus) snap.localStatus = localStatus;
 
-        // Кнопки неврологии и осмотра
+        // Неврология и осмотр
         const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
         if (pupils) snap.pupils = pupils;
+        const lightReaction = getYesNoToggle(["реакция на свет"]);
+        if (lightReaction) snap.lightReaction = lightReaction;
         const speech = findActiveOption(["СОХРАНЕНА", "ОТСУТСТВУЕТ", "НАРУШЕНА"]);
         if (speech) snap.speech = speech;
+        const gait = findActiveOption(["СВОБОДНАЯ", "НАРУШЕНА", "НЕ ОЦЕНИВАЛАСЬ"]);
+        if (gait) snap.gait = gait;
         const face = findActiveOption(["СИММЕТРИЧНОЕ", "АСИММЕТРИЧНОЕ"]);
         if (face) snap.face = face;
+        const nystagmus = findActiveOption(["НЕТ", "ГОРИЗОНТАЛЬНЫЙ", "ВЕРТИКАЛЬНЫЙ"]);
+        if (nystagmus) snap.nystagmus = nystagmus;
+
+        const skin = getDropdownOrChipsValue(["кожа"]);
+        if (skin) snap.skin = skin;
+        const tongue = findInputFuzzy(["язык"]);
+        if (tongue) snap.tongue = tongue;
+        const mucous = findInputFuzzy(["слизистые"]);
+        if (mucous) snap.mucous = mucous;
+
+        const peristalsis = getYesNoToggle(["перистальтика"]);
+        if (peristalsis) snap.peristalsis = peristalsis;
+        const liver = findActiveOption(["УВЕЛИЧЕНА", "НЕ УВЕЛИЧЕНА"]);
+        if (liver) snap.liver = liver;
+        const urination = findActiveOption(["НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ"]);
+        if (urination) snap.urination = urination;
+
+        // ЭКГ
+        const ecgBefore = findInputFuzzy(["экг до оказания", "экг до"]);
+        if (ecgBefore) snap.ecgBefore = ecgBefore;
+        const ecgAfter = findInputFuzzy(["экг после оказания", "экг после"]);
+        if (ecgAfter) snap.ecgAfter = ecgAfter;
 
         const diag = findInputFuzzy(["предварительный диагноз", "диагноз"]);
         if (diag) snap.diagnosis = diag;
@@ -225,13 +264,9 @@
         if (mkb) snap.mkb = mkb;
 
         // Вкладка "Медицинская помощь"
-        const medHelp = getDropdownOrChipsValue(["медицинская помощь, оказанная", "медицинская помощь"]);
-        if (medHelp) snap.medHelp = medHelp;
-
-        const meds = extractMedicationsList();
+        const meds = extractMedicationsCards();
         if (meds) snap.medications = meds;
 
-        // Кнопки исхода и терапии
         const attack = findActiveOption(["КУПИРОВАН", "НЕ КУПИРОВАН"]);
         if (attack) snap.attack = attack;
         const effect = findActiveOption(["УЛУЧШЕНИЕ", "БЕЗ ЭФФЕКТА", "УХУДШЕНИЕ"]);
@@ -240,36 +275,34 @@
         if (callResult) snap.callResult = callResult;
     }
 
+    // Надежный обход всех вкладок (клик по плашкам в самом верху экрана)
     async function scanAllTabsCompletely() {
-        const tabNames = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ СВЕДЕНИЯ', 'ОБЪЕКТИВНЫЕ ДАННЫЕ', 'МЕДИЦИНСКАЯ ПОМОЩЬ'];
-        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], div, a, span'));
+        const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
+        const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
 
-        function findTabBtn(name) {
-            return allElements.find(el => el.innerText && el.innerText.trim() === name && el.children.length === 0);
+        function getTab(kw) {
+            return all.find(el => {
+                const rect = el.getBoundingClientRect();
+                const t = el.innerText ? el.innerText.toUpperCase() : '';
+                return rect.top >= 0 && rect.top < 140 && t.includes(kw);
+            });
         }
 
-        let activeTab = null;
-        for (let name of tabNames) {
-            let el = findTabBtn(name);
-            let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
-            if (target) {
-                let style = window.getComputedStyle(target);
-                if (target.classList.contains('active') || style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105")) activeTab = target;
-            }
-        }
+        let originalTab = getTab('ОБЪЕКТИВНЫЕ') || getTab('О ВЫЗОВЕ');
 
-        for (let name of tabNames) {
-            let el = findTabBtn(name);
-            let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
-            if (target) {
-                target.click();
-                await new Promise(res => setTimeout(res, 180));
+        for (let kw of tabKeywords) {
+            let tab = getTab(kw);
+            if (tab) {
+                tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                tab.click();
+                await new Promise(res => setTimeout(res, 200)); // 200мс для гарантированного рендера React
                 scanAndMergeVisibleFields();
             }
         }
 
-        if (activeTab) {
-            activeTab.click();
+        if (originalTab) {
+            originalTab.click();
             await new Promise(res => setTimeout(res, 80));
         }
     }

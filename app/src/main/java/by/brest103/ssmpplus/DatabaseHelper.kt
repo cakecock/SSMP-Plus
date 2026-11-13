@@ -93,17 +93,21 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return deletedRows > 0
     }
 
+    // Умный поиск карты: сначала по полному ФИО, а если не найдено — по фамилии
     fun getBestCardForPatient(fio: String): String? {
         val db = readableDatabase
-        val cursor = db.query(
-            "cards",
-            arrayOf("id", "score", "json_data"),
-            "fio = ?",
-            arrayOf(fio.trim().lowercase()),
-            null,
-            null,
-            "timestamp DESC",
-            "2"
+        val cleanFio = fio.trim().lowercase()
+        val surname = cleanFio.split(" ").firstOrNull()?.trim() ?: cleanFio
+
+        val cursor = db.rawQuery(
+            """
+            SELECT id, score, json_data 
+            FROM cards 
+            WHERE fio = ? OR fio LIKE ? 
+            ORDER BY (fio = ?) DESC, timestamp DESC 
+            LIMIT 2
+            """.trimIndent(),
+            arrayOf(cleanFio, "%$surname%", cleanFio)
         )
 
         val list = mutableListOf<Pair<Int, String>>()
@@ -127,7 +131,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // 1. Поиск по всей базе (любые карточки)
     fun searchPatientSummaries(query: String): List<PatientSummary> {
         val results = mutableListOf<PatientSummary>()
         val db = readableDatabase
@@ -162,7 +165,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return results
     }
 
-    // 2. Поиск по Базе Образцов (только качественно заполненные карты, поиск по диагнозу, МКБ, жалобам и ФИО)
     fun searchBestCardSamples(query: String): List<BestCardSample> {
         val list = mutableListOf<BestCardSample>()
         val db = readableDatabase

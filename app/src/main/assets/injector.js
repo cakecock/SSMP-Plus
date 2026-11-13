@@ -44,7 +44,6 @@
         return "";
     }
 
-    // Сбор АД: разрешены любые числа от 0 до 300 (включая 0/0 на констатации!)
     function extractBPStrict(isAdapted) {
         const labels = Array.from(document.querySelectorAll('label, div, span, p'));
         const target = labels.find(el => {
@@ -60,7 +59,7 @@
         if (container) {
             const inputs = Array.from(container.querySelectorAll('input')).filter(i => {
                 const v = i.value.trim();
-                return /^\d{1,3}$/.test(v); // Поддерживает 0, 10, 120, 240
+                return /^\d{1,3}$/.test(v); // Поддерживает 0/0
             });
             if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
             if (inputs.length === 1) return inputs[0].value;
@@ -146,7 +145,6 @@
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
-        // Вкладка "О вызове"
         const fio = findInputFuzzy(["фио пациента", "фио"]);
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
@@ -166,7 +164,6 @@
         const apo = getDropdownOrChipsValue(["территориальная апо"]);
         if (apo) snap.apo = apo;
 
-        // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
         if (complaints) snap.complaints = complaints;
         const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
@@ -177,7 +174,6 @@
         const allergy = getYesNoToggle(["аллергия"]);
         if (allergy) snap.allergy = allergy;
 
-        // Вкладка "Объективные данные"
         const genState = getDropdownOrChipsValue(["общее состояние"]);
         if (genState) snap.generalState = genState;
         const consciousness = getDropdownOrChipsValue(["сознание"]);
@@ -190,7 +186,6 @@
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
 
-        // Сбор АД с поддержкой 0/0
         const bp = extractBPStrict(false);
         if (bp) snap.bp = bp;
         const bpAdapt = extractBPStrict(true);
@@ -208,7 +203,6 @@
         const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
         if (gluc) snap.glucose = gluc;
 
-        // Органы
         const heart = getDropdownOrChipsValue(["тоны сердца"]);
         if (heart) snap.heartSounds = heart;
         const lungs = getDropdownOrChipsValue(["дыхание"]);
@@ -220,7 +214,6 @@
         const localStatus = findInputFuzzy(["локальный статус"]);
         if (localStatus) snap.localStatus = localStatus;
 
-        // Неврология и осмотр
         const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
         if (pupils) snap.pupils = pupils;
         const lightReaction = getYesNoToggle(["реакция на свет"]);
@@ -248,7 +241,6 @@
         const urination = findActiveOption(["НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ"]);
         if (urination) snap.urination = urination;
 
-        // ЭКГ
         const ecgBefore = findInputFuzzy(["экг до оказания", "экг до"]);
         if (ecgBefore) snap.ecgBefore = ecgBefore;
         const ecgAfter = findInputFuzzy(["экг после оказания", "экг после"]);
@@ -259,7 +251,6 @@
         const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
-        // Вкладка "Медицинская помощь"
         const meds = extractMedicationsCards();
         if (meds) snap.medications = meds;
 
@@ -312,9 +303,10 @@
         bar.style.zIndex = '99999';
         bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
-        bar.style.gap = '8px';
+        bar.style.alignItems = 'flex-end';
+        bar.style.gap = '10px';
 
-        const btnStyle = `
+        const pillStyle = `
             border:none;
             padding:11px 16px;
             border-radius:24px;
@@ -326,18 +318,36 @@
             text-align:right;
         `;
 
+        // Стиль компактных круглых кнопок FAB (46x46 px)
+        const roundFabStyle = `
+            width:46px;
+            height:46px;
+            border-radius:50%;
+            border:none;
+            box-shadow:0 4px 14px rgba(0,0,0,0.3);
+            font-size:20px;
+            display:none;
+            align-items:center;
+            justify-content:center;
+            cursor:pointer;
+            transition:transform 0.1s ease;
+        `;
+
         bar.innerHTML = `
-            <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${btnStyle}">
+            <!-- Кнопки на Главном экране (аккуратные плашки) -->
+            <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${pillStyle}">
                 ⭐ Образцы карт
             </button>
-            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${btnStyle}">
+            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${pillStyle}">
                 📂 Общий архив
             </button>
-            <button id="btn-save-db" style="display:none;background:linear-gradient(135deg, #00796B, #004D40);color:white;${btnStyle}">
-                💾 Запомнить карту
+
+            <!-- Круглые кнопки внутри карты (не мешают заполнению) -->
+            <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundFabStyle}">
+                💾
             </button>
-            <button id="btn-fill-db" style="display:none;background:linear-gradient(135deg, #0288D1, #01579B);color:white;${btnStyle}">
-                ⚡ Автозаполнение
+            <button id="btn-fill-db" title="Автозаполнение" style="background:linear-gradient(135deg, #0288D1, #01579B);color:white;${roundFabStyle}">
+                ⚡
             </button>
         `;
         document.body.appendChild(bar);
@@ -352,9 +362,9 @@
 
         document.getElementById('btn-save-db').onclick = async function() {
             const btn = document.getElementById('btn-save-db');
-            btn.innerText = "⏳ Сбор данных...";
+            btn.innerText = "⏳";
             await scanAllTabsCompletely();
-            btn.innerText = "💾 Запомнить карту";
+            btn.innerText = "💾";
 
             const snap = window.currentCardSnapshot;
             if (window.AndroidBridge && snap.fio) {
@@ -385,8 +395,8 @@
             if (inCard) {
                 btnBest.style.display = 'none';
                 btnSearch.style.display = 'none';
-                btnSave.style.display = 'block';
-                btnFill.style.display = 'block';
+                btnSave.style.display = 'flex';
+                btnFill.style.display = 'flex';
                 scanAndMergeVisibleFields();
             } else {
                 btnBest.style.display = 'block';

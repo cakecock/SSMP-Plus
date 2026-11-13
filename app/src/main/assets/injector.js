@@ -44,25 +44,23 @@
         return "";
     }
 
-    function extractBPStrict(isAdapted) {
-        const labels = Array.from(document.querySelectorAll('label, div, span, p'));
-        const target = labels.find(el => {
-            const t = el.textContent.trim().toLowerCase();
-            if (isAdapted) {
-                return t.includes("адаптированное ад");
-            } else {
-                return (t.includes("ад (мм.рт.ст.)") || t === "ад") && !t.includes("адаптированное") && !t.includes("после");
+    // Точный сбор АД по разделителю косой черты "/"
+    function extractBPBySlash(isAdapted) {
+        const all = Array.from(document.querySelectorAll('*'));
+        const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
+        
+        for (let slash of slashes) {
+            let container = slash.closest('.row, [class*="row"], .q-field') || slash.parentElement?.parentElement || slash.parentElement;
+            if (container) {
+                const text = container.innerText.toLowerCase();
+                const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное") && !text.includes("после"));
+                if (isMatch) {
+                    const inputs = Array.from(container.querySelectorAll('input')).filter(i => /^\d{1,3}$/.test(i.value.trim()));
+                    if (inputs.length >= 2) {
+                        return `${inputs[0].value}/${inputs[1].value}`;
+                    }
+                }
             }
-        });
-        if (!target) return "";
-        let container = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
-        if (container) {
-            const inputs = Array.from(container.querySelectorAll('input')).filter(i => {
-                const v = i.value.trim();
-                return /^\d{1,3}$/.test(v); // Поддерживает 0/0
-            });
-            if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
-            if (inputs.length === 1) return inputs[0].value;
         }
         return "";
     }
@@ -111,26 +109,35 @@
         return "";
     }
 
+    // Точный сбор карточек медикаментов с подъемом до контейнера карточки
     function extractMedicationsCards() {
         const all = Array.from(document.querySelectorAll('*'));
-        const qtyElements = all.filter(el => el.children.length === 0 && el.textContent.trim().startsWith("Количество:"));
-        if (qtyElements.length === 0) return "";
-
+        const qtyNodes = all.filter(el => el.children.length === 0 && el.textContent.includes("Количество:"));
         const items = [];
-        for (let qEl of qtyElements) {
-            let card = qEl.closest('.q-card, [class*="card"], div');
-            if (card) {
-                const textLines = card.innerText.split('\n').map(s => s.trim()).filter(Boolean);
-                const drugName = textLines[0] || "";
-                const qtyLine = textLines.find(l => l.startsWith("Количество:")) || "";
-                const routeLine = textLines.find(l => l.startsWith("Путь введения:")) || "";
-                const route = routeLine.replace("Путь введения:", "").trim();
-                const routeShort = (route && !route.includes("не определен")) ? ` (${route})` : "";
 
-                if (drugName && qtyLine && !drugName.startsWith("Количество") && !drugName.includes("ДОБАВИТЬ")) {
-                    const qty = qtyLine.replace("Количество:", "").trim();
-                    items.push(`${drugName} — ${qty}${routeShort}`);
+        for (let qNode of qtyNodes) {
+            let card = qNode.parentElement;
+            while (card && card !== document.body) {
+                const text = card.innerText || '';
+                const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+                const qIndex = lines.findIndex(l => l.includes("Количество:"));
+                if (qIndex > 0) {
+                    const drugName = lines[0];
+                    const qtyFull = lines[qIndex];
+                    const routeLine = lines.find(l => l.includes("Путь введения:"));
+                    
+                    let cleanQty = qtyFull.replace(/Количество:\s*/i, '').trim();
+                    let cleanRoute = '';
+                    if (routeLine && !routeLine.includes("не определен")) {
+                        cleanRoute = ` [${routeLine.replace(/Путь введения:\s*/i, '').trim()}]`;
+                    }
+                    
+                    if (drugName && !drugName.includes("Лекарственные") && !drugName.includes("ДОБАВИТЬ")) {
+                        items.push(`${drugName} — ${cleanQty}${cleanRoute}`);
+                    }
+                    break;
                 }
+                card = card.parentElement;
             }
         }
         return Array.from(new Set(items)).join(";\n• ");
@@ -145,6 +152,7 @@
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
+        // Вкладка "О вызове"
         const fio = findInputFuzzy(["фио пациента", "фио"]);
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
@@ -164,6 +172,7 @@
         const apo = getDropdownOrChipsValue(["территориальная апо"]);
         if (apo) snap.apo = apo;
 
+        // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
         if (complaints) snap.complaints = complaints;
         const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
@@ -174,6 +183,7 @@
         const allergy = getYesNoToggle(["аллергия"]);
         if (allergy) snap.allergy = allergy;
 
+        // Вкладка "Объективные данные"
         const genState = getDropdownOrChipsValue(["общее состояние"]);
         if (genState) snap.generalState = genState;
         const consciousness = getDropdownOrChipsValue(["сознание"]);
@@ -186,9 +196,10 @@
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
 
-        const bp = extractBPStrict(false);
+        // Чистое АД без захвата чужих полей
+        const bp = extractBPBySlash(false);
         if (bp) snap.bp = bp;
-        const bpAdapt = extractBPStrict(true);
+        const bpAdapt = extractBPBySlash(true);
         if (bpAdapt) snap.bpAdapted = bpAdapt;
 
         const pulse = findInputFuzzy(["комментарий (пульс", "пульс, ударов в минуту", "пульс"]);
@@ -203,6 +214,7 @@
         const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
         if (gluc) snap.glucose = gluc;
 
+        // Органы
         const heart = getDropdownOrChipsValue(["тоны сердца"]);
         if (heart) snap.heartSounds = heart;
         const lungs = getDropdownOrChipsValue(["дыхание"]);
@@ -214,6 +226,7 @@
         const localStatus = findInputFuzzy(["локальный статус"]);
         if (localStatus) snap.localStatus = localStatus;
 
+        // Неврология
         const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
         if (pupils) snap.pupils = pupils;
         const lightReaction = getYesNoToggle(["реакция на свет"]);
@@ -241,6 +254,7 @@
         const urination = findActiveOption(["НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ"]);
         if (urination) snap.urination = urination;
 
+        // ЭКГ
         const ecgBefore = findInputFuzzy(["экг до оказания", "экг до"]);
         if (ecgBefore) snap.ecgBefore = ecgBefore;
         const ecgAfter = findInputFuzzy(["экг после оказания", "экг после"]);
@@ -251,6 +265,7 @@
         const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
+        // Вкладка "Медицинская помощь"
         const meds = extractMedicationsCards();
         if (meds) snap.medications = meds;
 
@@ -282,7 +297,7 @@
                 tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                 tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                 tab.click();
-                await new Promise(res => setTimeout(res, 200));
+                await new Promise(res => setTimeout(res, 220));
                 scanAndMergeVisibleFields();
             }
         }
@@ -318,31 +333,27 @@
             text-align:right;
         `;
 
-        // Стиль компактных круглых кнопок FAB (46x46 px)
+        // Компактные круглые FAB кнопки
         const roundFabStyle = `
-            width:46px;
-            height:46px;
+            width:48px;
+            height:48px;
             border-radius:50%;
             border:none;
             box-shadow:0 4px 14px rgba(0,0,0,0.3);
-            font-size:20px;
+            font-size:22px;
             display:none;
             align-items:center;
             justify-content:center;
             cursor:pointer;
-            transition:transform 0.1s ease;
         `;
 
         bar.innerHTML = `
-            <!-- Кнопки на Главном экране (аккуратные плашки) -->
             <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${pillStyle}">
                 ⭐ Образцы карт
             </button>
             <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${pillStyle}">
                 📂 Общий архив
             </button>
-
-            <!-- Круглые кнопки внутри карты (не мешают заполнению) -->
             <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundFabStyle}">
                 💾
             </button>

@@ -2,12 +2,16 @@ package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.http.SslError
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
@@ -16,6 +20,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -126,25 +132,59 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Современный BottomSheet поиска пациентов
     private fun showSearchDialog() {
-        val dialogView = LinearLayout(this).apply {
+        val bottomSheet = BottomSheetDialog(this)
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 25, 40, 20)
+            setPadding(40, 24, 40, 30)
+            setBackgroundColor(Color.WHITE)
         }
+
+        // Индикатор перетаскивания (pull bar)
+        val pullBar = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(100, 10).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 24
+            }
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#B0BEC5"))
+                cornerRadius = 5f
+            }
+        }
+        root.addView(pullBar)
+
+        val title = TextView(this).apply {
+            text = "🔍 Архив вызовов"
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#004D40"))
+            setPadding(0, 0, 0, 16)
+        }
+        root.addView(title)
 
         val searchInput = EditText(this).apply {
-            hint = "Введите фамилию пациента..."
+            hint = "Поиск по фамилии..."
+            setPadding(35, 28, 35, 28)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F0F4F4"))
+                cornerRadius = 24f
+            }
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.GRAY)
         }
-        val listView = ListView(this)
+        root.addView(searchInput)
 
-        dialogView.addView(searchInput)
-        dialogView.addView(listView)
+        val listView = ListView(this).apply {
+            divider = null
+            dividerHeight = 16
+            setPadding(0, 20, 0, 0)
+        }
+        root.addView(listView)
 
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Архив пациентов")
-            .setView(dialogView)
-            .setPositiveButton("Закрыть", null)
-            .create()
+        bottomSheet.setContentView(root)
+        bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.peekHeight = 1200
 
         val sdf = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
 
@@ -156,12 +196,25 @@ class MainActivity : AppCompatActivity() {
                         val date = sdf.format(Date(it.lastTimestamp))
                         val countText = if (it.callCount > 1) " [${it.callCount} выз.]" else ""
                         val reasonText = if (it.lastReason.isNotEmpty()) "\n• ${it.lastReason}" else ""
-                        "👤 ${it.fio.uppercase()}$countText\nПосл. вызов: $date$reasonText"
+                        "👤 ${it.fio.uppercase()}$countText\nПосл. выезд: $date$reasonText"
                     }
-                    val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_list_item_1, titles)
+                    val adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_list_item_1, titles) {
+                        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                            val view = super.getView(position, convertView, parent) as TextView
+                            view.setPadding(30, 24, 30, 24)
+                            view.setTextColor(Color.parseColor("#263238"))
+                            view.background = GradientDrawable().apply {
+                                setColor(Color.parseColor("#F7FAFA"))
+                                setStroke(2, Color.parseColor("#E0EAEA"))
+                                cornerRadius = 18f
+                            }
+                            return view
+                        }
+                    }
                     listView.adapter = adapter
                     listView.setOnItemClickListener { _, _, position, _ ->
                         val summary = summaries[position]
+                        bottomSheet.dismiss()
                         showPatientHistoryDialog(summary.fio)
                     }
                 }
@@ -169,76 +222,203 @@ class MainActivity : AppCompatActivity() {
         }
 
         searchInput.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                performSearch(s.toString())
-            }
+            override fun afterTextChanged(s: Editable?) { performSearch(s.toString()) }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         })
 
-        dialog.show()
+        bottomSheet.show()
         performSearch("")
     }
 
+    // Современный экран истории вызовов с бейджами показателей и удалением
     private fun showPatientHistoryDialog(fio: String) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val history = dbHelper.getPatientHistory(fio)
+            val history = dbHelper.getPatientHistory(fio).toMutableList()
             if (history.isEmpty()) return@launch
 
             withContext(Dispatchers.Main) {
+                val bottomSheet = BottomSheetDialog(this@MainActivity)
                 val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
 
-                val container = LinearLayout(this@MainActivity).apply {
+                val root = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(35, 20, 35, 10)
+                    setPadding(35, 20, 35, 25)
+                    setBackgroundColor(Color.WHITE)
                 }
 
-                val spinnerTitles = history.mapIndexed { idx, item ->
-                    val date = sdf.format(Date(item.timestamp))
-                    val json = try { JSONObject(item.jsonData) } catch (e: Exception) { JSONObject() }
-                    val diag = json.optString("diagnosis").ifEmpty { json.optString("callReason") }
-                    val shortDiag = if (diag.length > 25) diag.take(25) + "..." else diag
-                    "Вызов #${history.size - idx}: $date $shortDiag"
+                // Индикатор вытягивания
+                root.addView(View(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(100, 10).apply {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        bottomMargin = 16
+                    }
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#B0BEC5"))
+                        cornerRadius = 5f
+                    }
+                })
+
+                // Шапка с кнопкой закрытия
+                val headerLayout = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, 0, 12)
                 }
 
+                val titleView = TextView(this@MainActivity).apply {
+                    text = fio.uppercase()
+                    textSize = 18f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.parseColor("#004D40"))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                headerLayout.addView(titleView)
+
+                // Кнопка удаления карты 🗑️
+                val deleteBtn = ImageButton(this@MainActivity).apply {
+                    setImageResource(android.R.drawable.ic_menu_delete)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#FFEBEE"))
+                        cornerRadius = 24f
+                    }
+                    setPadding(16, 16, 16, 16)
+                }
+                headerLayout.addView(deleteBtn)
+                root.addView(headerLayout)
+
+                // Переключатель вызовов
                 val spinner = Spinner(this@MainActivity).apply {
-                    adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, spinnerTitles)
-                    setBackgroundResource(android.R.drawable.btn_default)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#E0F2F1"))
+                        cornerRadius = 16f
+                    }
+                    setPadding(24, 16, 24, 16)
                 }
-                container.addView(spinner)
+                root.addView(spinner)
 
+                // Скролл с полной картой
                 val scrollView = ScrollView(this@MainActivity).apply {
                     isFillViewport = true
-                    setPadding(0, 20, 0, 10)
+                    setPadding(0, 16, 0, 10)
                 }
 
-                val detailsText = TextView(this@MainActivity).apply {
-                    textSize = 15f
-                    setTextIsSelectable(true)
-                    typeface = Typeface.DEFAULT
+                val contentContainer = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
                 }
-                scrollView.addView(detailsText)
-                container.addView(scrollView)
+                scrollView.addView(contentContainer)
+                root.addView(scrollView)
 
-                fun renderCard(jsonData: String) {
-                    detailsText.text = formatFullCard(jsonData)
-                    scrollView.post { scrollView.scrollTo(0, 0) }
+                fun updateSpinner() {
+                    val spinnerTitles = history.mapIndexed { idx, item ->
+                        val date = sdf.format(Date(item.timestamp))
+                        val json = try { JSONObject(item.jsonData) } catch (e: Exception) { JSONObject() }
+                        val diag = json.optString("diagnosis").ifEmpty { json.optString("callReason") }
+                        val shortDiag = if (diag.length > 22) diag.take(22) + "..." else diag
+                        "Вызов #${history.size - idx} ($date) $shortDiag"
+                    }
+                    spinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, spinnerTitles)
+                }
+
+                fun renderCardView(item: CardHistoryItem) {
+                    contentContainer.removeAllViews()
+                    val json = try { JSONObject(item.jsonData) } catch (e: Exception) { JSONObject() }
+
+                    // Защита: скрываем удаление для встроенных карт
+                    if (item.isBuiltin) {
+                        deleteBtn.visibility = View.GONE
+                    } else {
+                        deleteBtn.visibility = View.VISIBLE
+                        deleteBtn.setOnClickListener {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Удаление вызова")
+                                .setMessage("Удалить этот вызов из архива?")
+                                .setPositiveButton("Удалить") { _, _ ->
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        val ok = dbHelper.deleteCard(item.id)
+                                        withContext(Dispatchers.Main) {
+                                            if (ok) {
+                                                history.remove(item)
+                                                Toast.makeText(this@MainActivity, "Вызов удален", Toast.LENGTH_SHORT).show()
+                                                if (history.isEmpty()) {
+                                                    bottomSheet.dismiss()
+                                                } else {
+                                                    updateSpinner()
+                                                    renderCardView(history[0])
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                .setNegativeButton("Отмена", null)
+                                .show()
+                        }
+                    }
+
+                    // Медицинские бейджи показателей
+                    val badgesLayout = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, 12, 0, 12)
+                    }
+
+                    fun addBadge(text: String, bgColor: String) {
+                        val badge = TextView(this@MainActivity).apply {
+                            this.text = text
+                            textSize = 12f
+                            typeface = Typeface.DEFAULT_BOLD
+                            setTextColor(Color.WHITE)
+                            setPadding(20, 8, 20, 8)
+                            background = GradientDrawable().apply {
+                                setColor(Color.parseColor(bgColor))
+                                cornerRadius = 20f
+                            }
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply { rightMargin = 12 }
+                        }
+                        badgesLayout.addView(badge)
+                    }
+
+                    val bp = json.optString("bp").ifEmpty { json.optString("bpAdapted") }
+                    if (bp.isNotEmpty()) addBadge("❤️ $bp", "#E53935")
+                    if (json.optString("pulse").isNotEmpty()) addBadge("💓 ${json.optString("pulse")}", "#D81B60")
+                    if (json.optString("saturation").isNotEmpty()) addBadge("🫁 ${json.optString("saturation")}%", "#00897B")
+                    if (json.optString("glucose").isNotEmpty()) addBadge("🩸 ${json.optString("glucose")}", "#8E24AA")
+                    if (json.optString("glasgowScore").isNotEmpty()) addBadge("🧠 ${json.optString("glasgowScore")} б", "#3949AB")
+
+                    val hScroll = HorizontalScrollView(this@MainActivity).apply {
+                        isHorizontalScrollBarEnabled = false
+                    }
+                    hScroll.addView(badgesLayout)
+                    contentContainer.addView(hScroll)
+
+                    // Детальный текст
+                    val detailsText = TextView(this@MainActivity).apply {
+                        textSize = 15f
+                        setTextIsSelectable(true)
+                        setTextColor(Color.parseColor("#37474F"))
+                        setLineSpacing(6f, 1.15f)
+                        text = formatFullCard(item.jsonData)
+                        setPadding(10, 10, 10, 30)
+                    }
+                    contentContainer.addView(detailsText)
                 }
 
                 spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                        renderCard(history[position].jsonData)
+                        renderCardView(history[position])
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
 
-                renderCard(history[0].jsonData)
+                updateSpinner()
+                renderCardView(history[0])
 
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Хронология: ${fio.uppercase()}")
-                    .setView(container)
-                    .setPositiveButton("Закрыть", null)
-                    .show()
+                bottomSheet.setContentView(root)
+                bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+                bottomSheet.behavior.peekHeight = 1400
+                bottomSheet.show()
             }
         }
     }
@@ -247,7 +427,6 @@ class MainActivity : AppCompatActivity() {
         return try {
             val json = JSONObject(jsonData)
             StringBuilder().apply {
-                append("👤 Пациент: ${json.optString("fio")}\n")
                 if (json.optString("birthDate").isNotEmpty()) append("🎂 Родился: ${json.optString("birthDate")}\n")
                 if (json.optString("gender").isNotEmpty()) append("⚧ Пол: ${json.optString("gender")}\n")
                 if (json.optString("address").isNotEmpty()) append("📍 Адрес: ${json.optString("address")}\n")
@@ -262,129 +441,4 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("consciousness").isNotEmpty()) append("• Сознание: ${json.optString("consciousness")}\n")
 
                 val gScore = json.optString("glasgowScore")
-                val gTest = json.optString("glasgowTest")
-                if (gScore.isNotEmpty() || gTest.isNotEmpty()) {
-                    append("• Шкала Глазго: ${if (gScore.isNotEmpty()) "$gScore баллов" else ""} ${if (gTest.isNotEmpty()) "($gTest)" else ""}\n")
-                }
-
-                if (json.optString("bpAdapted").isNotEmpty()) append("• Привычное АД: ${json.optString("bpAdapted")}\n")
-                if (json.optString("bp").isNotEmpty()) append("• АД на вызове: ${json.optString("bp")}\n")
-                if (json.optString("pulse").isNotEmpty()) append("• Пульс: ${json.optString("pulse")} уд/мин\n")
-                if (json.optString("rr").isNotEmpty()) append("• ЧДД: ${json.optString("rr")} в мин\n")
-                if (json.optString("saturation").isNotEmpty()) append("• Сатурация SpO2: ${json.optString("saturation")}%\n")
-                if (json.optString("glucose").isNotEmpty()) append("• Сахар крови: ${json.optString("glucose")} ммоль/л\n")
-                if (json.optString("temp").isNotEmpty()) append("• Температура: ${json.optString("temp")}°C\n")
-
-                if (json.optString("heartSounds").isNotEmpty() && !json.optString("heartSounds").contains("[object")) {
-                    append("• Тоны сердца: ${json.optString("heartSounds")}\n")
-                }
-                if (json.optString("lungs").isNotEmpty() && !json.optString("lungs").contains("[object")) {
-                    append("• Дыхание: ${json.optString("lungs")}\n")
-                }
-                if (json.optString("percussion").isNotEmpty() && !json.optString("percussion").contains("[object")) {
-                    append("• Перкуссия: ${json.optString("percussion")}\n")
-                }
-                if (json.optString("abdomen").isNotEmpty() && !json.optString("abdomen").contains("[object")) {
-                    append("• Живот: ${json.optString("abdomen")}\n")
-                }
-                if (json.optString("localStatus").isNotEmpty()) append("• Локально: ${json.optString("localStatus")}\n")
-
-                if (json.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${json.optString("complaints")}\n")
-                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез заболевания:\n${json.optString("anamnesis")}\n")
-                if (json.optString("pastDiseases").isNotEmpty()) append("\n🩹 Перенесенные болезни:\n${json.optString("pastDiseases")}\n")
-                if (json.optString("allergy").isNotEmpty()) append("⚠️ Аллергия: ${json.optString("allergy")}\n")
-
-                val meds = json.optString("medications")
-                val medHelp = json.optString("medHelp")
-                val attack = json.optString("attack")
-                val effect = json.optString("therapyEffect")
-                val callResult = json.optString("callResult")
-
-                if (medHelp.isNotEmpty() || meds.isNotEmpty() || attack.isNotEmpty() || effect.isNotEmpty() || callResult.isNotEmpty()) {
-                    append("\n💉 ОКАЗАННАЯ ПОМОЩЬ И ТЕРАПИЯ:\n")
-                    if (medHelp.isNotEmpty()) append("• Помощь: $medHelp\n")
-                    if (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ")) append("• Препараты: $meds\n")
-                    if (attack.isNotEmpty()) append("• Приступ: $attack\n")
-                    if (effect.isNotEmpty()) append("• Эффект терапии: $effect\n")
-                    if (callResult.isNotEmpty()) append("• Результат выезда: $callResult\n")
-                }
-            }.toString()
-        } catch (e: Exception) {
-            "Ошибка чтения данных"
-        }
-    }
-
-    inner class WebAppInterface {
-        @JavascriptInterface
-        fun openSearchDialog() {
-            runOnUiThread {
-                showSearchDialog()
-            }
-        }
-
-        @JavascriptInterface
-        fun saveCardData(jsonStr: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val json = JSONObject(jsonStr)
-                    val fio = json.optString("fio").trim()
-                    val birthDate = json.optString("birthDate")
-                    if (fio.isEmpty()) return@launch
-
-                    var score = 0
-                    if (json.optString("anamnesis").length > 10) score += 30
-                    if (json.optString("complaints").isNotEmpty()) score += 20
-                    if (json.optString("bpAdapted").isNotEmpty()) score += 20
-                    if (json.optString("diagnosis").isNotEmpty()) score += 20
-                    if (json.optString("pastDiseases").isNotEmpty()) score += 10
-
-                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
-
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(applicationContext, "Карта сохранена в архив", Toast.LENGTH_SHORT).show()
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun autoSaveCardData(jsonStr: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val json = JSONObject(jsonStr)
-                    val fio = json.optString("fio").trim()
-                    if (fio.length < 5) return@launch
-
-                    val birthDate = json.optString("birthDate")
-                    var score = 0
-                    if (json.optString("anamnesis").length > 10) score += 30
-                    if (json.optString("complaints").isNotEmpty()) score += 20
-                    if (json.optString("bpAdapted").isNotEmpty()) score += 20
-                    if (json.optString("diagnosis").isNotEmpty()) score += 20
-
-                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun requestAutofill(fio: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val jsonCard = dbHelper.getBestCardForPatient(fio)
-                withContext(Dispatchers.Main) {
-                    if (jsonCard != null) {
-                        val safeJson = jsonCard.replace("'", "\\'")
-                        webView.evaluateJavascript("applyAutofill('$safeJson');", null)
-                        Toast.makeText(applicationContext, "Данные автозаполнены из архива", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(applicationContext, "Пациент не найден в базе", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
-    }
-}
+                val gTest = js

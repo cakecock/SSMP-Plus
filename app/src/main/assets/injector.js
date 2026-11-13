@@ -3,6 +3,75 @@
         window.currentCardSnapshot = {};
     }
 
+    function isButtonActive(btn) {
+        if (!btn) return false;
+        const style = window.getComputedStyle(btn);
+        const bg = style.backgroundColor;
+        const color = style.color;
+        const isTeal = bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || bg.includes("0, 77");
+        const isWhiteOnBg = color.includes("255, 255, 255") && !bg.includes("0, 0, 0, 0") && !bg.includes("rgba(0, 0, 0, 0)");
+        return isTeal || isWhiteOnBg || btn.className.includes("active") || btn.getAttribute("aria-pressed") === "true";
+    }
+
+    // Поиск активной кнопки по списку её возможных вариантов (100% попадание)
+    function findActiveOption(options) {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
+        for (let opt of options) {
+            const btn = buttons.find(b => b.children.length === 0 && b.innerText.trim().toUpperCase() === opt.toUpperCase());
+            if (btn) {
+                const clickable = btn.closest('button, div[role="button"], [class*="btn"]') || btn;
+                if (isButtonActive(clickable)) return opt;
+            }
+        }
+        return "";
+    }
+
+    // Поиск переключателей ДА / НЕТ рядом с нужным заголовком
+    function getYesNoToggle(labelKeywords) {
+        const all = Array.from(document.querySelectorAll('label, div, span, p'));
+        let target = null;
+        for (let kw of labelKeywords) {
+            target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+            if (target) break;
+        }
+        if (!target) return "";
+        let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
+        if (row) {
+            const btns = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
+            for (let b of btns) {
+                const t = b.innerText.trim().toUpperCase();
+                if ((t === "ДА" || t === "НЕТ") && isButtonActive(b)) return t;
+            }
+        }
+        return "";
+    }
+
+    // Строгий сбор АД без захвата дат и адресов
+    function getBPStrict(isAdapted) {
+        const all = Array.from(document.querySelectorAll('label, div, span, p'));
+        const target = all.find(el => {
+            const t = el.textContent.trim().toLowerCase();
+            if (isAdapted) {
+                return t.includes("адаптированное ад");
+            } else {
+                return (t === "ад (мм.рт.ст.)" || t === "ад" || t.startsWith("ад (мм")) && !t.includes("адаптированное") && !t.includes("адрес");
+            }
+        });
+        if (!target) return "";
+        let container = target.closest('.row, [class*="row"], .q-field, div');
+        if (container) {
+            let inputs = Array.from(container.querySelectorAll('input')).filter(i => i.type !== 'hidden');
+            // Исключаем даты и время
+            inputs = inputs.filter(i => !i.value.includes('.202') && !i.value.includes(':'));
+            if (inputs.length >= 2 && (inputs[0].value || inputs[1].value)) {
+                return `${inputs[0].value || '_'}/${inputs[1].value || '_'}`;
+            } else if (inputs.length === 1 && inputs[0].value) {
+                return inputs[0].value;
+            }
+        }
+        return "";
+    }
+
     function findInputFuzzy(keywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         for (let kw of keywords) {
@@ -11,15 +80,11 @@
                 let container = target.closest('div');
                 if (container) {
                     let input = container.querySelector('input, textarea');
-                    if (input && input.value && !input.value.includes('[object')) {
-                        return input.value.trim();
-                    }
+                    if (input && input.value && !input.value.includes('[object')) return input.value.trim();
                     let next = target.nextElementSibling || container.nextElementSibling;
                     if (next) {
                         let nextInp = next.querySelector('input, textarea') || (next.tagName === 'INPUT' ? next : null);
-                        if (nextInp && nextInp.value && !nextInp.value.includes('[object')) {
-                            return nextInp.value.trim();
-                        }
+                        if (nextInp && nextInp.value && !nextInp.value.includes('[object')) return nextInp.value.trim();
                     }
                 }
             }
@@ -35,115 +100,52 @@
             if (target) break;
         }
         if (!target) return "";
-
         let container = target.closest('div');
         if (!container) return "";
 
         let chips = Array.from(container.querySelectorAll('.q-chip, .v-chip, [class*="chip"], [class*="badge"], [class*="item"]'));
         if (chips.length > 0) {
-            let chipTexts = chips
-                .map(c => c.innerText.trim())
-                .filter(t => t.length > 0 && !t.includes('[object') && t !== '✕' && t !== '×' && t !== 'close');
-            if (chipTexts.length > 0) {
-                return chipTexts.join(', ');
-            }
+            let chipTexts = chips.map(c => c.innerText.trim()).filter(t => t.length > 0 && !t.includes('[object') && t !== '✕' && t !== '×' && t !== 'close');
+            if (chipTexts.length > 0) return chipTexts.join(', ');
         }
 
         let lines = container.innerText.split('\n')
             .map(l => l.trim())
-            .filter(l => l.length > 0 && 
-                         !keywords.some(k => l.toLowerCase().includes(k)) && 
-                         l !== "Не выбрано" && 
-                         !l.includes("[object") &&
-                         !l.includes("▼") &&
-                         !l.includes("keyboard_arrow") &&
-                         !l.includes("arrow_drop_down"));
-
-        if (lines.length > 0) {
-            return lines.join(', ');
-        }
+            .filter(l => l.length > 0 && !keywords.some(k => l.toLowerCase().includes(k)) && l !== "Не выбрано" && !l.includes("[object") && !l.includes("▼") && !l.includes("keyboard_arrow") && !l.includes("arrow_drop_down"));
+        if (lines.length > 0) return lines.join(', ');
         return "";
     }
 
-    function getDualInputValue(keywords) {
-        const all = Array.from(document.querySelectorAll('label, div, span, p'));
-        let target = null;
-        for (let kw of keywords) {
-            target = all.find(el => el.textContent.trim().toLowerCase().includes(kw));
-            if (target) break;
-        }
-        if (!target) return "";
-
-        let container = target.closest('div');
-        if (container) {
-            let inputs = Array.from(container.querySelectorAll('input')).filter(i => i.type !== 'hidden');
-            if (inputs.length >= 2 && (inputs[0].value || inputs[1].value)) {
-                return `${inputs[0].value || '_'}/${inputs[1].value || '_'}`;
-            } else if (inputs.length === 1 && inputs[0].value) {
-                return inputs[0].value;
-            }
-        }
-        return "";
-    }
-
-    function getActiveButtonValue(keywords) {
-        const all = Array.from(document.querySelectorAll('label, div, span, p'));
-        let target = null;
-        for (let kw of keywords) {
-            target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
-            if (target) break;
-        }
-        if (!target) return "";
-
-        let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
-        if (row) {
-            let buttons = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
-            for (let btn of buttons) {
-                let style = window.getComputedStyle(btn);
-                let bg = style.backgroundColor;
-                let color = style.color;
-                if (bg.includes("0, 121") || bg.includes("0, 105") || bg.includes("0, 137") || btn.className.includes("active") || (color.includes("255, 255, 255") && !bg.includes("0, 0, 0, 0"))) {
-                    return btn.innerText.trim();
-                }
-            }
-        }
-        return "";
-    }
-
+    // Сбор препаратов вместе с названиями и количеством
     function extractMedicationsList() {
-        let rows = Array.from(document.querySelectorAll('tr, .q-table tbody tr, [class*="row"], [class*="item"]'));
+        let rows = Array.from(document.querySelectorAll('table tbody tr, .q-table tbody tr, .q-item, [class*="row"]'));
         let medItems = [];
         for (let r of rows) {
             let text = r.innerText.trim();
-            if (text && !text.includes("Наименование") && !text.includes("ДОБАВИТЬ") && !text.includes("О ВЫЗОВЕ") && !text.includes("Состояние пациента")) {
-                let cleaned = text.split('\n').map(s => s.trim()).filter(Boolean).join(' ');
-                if (cleaned.match(/\d+\s*(шт|мл|пар|амп|таб|г|мг|доз|фл)/i)) {
+            if (text && !text.includes("ДОБАВИТЬ") && !text.includes("О ВЫЗОВЕ") && !text.includes("Состояние пациента") && !text.includes("Наименование")) {
+                if (text.match(/\d+\s*(шт|мл|пар|амп|таб|г|мг|доз|фл)/i)) {
+                    let cleaned = text.split('\n').map(s => s.trim()).filter(s => s && s !== "УДАЛИТЬ" && s !== "close" && s !== "✕").join(' ');
                     medItems.push(cleaned);
                 }
             }
         }
-        if (medItems.length > 0) {
-            return Array.from(new Set(medItems)).slice(0, 15).join("; ");
-        }
+        if (medItems.length > 0) return Array.from(new Set(medItems)).slice(0, 15).join(";\n• ");
         return "";
     }
 
     function isInsideCard() {
         const text = document.body ? document.body.innerText : '';
-        const hasCardTabs = text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ');
-        const hasCardDetails = text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || text.includes('МЕДИЦИНСКАЯ ПОМОЩЬ');
-        return hasCardTabs || hasCardDetails;
+        return (text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
 
     function scanAndMergeVisibleFields() {
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
+        // Вкладка "О вызове"
         const fio = findInputFuzzy(["фио пациента", "фио"]);
         if (fio && fio.length >= 3) {
-            if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) {
-                window.currentCardSnapshot = {};
-            }
+            if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
             window.currentCardSnapshot.fio = fio;
         }
 
@@ -154,9 +156,10 @@
         const reason = findInputFuzzy(["повод к вызову"]) || getDropdownOrChipsValue(["повод к вызову"]);
         if (reason) snap.callReason = reason;
 
-        const gender = getActiveButtonValue(["пол"]);
+        const gender = findActiveOption(["МУЖЧИНА", "ЖЕНЩИНА"]);
         if (gender) snap.gender = gender;
 
+        // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
         if (complaints) snap.complaints = complaints;
         const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
@@ -164,25 +167,26 @@
         const past = findInputFuzzy(["перенесенные заболевания"]);
         if (past) snap.pastDiseases = past;
 
-        const allergy = getActiveButtonValue(["аллергия"]);
+        const allergy = getYesNoToggle(["аллергия"]);
         if (allergy) snap.allergy = allergy;
 
+        // Вкладка "Объективные данные"
         const genState = getDropdownOrChipsValue(["общее состояние"]);
         if (genState) snap.generalState = genState;
         const consciousness = getDropdownOrChipsValue(["сознание"]);
         if (consciousness) snap.consciousness = consciousness;
-        const position = getActiveButtonValue(["положение"]);
+        const position = findActiveOption(["АКТИВНОЕ", "ПАССИВНОЕ", "ВЫНУЖДЕННОЕ"]);
         if (position) snap.position = position;
 
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
-        const gTest = findInputFuzzy(["шкала комы глазго (тест)", "глазго (тест)"]);
-        if (gTest) snap.glasgowTest = gTest;
 
-        const bp = getDualInputValue(["ад (мм.рт.ст.)"]) || findInputFuzzy(["ад (мм.рт.ст.)"]);
+        // Точный сбор АД
+        const bp = getBPStrict(false);
         if (bp) snap.bp = bp;
-        const bpAdapt = getDualInputValue(["адаптированное ад"]) || findInputFuzzy(["адаптированное ад"]);
+        const bpAdapt = getBPStrict(true);
         if (bpAdapt) snap.bpAdapted = bpAdapt;
+
         const pulse = findInputFuzzy(["пульс, ударов в минуту", "пульс"]);
         if (pulse) snap.pulse = pulse;
         const rr = findInputFuzzy(["частота дыхания (в минуту)", "частота дыхания", "чдд"]);
@@ -195,6 +199,7 @@
         const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
         if (gluc) snap.glucose = gluc;
 
+        // Органы
         const heart = getDropdownOrChipsValue(["тоны сердца"]);
         if (heart) snap.heartSounds = heart;
         const lungs = getDropdownOrChipsValue(["дыхание"]);
@@ -206,22 +211,32 @@
         const localStatus = findInputFuzzy(["локальный статус"]);
         if (localStatus) snap.localStatus = localStatus;
 
+        // Кнопки неврологии и осмотра
+        const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
+        if (pupils) snap.pupils = pupils;
+        const speech = findActiveOption(["СОХРАНЕНА", "ОТСУТСТВУЕТ", "НАРУШЕНА"]);
+        if (speech) snap.speech = speech;
+        const face = findActiveOption(["СИММЕТРИЧНОЕ", "АСИММЕТРИЧНОЕ"]);
+        if (face) snap.face = face;
+
         const diag = findInputFuzzy(["предварительный диагноз", "диагноз"]);
         if (diag) snap.diagnosis = diag;
         const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
+        // Вкладка "Медицинская помощь"
         const medHelp = getDropdownOrChipsValue(["медицинская помощь, оказанная", "медицинская помощь"]);
         if (medHelp) snap.medHelp = medHelp;
 
         const meds = extractMedicationsList();
         if (meds) snap.medications = meds;
 
-        const attack = getActiveButtonValue(["приступ"]);
+        // Кнопки исхода и терапии
+        const attack = findActiveOption(["КУПИРОВАН", "НЕ КУПИРОВАН"]);
         if (attack) snap.attack = attack;
-        const effect = getActiveButtonValue(["результат оказания"]);
+        const effect = findActiveOption(["УЛУЧШЕНИЕ", "БЕЗ ЭФФЕКТА", "УХУДШЕНИЕ"]);
         if (effect) snap.therapyEffect = effect;
-        const callResult = getActiveButtonValue(["результат выезда"]);
+        const callResult = findActiveOption(["ОСТАВЛЕН НА МЕСТЕ", "ТРАНСПОРТИРОВАН В ОРГАНИЗАЦИЮ ЗДРАВООХРАНЕНИЯ", "ПЕРЕДАН БРИГАДЕ СМП"]);
         if (callResult) snap.callResult = callResult;
     }
 
@@ -239,9 +254,7 @@
             let target = el ? (el.closest('button, div[role="tab"]') || el) : null;
             if (target) {
                 let style = window.getComputedStyle(target);
-                if (target.classList.contains('active') || style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105")) {
-                    activeTab = target;
-                }
+                if (target.classList.contains('active') || style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105")) activeTab = target;
             }
         }
 
@@ -261,7 +274,6 @@
         }
     }
 
-    // Блок плавающих кнопок
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -287,15 +299,12 @@
         `;
 
         bar.innerHTML = `
-            <!-- Кнопки на Главном экране выбора карт -->
             <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${btnStyle}">
                 ⭐ Образцы карт
             </button>
             <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${btnStyle}">
                 📂 Общий архив
             </button>
-
-            <!-- Кнопки внутри карты вызова -->
             <button id="btn-save-db" style="display:none;background:linear-gradient(135deg, #00796B, #004D40);color:white;${btnStyle}">
                 💾 Запомнить карту
             </button>
@@ -305,17 +314,14 @@
         `;
         document.body.appendChild(bar);
 
-        // Нажатие: Образцы карт
         document.getElementById('btn-best-db').onclick = function() {
             if (window.AndroidBridge) AndroidBridge.openBestCardsDialog();
         };
 
-        // Нажатие: Общий архив
         document.getElementById('btn-search-db').onclick = function() {
             if (window.AndroidBridge) AndroidBridge.openSearchDialog();
         };
 
-        // Нажатие: Запомнить карту
         document.getElementById('btn-save-db').onclick = async function() {
             const btn = document.getElementById('btn-save-db');
             btn.innerText = "⏳ Сбор данных...";
@@ -330,7 +336,6 @@
             }
         };
 
-        // Нажатие: Автозаполнение
         document.getElementById('btn-fill-db').onclick = function() {
             const fio = findInputFuzzy(["фио пациента", "фио"]);
             if (window.AndroidBridge && fio) {

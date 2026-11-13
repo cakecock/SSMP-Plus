@@ -3,7 +3,6 @@
         window.currentCardSnapshot = {};
     }
 
-    // Проверка активности бирюзовой кнопки
     function isButtonActive(btn) {
         if (!btn) return false;
         const s = window.getComputedStyle(btn);
@@ -14,7 +13,6 @@
         return isTeal || isWhiteOnColor || btn.className.includes("active") || btn.getAttribute("aria-pressed") === "true";
     }
 
-    // Поиск активной кнопки по списку её уникальных вариантов
     function findActiveOption(options) {
         const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
         for (let opt of options) {
@@ -27,7 +25,6 @@
         return "";
     }
 
-    // Поиск переключателей ДА / НЕТ строго рядом с нужным полем
     function getYesNoToggle(labelKeywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         let target = null;
@@ -47,7 +44,7 @@
         return "";
     }
 
-    // Жесткий сбор АД: только 2-3-значные цифры (никаких дат, адресов и фамилий!)
+    // Сбор АД: разрешены любые числа от 0 до 300 (включая 0/0 на констатации!)
     function extractBPStrict(isAdapted) {
         const labels = Array.from(document.querySelectorAll('label, div, span, p'));
         const target = labels.find(el => {
@@ -63,7 +60,7 @@
         if (container) {
             const inputs = Array.from(container.querySelectorAll('input')).filter(i => {
                 const v = i.value.trim();
-                return /^\d{2,3}$/.test(v); // Только числа от 40 до 280
+                return /^\d{1,3}$/.test(v); // Поддерживает 0, 10, 120, 240
             });
             if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
             if (inputs.length === 1) return inputs[0].value;
@@ -115,7 +112,6 @@
         return "";
     }
 
-    // Точный сбор карточек медикаментов (название + дозировка + путь)
     function extractMedicationsCards() {
         const all = Array.from(document.querySelectorAll('*'));
         const qtyElements = all.filter(el => el.children.length === 0 && el.textContent.trim().startsWith("Количество:"));
@@ -194,7 +190,7 @@
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
 
-        // Строгое АД
+        // Сбор АД с поддержкой 0/0
         const bp = extractBPStrict(false);
         if (bp) snap.bp = bp;
         const bpAdapt = extractBPStrict(true);
@@ -275,7 +271,6 @@
         if (callResult) snap.callResult = callResult;
     }
 
-    // Надежный обход всех вкладок (клик по плашкам в самом верху экрана)
     async function scanAllTabsCompletely() {
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
@@ -296,7 +291,7 @@
                 tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                 tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                 tab.click();
-                await new Promise(res => setTimeout(res, 200)); // 200мс для гарантированного рендера React
+                await new Promise(res => setTimeout(res, 200));
                 scanAndMergeVisibleFields();
             }
         }

@@ -69,19 +69,7 @@ class MainActivity : AppCompatActivity() {
 
         WebView.setWebContentsDebuggingEnabled(true)
 
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                if (consoleMessage?.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
-                    val msg = consoleMessage.message()
-                    if (!msg.contains("CSS_CHUNK_LOAD_FAILED")) {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Ошибка JS: $msg", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
-                return super.onConsoleMessage(consoleMessage)
-            }
-        }
+        webView.webChromeClient = WebChromeClient()
 
         webView.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")

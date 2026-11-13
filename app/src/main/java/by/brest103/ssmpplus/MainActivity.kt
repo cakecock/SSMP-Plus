@@ -163,7 +163,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Выезжающий справочник МКБ-10 с приоритетными профилями СМП
     private fun openMkbSheet() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -188,9 +187,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, 10)
         })
 
-        // КАТЕГОРИИ МКБ: в начале вынесен топ экстренных вызовов скорой помощи!
         val categories = listOf(
-            // --- ПРИОРИТЕТ СМП ---
             Pair("🌟 Все", "ALL"),
             Pair("❤️ I Кардио", "I"),
             Pair("🫁 J Дыхание", "J"),
@@ -202,7 +199,6 @@ class MainActivity : AppCompatActivity() {
             Pair("🩸 E Эндокрин", "E"),
             Pair("🤰 O Акушерство", "O"),
             Pair("🏥 Z Транспорт/Отказ", "Z"),
-            // --- ОСТАЛЬНЫЕ СОМАТИЧЕСКИЕ ---
             Pair("🦠 A/B Инфекции", "AB"),
             Pair("🤪 F Психиатрия", "F"),
             Pair("🚽 N Урология", "N"),
@@ -240,7 +236,7 @@ class MainActivity : AppCompatActivity() {
                 0,
                 1f
             )
-            isNestedScrollingEnabled = true // Фикс: скролл не закрывает шторку
+            isNestedScrollingEnabled = true
             divider = null
             dividerHeight = 12
             setPadding(0, 14, 0, 0)
@@ -743,28 +739,30 @@ class MainActivity : AppCompatActivity() {
                     val fio = j.optString("fio").trim()
                     if (fio.length < 5) return@launch
 
+                    val birthDate = j.optString("birthDate")
                     var score = 0
                     if (j.optString("anamnesis").length > 10) score += 30
                     if (j.optString("complaints").isNotEmpty()) score += 20
                     if (j.optString("bpAdapted").isNotEmpty()) score += 20
                     if (j.optString("diagnosis").isNotEmpty()) score += 20
 
-                    dbHelper.saveOrUpdateCard(fio, j.optString("birthDate"), score, jsonStr)
+                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
 
+        // НАДЕЖНОЕ АВТОЗАПОЛНЕНИЕ: JSONObject.quote гарантирует передачу без синтаксических ошибок!
         @JavascriptInterface
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val jsonCard = dbHelper.getBestCardForPatient(fio)
                 withContext(Dispatchers.Main) {
                     if (jsonCard != null) {
-                        val safe = jsonCard.replace("'", "\\'")
-                        webView.evaluateJavascript("applyAutofill('$safe');", null)
-                        Toast.makeText(applicationContext, "Данные автозаполнены", Toast.LENGTH_SHORT).show()
+                        val safe = JSONObject.quote(jsonCard)
+                        webView.evaluateJavascript("applyAutofill($safe);", null)
+                        Toast.makeText(applicationContext, "⚡ Данные успешно автозаполнены!", Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(applicationContext, "Пациент не найден", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "Пациент не найден в базе по запросу: $fio", Toast.LENGTH_LONG).show()
                     }
                 }
             }

@@ -130,7 +130,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Универсальный BottomSheet (работает и для "Общего архива", и для "Базы образцов")
     private fun openSearchSheet(isBestOnly: Boolean) {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -140,14 +139,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(100, 10).apply {
+            layoutParams = LinearLayout.LayoutParams(90, 8).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 bottomMargin = 20
             }
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#B0BEC5"))
-                cornerRadius = 5f
-            }
+            background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
         })
 
         root.addView(TextView(this).apply {
@@ -242,6 +238,7 @@ class MainActivity : AppCompatActivity() {
         listView.setOnItemClickListener { _, _, pos, _ -> onClick(pos) }
     }
 
+    // Современный экран истории вызовов: зафиксированная верхняя панель (чипсы + бейджи)
     private fun showPatientHistoryDialog(fio: String) {
         lifecycleScope.launch(Dispatchers.IO) {
             val history = dbHelper.getPatientHistory(fio).toMutableList()
@@ -253,25 +250,24 @@ class MainActivity : AppCompatActivity() {
 
                 val root = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(35, 20, 35, 25)
+                    setPadding(35, 16, 35, 20)
                     setBackgroundColor(Color.WHITE)
                 }
 
+                // Индикатор вытягивания
                 root.addView(View(this@MainActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(100, 10).apply {
+                    layoutParams = LinearLayout.LayoutParams(90, 8).apply {
                         gravity = Gravity.CENTER_HORIZONTAL
-                        bottomMargin = 16
+                        bottomMargin = 14
                     }
-                    background = GradientDrawable().apply {
-                        setColor(Color.parseColor("#B0BEC5"))
-                        cornerRadius = 5f
-                    }
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
                 })
 
+                // Шапка: Имя + кнопка Удалить
                 val header = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, 0, 0, 12)
+                    setPadding(0, 0, 0, 8)
                 }
                 header.addView(TextView(this@MainActivity).apply {
                     text = fio.uppercase()
@@ -283,46 +279,110 @@ class MainActivity : AppCompatActivity() {
 
                 val deleteBtn = ImageButton(this@MainActivity).apply {
                     setImageResource(android.R.drawable.ic_menu_delete)
-                    background = GradientDrawable().apply {
-                        setColor(Color.parseColor("#FFEBEE"))
-                        cornerRadius = 24f
-                    }
-                    setPadding(16, 16, 16, 16)
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#FFEBEE")); cornerRadius = 20f }
+                    setPadding(14, 14, 14, 14)
                 }
                 header.addView(deleteBtn)
                 root.addView(header)
 
-                val spinner = Spinner(this@MainActivity).apply {
-                    background = GradientDrawable().apply {
-                        setColor(Color.parseColor("#E0F2F1"))
-                        cornerRadius = 14f
-                    }
-                    setPadding(20, 14, 20, 14)
+                // ЗАФИКСИРОВАННЫЙ БЛОК: Горизонтальные кнопки-чипсы вызовов (вместо глючного спиннера!)
+                val callChipsScroll = HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    setPadding(0, 4, 0, 10)
                 }
-                root.addView(spinner)
+                val callChipsLayout = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                }
+                callChipsScroll.addView(callChipsLayout)
+                root.addView(callChipsScroll)
 
+                // ЗАФИКСИРОВАННЫЙ БЛОК: Цветные медицинские бейджи (АД, ЧСС, SpO2)
+                val badgesScroll = HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    setPadding(0, 0, 0, 12)
+                }
+                val badgesLayout = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                }
+                badgesScroll.addView(badgesLayout)
+                root.addView(badgesScroll)
+
+                // Тонкий стильный разделитель между шапкой и текстом
+                root.addView(View(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
+                    setBackgroundColor(Color.parseColor("#E0EAEA"))
+                })
+
+                // ЗОНА СКРОЛЛА (скроллится только текст карты!)
                 val scrollView = ScrollView(this@MainActivity).apply {
                     isFillViewport = true
-                    setPadding(0, 14, 0, 10)
+                    setPadding(0, 12, 0, 10)
                 }
-                val content = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-                scrollView.addView(content)
+                val detailsText = TextView(this@MainActivity).apply {
+                    textSize = 15f
+                    setTextIsSelectable(true)
+                    setTextColor(Color.parseColor("#263238")) // Четкий высококонтрастный темный цвет
+                    setLineSpacing(6f, 1.15f)
+                    setPadding(4, 8, 4, 25)
+                }
+                scrollView.addView(detailsText)
                 root.addView(scrollView)
 
-                fun updateSpinner() {
-                    val titles = history.mapIndexed { idx, itm ->
-                        val date = sdf.format(Date(itm.timestamp))
-                        val j = try { JSONObject(itm.jsonData) } catch (e: Exception) { JSONObject() }
-                        val d = j.optString("diagnosis").ifEmpty { j.optString("callReason") }
-                        "Вызов #${history.size - idx} ($date) ${if (d.length > 20) d.take(20) + "..." else d}"
-                    }
-                    spinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, titles)
-                }
+                var selectedIndex = 0
 
-                fun renderCard(itm: CardHistoryItem) {
-                    content.removeAllViews()
+                fun renderActiveCard() {
+                    val itm = history[selectedIndex]
                     val j = try { JSONObject(itm.jsonData) } catch (e: Exception) { JSONObject() }
 
+                    // Перерисовка кнопок вызовов
+                    callChipsLayout.removeAllViews()
+                    history.forEachIndexed { idx, card ->
+                        val date = sdf.format(Date(card.timestamp))
+                        val isSelected = idx == selectedIndex
+                        val chip = TextView(this@MainActivity).apply {
+                            text = "Вызов #${history.size - idx} ($date)"
+                            textSize = 12.5f
+                            typeface = if (isSelected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                            setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#004D40"))
+                            setPadding(24, 12, 24, 12)
+                            background = GradientDrawable().apply {
+                                setColor(Color.parseColor(if (isSelected) "#00796B" else "#E0F2F1"))
+                                cornerRadius = 18f
+                            }
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply { rightMargin = 12 }
+                            setOnClickListener {
+                                selectedIndex = idx
+                                renderActiveCard()
+                            }
+                        }
+                        callChipsLayout.addView(chip)
+                    }
+
+                    // Перерисовка цветных бейджей
+                    badgesLayout.removeAllViews()
+                    fun addB(t: String, c: String) {
+                        badgesLayout.addView(TextView(this@MainActivity).apply {
+                            text = t
+                            textSize = 12f
+                            typeface = Typeface.DEFAULT_BOLD
+                            setTextColor(Color.WHITE)
+                            setPadding(20, 8, 20, 8)
+                            background = GradientDrawable().apply { setColor(Color.parseColor(c)); cornerRadius = 16f }
+                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = 10 }
+                        })
+                    }
+
+                    val bp = j.optString("bp").ifEmpty { j.optString("bpAdapted") }
+                    if (bp.isNotEmpty() && !bp.contains(".202")) addB("❤️ $bp", "#E53935")
+                    if (j.optString("pulse").isNotEmpty()) addB("💓 ${j.optString("pulse")}", "#D81B60")
+                    if (j.optString("saturation").isNotEmpty()) addB("🫁 ${j.optString("saturation")}%", "#00897B")
+                    if (j.optString("glucose").isNotEmpty()) addB("🩸 ${j.optString("glucose")}", "#8E24AA")
+                    if (j.optString("glasgowScore").isNotEmpty()) addB("🧠 ${j.optString("glasgowScore")} б", "#3949AB")
+
+                    // Обновление кнопки удаления
                     if (itm.isBuiltin) {
                         deleteBtn.visibility = View.GONE
                     } else {
@@ -334,12 +394,14 @@ class MainActivity : AppCompatActivity() {
                                 .setPositiveButton("Удалить") { _, _ ->
                                     lifecycleScope.launch(Dispatchers.IO) {
                                         if (dbHelper.deleteCard(itm.id)) {
-                                            history.remove(itm)
+                                            history.removeAt(selectedIndex)
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(this@MainActivity, "Удалено", Toast.LENGTH_SHORT).show()
-                                                if (history.isEmpty()) bottomSheet.dismiss() else {
-                                                    updateSpinner()
-                                                    renderCard(history[0])
+                                                if (history.isEmpty()) {
+                                                    bottomSheet.dismiss()
+                                                } else {
+                                                    selectedIndex = 0
+                                                    renderActiveCard()
                                                 }
                                             }
                                         }
@@ -350,52 +412,15 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    val badges = LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, 10, 0, 10)
-                    }
-                    fun addB(t: String, c: String) {
-                        badges.addView(TextView(this@MainActivity).apply {
-                            text = t
-                            textSize = 12f
-                            typeface = Typeface.DEFAULT_BOLD
-                            setTextColor(Color.WHITE)
-                            setPadding(18, 6, 18, 6)
-                            background = GradientDrawable().apply { setColor(Color.parseColor(c)); cornerRadius = 16f }
-                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = 10 }
-                        })
-                    }
-
-                    val bp = j.optString("bp").ifEmpty { j.optString("bpAdapted") }
-                    if (bp.isNotEmpty()) addB("❤️ $bp", "#E53935")
-                    if (j.optString("pulse").isNotEmpty()) addB("💓 ${j.optString("pulse")}", "#D81B60")
-                    if (j.optString("saturation").isNotEmpty()) addB("🫁 ${j.optString("saturation")}%", "#00897B")
-                    if (j.optString("glucose").isNotEmpty()) addB("🩸 ${j.optString("glucose")}", "#8E24AA")
-                    if (j.optString("glasgowScore").isNotEmpty()) addB("🧠 ${j.optString("glasgowScore")} б", "#3949AB")
-
-                    content.addView(HorizontalScrollView(this@MainActivity).apply { isHorizontalScrollBarEnabled = false; addView(badges) })
-
-                    content.addView(TextView(this@MainActivity).apply {
-                        textSize = 14.5f
-                        setTextIsSelectable(true)
-                        setTextColor(Color.parseColor("#37474F"))
-                        setLineSpacing(5f, 1.15f)
-                        text = formatCardText(itm.jsonData)
-                        setPadding(8, 8, 8, 25)
-                    })
+                    detailsText.text = formatCardText(itm.jsonData)
+                    scrollView.post { scrollView.scrollTo(0, 0) }
                 }
 
-                spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                    override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) = renderCard(history[pos])
-                    override fun onNothingSelected(p: AdapterView<*>?) {}
-                }
-
-                updateSpinner()
-                renderCard(history[0])
+                renderActiveCard()
 
                 bottomSheet.setContentView(root)
                 bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
-                bottomSheet.behavior.peekHeight = 1350
+                bottomSheet.behavior.peekHeight = 1400
                 bottomSheet.show()
             }
         }
@@ -416,19 +441,28 @@ class MainActivity : AppCompatActivity() {
             b.append("\n🩺 ОБЪЕКТИВНО:\n")
             if (j.optString("generalState").isNotEmpty()) b.append("• Состояние: ${j.optString("generalState")}\n")
             if (j.optString("consciousness").isNotEmpty()) b.append("• Сознание: ${j.optString("consciousness")}\n")
+            if (j.optString("position").isNotEmpty()) b.append("• Положение: ${j.optString("position")}\n")
             if (j.optString("glasgowScore").isNotEmpty()) b.append("• Глазго: ${j.optString("glasgowScore")} б\n")
-            if (j.optString("bpAdapted").isNotEmpty()) b.append("• Привычное АД: ${j.optString("bpAdapted")}\n")
-            if (j.optString("bp").isNotEmpty()) b.append("• АД: ${j.optString("bp")}\n")
+
+            val bpAd = j.optString("bpAdapted")
+            if (bpAd.isNotEmpty() && !bpAd.contains(".202")) b.append("• Привычное АД: $bpAd\n")
+            val bp = j.optString("bp")
+            if (bp.isNotEmpty() && !bp.contains(".202")) b.append("• АД на вызове: $bp\n")
+
             if (j.optString("pulse").isNotEmpty()) b.append("• Пульс: ${j.optString("pulse")} уд/мин\n")
             if (j.optString("rr").isNotEmpty()) b.append("• ЧДД: ${j.optString("rr")} в мин\n")
             if (j.optString("saturation").isNotEmpty()) b.append("• SpO2: ${j.optString("saturation")}%\n")
-            if (j.optString("glucose").isNotEmpty()) b.append("• Сахар: ${j.optString("glucose")} ммоль/л\n")
+            if (j.optString("glucose").isNotEmpty()) b.append("• Сахар крови: ${j.optString("glucose")} ммоль/л\n")
             if (j.optString("temp").isNotEmpty()) b.append("• Температура: ${j.optString("temp")}°C\n")
 
             if (j.optString("heartSounds").isNotEmpty() && !j.optString("heartSounds").contains("[object")) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
             if (j.optString("lungs").isNotEmpty() && !j.optString("lungs").contains("[object")) b.append("• Дыхание: ${j.optString("lungs")}\n")
             if (j.optString("percussion").isNotEmpty() && !j.optString("percussion").contains("[object")) b.append("• Перкуссия: ${j.optString("percussion")}\n")
             if (j.optString("abdomen").isNotEmpty() && !j.optString("abdomen").contains("[object")) b.append("• Живот: ${j.optString("abdomen")}\n")
+
+            if (j.optString("pupils").isNotEmpty()) b.append("• Зрачки: ${j.optString("pupils")}\n")
+            if (j.optString("speech").isNotEmpty()) b.append("• Речь: ${j.optString("speech")}\n")
+            if (j.optString("face").isNotEmpty()) b.append("• Лицо: ${j.optString("face")}\n")
             if (j.optString("localStatus").isNotEmpty()) b.append("• Локально: ${j.optString("localStatus")}\n")
 
             if (j.optString("complaints").isNotEmpty()) b.append("\n🗣️ Жалобы:\n${j.optString("complaints")}\n")
@@ -438,10 +472,10 @@ class MainActivity : AppCompatActivity() {
 
             val meds = j.optString("medications")
             val help = j.optString("medHelp")
-            if (help.isNotEmpty() || (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ"))) {
-                b.append("\n💉 ПОМОЩЬ И ТЕРАПИЯ:\n")
+            if (help.isNotEmpty() || meds.isNotEmpty()) {
+                b.append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
                 if (help.isNotEmpty()) b.append("• Помощь: $help\n")
-                if (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ")) b.append("• Препараты: $meds\n")
+                if (meds.isNotEmpty()) b.append("• Препараты: $meds\n")
                 if (j.optString("attack").isNotEmpty()) b.append("• Приступ: ${j.optString("attack")}\n")
                 if (j.optString("therapyEffect").isNotEmpty()) b.append("• Эффект: ${j.optString("therapyEffect")}\n")
                 if (j.optString("callResult").isNotEmpty()) b.append("• Итог: ${j.optString("callResult")}\n")

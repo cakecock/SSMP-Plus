@@ -106,7 +106,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         WebView.setWebContentsDebuggingEnabled(true)
-        webView.webChromeClient = WebChromeClient()
+        
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                Toast.makeText(this@MainActivity, message ?: "", Toast.LENGTH_LONG).show()
+                result?.confirm()
+                return true
+            }
+        }
 
         webView.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")
@@ -160,6 +167,83 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript(jsCode, null)
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    // Запасной экран: выбор пациента из архива, если имя не распознано автоматически
+    private fun showAutofillPickerSheet() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val summaries = dbHelper.searchPatientSummaries("")
+            withContext(Dispatchers.Main) {
+                if (summaries.isEmpty()) {
+                    Toast.makeText(this@MainActivity, "В архиве пока нет сохраненных карт", Toast.LENGTH_LONG).show()
+                    return@withContext
+                }
+
+                val bottomSheet = BottomSheetDialog(this@MainActivity)
+                val root = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(40, 24, 40, 30)
+                    setBackgroundColor(Color.WHITE)
+                }
+
+                root.addView(View(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(90, 8).apply {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        bottomMargin = 16
+                    }
+                    background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
+                })
+
+                root.addView(TextView(this@MainActivity).apply {
+                    text = "⚡ Выберите карту для автозаполнения:"
+                    textSize = 17f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.parseColor("#0288D1"))
+                    setPadding(0, 0, 0, 14)
+                })
+
+                val listView = ListView(this@MainActivity).apply {
+                    divider = null
+                    dividerHeight = 12
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                }
+                root.addView(listView)
+
+                val titles = summaries.map { "👤 ${it.fio.uppercase()}\n📋 ${it.lastReason}" }
+                listView.adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_list_item_1, titles) {
+                    override fun getView(pos: Int, conv: View?, parent: ViewGroup): View {
+                        val tv = super.getView(pos, conv, parent) as TextView
+                        tv.setPadding(26, 20, 26, 20)
+                        tv.setTextColor(Color.parseColor("#263238"))
+                        tv.background = GradientDrawable().apply {
+                            setColor(Color.parseColor("#F0F8FF"))
+                            setStroke(2, Color.parseColor("#BBDEFB"))
+                            cornerRadius = 16f
+                        }
+                        return tv
+                    }
+                }
+
+                listView.setOnItemClickListener { _, _, pos, _ ->
+                    val chosen = summaries[pos]
+                    bottomSheet.dismiss()
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val cardJson = dbHelper.getBestCardForPatient(chosen.fio)
+                        withContext(Dispatchers.Main) {
+                            if (cardJson != null) {
+                                val safe = JSONObject.quote(cardJson)
+                                webView.evaluateJavascript("applyAutofill($safe);", null)
+                                Toast.makeText(applicationContext, "⚡ Карта ${chosen.fio.uppercase()} заполнена!", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+
+                bottomSheet.setContentView(root)
+                bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+                bottomSheet.show()
+            }
         }
     }
 
@@ -711,6 +795,9 @@ class MainActivity : AppCompatActivity() {
         fun openMkbDialog() = runOnUiThread { openMkbSheet() }
 
         @JavascriptInterface
+        fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
+
+        @JavascriptInterface
         fun saveCardData(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
@@ -751,18 +838,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // НАДЕЖНОЕ АВТОЗАПОЛНЕНИЕ: JSONObject.quote гарантирует передачу без синтаксических ошибок!
         @JavascriptInterface
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {
-                val jsonCard = dbHelper.getBestCardForPatient(fio)
+                val cleanFio = fio.trim()
+                var jsonCard: String? = null
+                if (cleanFio.isNotEmpty()) {
+                    jsonCard = dbHelper.getBestCardForPatient(cleanFio)
+                }
+
                 withContext(Dispatchers.Main) {
                     if (jsonCard != null) {
                         val safe = JSONObject.quote(jsonCard)
                         webView.evaluateJavascript("applyAutofill($safe);", null)
                         Toast.makeText(applicationContext, "⚡ Данные успешно автозаполнены!", Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(applicationContext, "Пациент не найден в базе по запросу: $fio", Toast.LENGTH_LONG).show()
+                        // Если по фамилии не нашлось — предлагаем выбрать карту вручную!
+                        showAutofillPickerSheet()
                     }
                 }
             }

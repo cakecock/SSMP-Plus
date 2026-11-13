@@ -22,6 +22,15 @@ data class CardHistoryItem(
     val isBuiltin: Boolean
 )
 
+data class BestCardSample(
+    val id: Long,
+    val fio: String,
+    val score: Int,
+    val diagnosis: String,
+    val mkb: String,
+    val jsonData: String
+)
+
 class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -48,7 +57,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Сохранение вызова с маркером ручного/системного ввода
     fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String, isBuiltin: Boolean = false) {
         val db = writableDatabase
         val cleanFio = fio.trim().lowercase()
@@ -79,7 +87,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Удаление карточки (только если она не системная!)
     fun deleteCard(cardId: Long): Boolean {
         val db = writableDatabase
         val deletedRows = db.delete("cards", "id = ? AND is_builtin = 0", arrayOf(cardId.toString()))
@@ -120,6 +127,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
+    // 1. Поиск по всей базе (любые карточки)
     fun searchPatientSummaries(query: String): List<PatientSummary> {
         val results = mutableListOf<PatientSummary>()
         val db = readableDatabase
@@ -152,6 +160,44 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
         cursor.close()
         return results
+    }
+
+    // 2. Поиск по Базе Образцов (только качественно заполненные карты, поиск по диагнозу, МКБ, жалобам и ФИО)
+    fun searchBestCardSamples(query: String): List<BestCardSample> {
+        val list = mutableListOf<BestCardSample>()
+        val db = readableDatabase
+        val q = "%${query.trim().lowercase()}%"
+
+        val cursor = db.rawQuery(
+            """
+            SELECT id, fio, score, json_data 
+            FROM cards 
+            WHERE score >= 50 AND (fio LIKE ? OR json_data LIKE ?)
+            ORDER BY score DESC, timestamp DESC 
+            LIMIT 25
+            """.trimIndent(),
+            arrayOf(q, q)
+        )
+
+        while (cursor.moveToNext()) {
+            val rawJson = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+            val json = try { JSONObject(rawJson) } catch (e: Exception) { JSONObject() }
+            val diag = json.optString("diagnosis").ifEmpty { json.optString("callReason") }
+            val mkb = json.optString("mkb")
+
+            list.add(
+                BestCardSample(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    fio = cursor.getString(cursor.getColumnIndexOrThrow("fio")),
+                    score = cursor.getInt(cursor.getColumnIndexOrThrow("score")),
+                    diagnosis = diag,
+                    mkb = mkb,
+                    jsonData = rawJson
+                )
+            )
+        }
+        cursor.close()
+        return list
     }
 
     fun getPatientHistory(fio: String): List<CardHistoryItem> {

@@ -4,11 +4,20 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import org.json.JSONObject
 
-data class FoundCard(
+data class PatientSummary(
     val fio: String,
     val birthDate: String,
+    val callCount: Int,
+    val lastTimestamp: Long,
+    val lastReason: String
+)
+
+data class CardHistoryItem(
+    val id: Long,
     val timestamp: Long,
+    val score: Int,
     val jsonData: String
 )
 
@@ -34,17 +43,16 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         onCreate(db)
     }
 
-    // Сохранение или обновление (без дубликатов в течение смены)
+    // Сохраняет вызов (если в пределах 6 часов — обновляет текущий, если позже — создает новый в историю)
     fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String) {
         val db = writableDatabase
         val cleanFio = fio.trim().lowercase()
         val now = System.currentTimeMillis()
-        val twelveHoursAgo = now - (12 * 60 * 60 * 1000)
+        val sixHoursAgo = now - (6 * 60 * 60 * 1000)
 
-        // Ищем: сохраняли ли мы этого пациента за последние 12 часов?
         val cursor = db.rawQuery(
             "SELECT id FROM cards WHERE fio = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
-            arrayOf(cleanFio, twelveHoursAgo.toString())
+            arrayOf(cleanFio, sixHoursAgo.toString())
         )
 
         val existingId = if (cursor.moveToFirst()) cursor.getLong(0) else null
@@ -59,14 +67,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
 
         if (existingId != null) {
-            // Обновляем существующую карту
             db.update("cards", values, "id = ?", arrayOf(existingId.toString()))
         } else {
-            // Создаем новую запись (новый вызов)
             db.insert("cards", null, values)
         }
     }
 
+    // Алгоритм выбора лучшей карты для автозаполнения (последней или предпоследней по полноте)
     fun getBestCardForPatient(fio: String): String? {
         val db = readableDatabase
         val cursor = db.query(
@@ -101,33 +108,67 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Поиск по архиву БЕЗ дубликатов (выводит самую свежую карту на каждого человека)
-    fun searchPatients(query: String): List<FoundCard> {
-        val results = mutableListOf<FoundCard>()
+    // Поиск уникальных пациентов со счетчиком вызовов
+    fun searchPatientSummaries(query: String): List<PatientSummary> {
+        val results = mutableListOf<PatientSummary>()
         val db = readableDatabase
         val cursor = db.rawQuery(
             """
-            SELECT fio, birth_date, MAX(timestamp) as max_time, json_data 
+            SELECT fio, birth_date, COUNT(*) as call_count, MAX(timestamp) as last_time, json_data 
             FROM cards 
             WHERE fio LIKE ? 
             GROUP BY fio 
-            ORDER BY max_time DESC 
-            LIMIT 20
+            ORDER BY last_time DESC 
+            LIMIT 25
             """.trimIndent(),
             arrayOf("%${query.trim().lowercase()}%")
         )
 
         while (cursor.moveToNext()) {
+            val rawJson = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+            val json = try { JSONObject(rawJson) } catch (e: Exception) { JSONObject() }
+            val reason = json.optString("callReason").ifEmpty { json.optString("diagnosis") }
+
             results.add(
-                FoundCard(
+                PatientSummary(
                     fio = cursor.getString(cursor.getColumnIndexOrThrow("fio")),
                     birthDate = cursor.getString(cursor.getColumnIndexOrThrow("birth_date")),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("max_time")),
-                    jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+                    callCount = cursor.getInt(cursor.getColumnIndexOrThrow("call_count")),
+                    lastTimestamp = cursor.getLong(cursor.getColumnIndexOrThrow("last_time")),
+                    lastReason = reason
                 )
             )
         }
         cursor.close()
         return results
+    }
+
+    // Получение полной хронологии всех вызовов к конкретному пациенту
+    fun getPatientHistory(fio: String): List<CardHistoryItem> {
+        val list = mutableListOf<CardHistoryItem>()
+        val db = readableDatabase
+        val cursor = db.query(
+            "cards",
+            arrayOf("id", "timestamp", "score", "json_data"),
+            "fio = ?",
+            arrayOf(fio.trim().lowercase()),
+            null,
+            null,
+            "timestamp DESC",
+            "10" // Храним до 10 последних вызовов
+        )
+
+        while (cursor.moveToNext()) {
+            list.add(
+                CardHistoryItem(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
+                    score = cursor.getInt(cursor.getColumnIndexOrThrow("score")),
+                    jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
+                )
+            )
+        }
+        cursor.close()
+        return list
     }
 }

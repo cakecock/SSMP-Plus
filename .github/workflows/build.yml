@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build SSMP Plus APK
 
 on:
   push:
@@ -18,16 +18,31 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Create Permanent Keystore
+      run: |
+        keytool -genkeypair -v \
+          -keystore ssmp-release.jks \
+          -alias ssmp_plus_key \
+          -keyalg RSA -keysize 2048 -validity 10000 \
+          -storepass "SSMP_Brest_2026_Secure" \
+          -keypass "SSMP_Brest_2026_Secure" \
+          -dname "CN=SSMP Plus, OU=103 Brest, O=SSMP, L=Brest, C=BY"
 
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug --no-daemon
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
 
-    - name: Upload APK Artifact
+    - name: Build Signed APK
+      run: |
+        chmod +x gradlew || gradle wrapper
+        ./gradlew assembleRelease \
+          -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/ssmp-release.jks \
+          -Pandroid.injected.signing.store.password=SSMP_Brest_2026_Secure \
+          -Pandroid.injected.signing.key.alias=ssmp_plus_key \
+          -Pandroid.injected.signing.key.password=SSMP_Brest_2026_Secure
+
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: Brest103-Assistant-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: SSMP-Plus-Signed-APK
+        path: app/build/outputs/apk/release/*.apk

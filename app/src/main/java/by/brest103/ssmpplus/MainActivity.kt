@@ -17,6 +17,7 @@ import android.widget.*
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -305,8 +306,10 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(Color.parseColor("#E0EAEA"))
                 })
 
-                val scrollView = ScrollView(this@MainActivity).apply {
+                // NestedScrollView: решает проблему зависания и складывания шторки при скролле вверх!
+                val scrollView = NestedScrollView(this@MainActivity).apply {
                     isFillViewport = true
+                    isNestedScrollingEnabled = true
                     setPadding(0, 12, 0, 10)
                 }
                 val detailsText = TextView(this@MainActivity).apply {
@@ -385,7 +388,9 @@ class MainActivity : AppCompatActivity() {
                                             history.removeAt(selectedIndex)
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(this@MainActivity, "Удалено", Toast.LENGTH_SHORT).show()
-                                                if (history.isEmpty()) bottomSheet.dismiss() else {
+                                                if (history.isEmpty()) {
+                                                    bottomSheet.dismiss()
+                                                } else {
                                                     selectedIndex = 0
                                                     renderActiveCard()
                                                 }
@@ -406,6 +411,7 @@ class MainActivity : AppCompatActivity() {
 
                 bottomSheet.setContentView(root)
                 bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+                bottomSheet.behavior.skipCollapsed = true // Шторка держится полностью открытой и не схлопывается
                 bottomSheet.behavior.peekHeight = 1400
                 bottomSheet.show()
             }
@@ -451,10 +457,10 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("glucose").isNotEmpty()) b.append("• Сахар крови: ${j.optString("glucose")} ммоль/л\n")
             if (j.optString("temp").isNotEmpty()) b.append("• Температура: ${j.optString("temp")}°C\n")
 
-            if (j.optString("heartSounds").isNotEmpty()) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
-            if (j.optString("lungs").isNotEmpty()) b.append("• Дыхание: ${j.optString("lungs")}\n")
-            if (j.optString("percussion").isNotEmpty()) b.append("• Перкуссия: ${j.optString("percussion")}\n")
-            if (j.optString("abdomen").isNotEmpty()) b.append("• Живот: ${j.optString("abdomen")}\n")
+            if (j.optString("heartSounds").isNotEmpty() && !j.optString("heartSounds").contains("[object")) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
+            if (j.optString("lungs").isNotEmpty() && !j.optString("lungs").contains("[object")) b.append("• Дыхание: ${j.optString("lungs")}\n")
+            if (j.optString("percussion").isNotEmpty() && !j.optString("percussion").contains("[object")) b.append("• Перкуссия: ${j.optString("percussion")}\n")
+            if (j.optString("abdomen").isNotEmpty() && !j.optString("abdomen").contains("[object")) b.append("• Живот: ${j.optString("abdomen")}\n")
 
             if (j.optString("pupils").isNotEmpty()) b.append("• Зрачки: ${j.optString("pupils")}\n")
             if (j.optString("lightReaction").isNotEmpty()) b.append("• Реакция на свет: ${j.optString("lightReaction")}\n")

@@ -142,7 +142,6 @@ class MainActivity : AppCompatActivity() {
                     val c = obj.optString("c").trim().uppercase()
                     val n = obj.optString("n").trim()
                     
-                    // Строгая фильтрация: первая буква A-Z + наличие цифры
                     if (c.length >= 3 && c[0] in 'A'..'Z' && c.any { it.isDigit() }) {
                         val letter = c[0].toString()
                         list.add(MkbCodeItem(c, n, letter))
@@ -164,6 +163,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Выезжающий справочник МКБ-10 с приоритетными профилями СМП
     private fun openMkbSheet() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -181,24 +181,36 @@ class MainActivity : AppCompatActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "📖 Справочник МКБ-10 (${fullMkbList.size} диагнозов)"
+            text = "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
             textSize = 19f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#00695C"))
             setPadding(0, 0, 0, 10)
         })
 
+        // КАТЕГОРИИ МКБ: в начале вынесен топ экстренных вызовов скорой помощи!
         val categories = listOf(
-            Pair("Все", "ALL"),
+            // --- ПРИОРИТЕТ СМП ---
+            Pair("🌟 Все", "ALL"),
             Pair("❤️ I Кардио", "I"),
             Pair("🫁 J Дыхание", "J"),
-            Pair("🚨 R Симптомы", "R"),
-            Pair("🩹 S Травмы", "S"),
-            Pair("🧪 T Токсико", "T"),
             Pair("🧠 G Невро", "G"),
+            Pair("🩹 S Травмы", "S"),
+            Pair("🧪 T Токсико/Ожоги", "T"),
+            Pair("🚨 R Симптомы/Кома", "R"),
             Pair("🤢 K ЖКТ", "K"),
             Pair("🩸 E Эндокрин", "E"),
-            Pair("🏥 Z Прочее", "Z")
+            Pair("🤰 O Акушерство", "O"),
+            Pair("🏥 Z Транспорт/Отказ", "Z"),
+            // --- ОСТАЛЬНЫЕ СОМАТИЧЕСКИЕ ---
+            Pair("🦠 A/B Инфекции", "AB"),
+            Pair("🤪 F Психиатрия", "F"),
+            Pair("🚽 N Урология", "N"),
+            Pair("🦴 M Костно-мышечн.", "M"),
+            Pair("🎗️ C/D Онкология", "CD"),
+            Pair("👀 H Глаз/Ухо", "H"),
+            Pair("👶 P/Q Перинатал.", "PQ"),
+            Pair("⚠️ V-Y Внешн. причины", "VY")
         )
 
         var selectedCategory = "ALL"
@@ -211,7 +223,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(chipsScroll)
 
         val searchInput = EditText(this).apply {
-            hint = "Поиск по коду или болезни (I48, инфаркт)..."
+            hint = "Поиск (код или болезнь: I48, инфаркт)..."
             setPadding(35, 26, 35, 26)
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#E0F2F1"))
@@ -223,6 +235,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(searchInput)
 
         val listView = ListView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            isNestedScrollingEnabled = true // Фикс: скролл не закрывает шторку
             divider = null
             dividerHeight = 12
             setPadding(0, 14, 0, 0)
@@ -231,12 +249,20 @@ class MainActivity : AppCompatActivity() {
 
         bottomSheet.setContentView(root)
         bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.skipCollapsed = true
         bottomSheet.behavior.peekHeight = 1400
 
         fun filterMkb() {
             val q = searchInput.text.toString().trim().lowercase()
             val filtered = fullMkbList.asSequence().filter { item ->
-                val matchCat = if (selectedCategory == "ALL") true else item.letter == selectedCategory
+                val matchCat = when (selectedCategory) {
+                    "ALL" -> true
+                    "AB" -> item.letter == "A" || item.letter == "B"
+                    "CD" -> item.letter == "C" || item.letter == "D"
+                    "PQ" -> item.letter == "P" || item.letter == "Q"
+                    "VY" -> item.letter in listOf("V", "W", "X", "Y")
+                    else -> item.letter == selectedCategory
+                }
                 val matchText = q.isEmpty() || item.code.lowercase().contains(q) || item.name.lowercase().contains(q)
                 matchCat && matchText
             }.take(80).toList()
@@ -344,6 +370,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(searchInput)
 
         val listView = ListView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            isNestedScrollingEnabled = true
             divider = null
             dividerHeight = 14
             setPadding(0, 18, 0, 0)
@@ -352,6 +384,7 @@ class MainActivity : AppCompatActivity() {
 
         bottomSheet.setContentView(root)
         bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.skipCollapsed = true
         bottomSheet.behavior.peekHeight = 1300
 
         val sdf = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())

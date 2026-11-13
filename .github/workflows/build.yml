@@ -29,13 +29,13 @@ jobs:
           -keypass "SSMP_Brest_2026_Secure" \
           -dname "CN=SSMP Plus, OU=103 Brest, O=SSMP, L=Brest, C=BY"
 
-    - name: Setup Gradle
+    - name: Setup Gradle 8.5
       uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.5'
 
     - name: Build Signed APK
-      run: |
-        chmod +x gradlew || gradle wrapper
-        ./gradlew assembleRelease --stacktrace --no-daemon
+      run: gradle assembleRelease --no-daemon
 
     - name: Upload APK
       uses: actions/upload-artifact@v4

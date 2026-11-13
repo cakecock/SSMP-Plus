@@ -44,7 +44,6 @@
         return "";
     }
 
-    // Точный сбор АД строго по косой черте "/"
     function extractBPBySlash(isAdapted) {
         const all = Array.from(document.querySelectorAll('*'));
         const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
@@ -107,7 +106,6 @@
         return "";
     }
 
-    // Точный сбор карточек медикаментов с подъемом до контейнера карточки
     function extractMedicationsCards() {
         const all = Array.from(document.querySelectorAll('*'));
         const qtyNodes = all.filter(el => el.children.length === 0 && el.textContent.includes("Количество:"));
@@ -307,47 +305,43 @@
         bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
         bar.style.alignItems = 'flex-end';
-        bar.style.gap = '8px';
+        bar.style.gap = '10px';
 
-        const pillStyle = `
-            border:none;
-            padding:10px 15px;
-            border-radius:24px;
-            box-shadow:0 4px 14px rgba(0,0,0,0.25);
-            font-size:12px;
-            font-weight:700;
-            cursor:pointer;
-            font-family:system-ui, -apple-system, Roboto, sans-serif;
-            text-align:right;
-        `;
-
-        const roundFabStyle = `
-            width:48px;
-            height:48px;
+        // Единый стиль идеального кружка 44x44px с анимацией нажатия
+        const roundStyle = `
+            width:44px;
+            height:44px;
             border-radius:50%;
             border:none;
-            box-shadow:0 4px 14px rgba(0,0,0,0.3);
-            font-size:22px;
+            box-shadow:0 4px 12px rgba(0,0,0,0.3);
+            font-size:19px;
             display:none;
             align-items:center;
             justify-content:center;
             cursor:pointer;
+            opacity:0;
+            transform:scale(0.7) translateY(8px);
+            transition:opacity 0.2s ease, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+            user-select:none;
         `;
 
         bar.innerHTML = `
-            <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${pillStyle}">
-                ⭐ Образцы карт
+            <!-- Кнопки Главного экрана (компактные кружки 44px) -->
+            <button id="btn-best-db" title="Образцы карт" style="background:linear-gradient(135deg, #00897B, #F57F17);color:white;${roundStyle}">
+                ⭐
             </button>
-            <button id="btn-mkb-db" style="display:none;background:linear-gradient(135deg, #00796B, #0288D1);color:white;${pillStyle}">
-                📖 Справочник МКБ
+            <button id="btn-mkb-db" title="Справочник МКБ-10" style="background:linear-gradient(135deg, #00796B, #0288D1);color:white;${roundStyle}">
+                📖
             </button>
-            <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${pillStyle}">
-                📂 Общий архив
+            <button id="btn-search-db" title="Общий архив" style="background:linear-gradient(135deg, #00695C, #004D40);color:white;${roundStyle}">
+                📂
             </button>
-            <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundFabStyle}">
+
+            <!-- Кнопки внутри карты вызова (компактные кружки 44px) -->
+            <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundStyle}">
                 💾
             </button>
-            <button id="btn-fill-db" title="Автозаполнение" style="background:linear-gradient(135deg, #0288D1, #01579B);color:white;${roundFabStyle}">
+            <button id="btn-fill-db" title="Автозаполнение" style="background:linear-gradient(135deg, #0288D1, #01579B);color:white;${roundStyle}">
                 ⚡
             </button>
         `;
@@ -389,35 +383,56 @@
         };
     }
 
+    // Мягкая всплывающая анимация кнопок
+    function setBtnAnimated(btn, show) {
+        if (!btn) return;
+        if (show) {
+            btn.style.display = 'flex';
+            requestAnimationFrame(() => {
+                btn.style.opacity = '1';
+                btn.style.transform = 'scale(1) translateY(0)';
+                btn.style.pointerEvents = 'auto';
+            });
+        } else {
+            btn.style.opacity = '0';
+            btn.style.transform = 'scale(0.7) translateY(8px)';
+            btn.style.pointerEvents = 'none';
+            setTimeout(() => {
+                if (btn.style.opacity === '0') btn.style.display = 'none';
+            }, 220);
+        }
+    }
+
+    let lastCardState = null;
     function updateVisibility() {
         const inCard = isInsideCard();
+        if (inCard === lastCardState) return;
+        lastCardState = inCard;
+
         const btnBest = document.getElementById('btn-best-db');
         const btnMkb = document.getElementById('btn-mkb-db');
         const btnSearch = document.getElementById('btn-search-db');
         const btnSave = document.getElementById('btn-save-db');
         const btnFill = document.getElementById('btn-fill-db');
 
-        if (btnBest && btnMkb && btnSearch && btnSave && btnFill) {
-            if (inCard) {
-                btnBest.style.display = 'none';
-                btnMkb.style.display = 'none';
-                btnSearch.style.display = 'none';
-                btnSave.style.display = 'flex';
-                btnFill.style.display = 'flex';
-                scanAndMergeVisibleFields();
-            } else {
-                btnBest.style.display = 'block';
-                btnMkb.style.display = 'block';
-                btnSearch.style.display = 'block';
-                btnSave.style.display = 'none';
-                btnFill.style.display = 'none';
-            }
+        // Мгновенная анимированная смена без задержек
+        setBtnAnimated(btnBest, !inCard);
+        setBtnAnimated(btnMkb, !inCard);
+        setBtnAnimated(btnSearch, !inCard);
+        setBtnAnimated(btnSave, inCard);
+        setBtnAnimated(btnFill, inCard);
+
+        if (inCard) {
+            scanAndMergeVisibleFields();
         }
     }
 
-    if (!window.b103VisibilityTimer) {
-        window.b103VisibilityTimer = setInterval(updateVisibility, 500);
-    }
+    // Мгновенная реакция на смену экрана в React через MutationObserver (0 мс задержки!)
+    if (window.b103Observer) window.b103Observer.disconnect();
+    window.b103Observer = new MutationObserver(() => updateVisibility());
+    window.b103Observer.observe(document.body, { childList: true, subtree: true });
+
+    setInterval(updateVisibility, 300);
 })();
 
 window.applyAutofill = function(jsonStr) {

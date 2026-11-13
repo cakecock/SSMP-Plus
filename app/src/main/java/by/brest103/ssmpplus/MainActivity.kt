@@ -249,6 +249,7 @@ class MainActivity : AppCompatActivity() {
             StringBuilder().apply {
                 append("👤 Пациент: ${json.optString("fio")}\n")
                 if (json.optString("birthDate").isNotEmpty()) append("🎂 Родился: ${json.optString("birthDate")}\n")
+                if (json.optString("gender").isNotEmpty()) append("⚧ Пол: ${json.optString("gender")}\n")
                 if (json.optString("address").isNotEmpty()) append("📍 Адрес: ${json.optString("address")}\n")
                 if (json.optString("callReason").isNotEmpty()) append("🚨 Повод: ${json.optString("callReason")}\n")
 
@@ -271,10 +272,9 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("pulse").isNotEmpty()) append("• Пульс: ${json.optString("pulse")} уд/мин\n")
                 if (json.optString("rr").isNotEmpty()) append("• ЧДД: ${json.optString("rr")} в мин\n")
                 if (json.optString("saturation").isNotEmpty()) append("• Сатурация SpO2: ${json.optString("saturation")}%\n")
-                if (json.optString("glucose").isNotEmpty()) append("• Сахар: ${json.optString("glucose")} ммоль/л\n")
+                if (json.optString("glucose").isNotEmpty()) append("• Сахар крови: ${json.optString("glucose")} ммоль/л\n")
                 if (json.optString("temp").isNotEmpty()) append("• Температура: ${json.optString("temp")}°C\n")
 
-                // Чистые тоны, дыхание, живот без [object Object]
                 if (json.optString("heartSounds").isNotEmpty() && !json.optString("heartSounds").contains("[object")) {
                     append("• Тоны сердца: ${json.optString("heartSounds")}\n")
                 }
@@ -290,18 +290,23 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("localStatus").isNotEmpty()) append("• Локально: ${json.optString("localStatus")}\n")
 
                 if (json.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${json.optString("complaints")}\n")
-                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез:\n${json.optString("anamnesis")}\n")
+                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез заболевания:\n${json.optString("anamnesis")}\n")
                 if (json.optString("pastDiseases").isNotEmpty()) append("\n🩹 Перенесенные болезни:\n${json.optString("pastDiseases")}\n")
+                if (json.optString("allergy").isNotEmpty()) append("⚠️ Аллергия: ${json.optString("allergy")}\n")
 
                 val meds = json.optString("medications")
                 val medHelp = json.optString("medHelp")
-                if (medHelp.isNotEmpty() || (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ"))) {
+                val attack = json.optString("attack")
+                val effect = json.optString("therapyEffect")
+                val callResult = json.optString("callResult")
+
+                if (medHelp.isNotEmpty() || meds.isNotEmpty() || attack.isNotEmpty() || effect.isNotEmpty() || callResult.isNotEmpty()) {
                     append("\n💉 ОКАЗАННАЯ ПОМОЩЬ И ТЕРАПИЯ:\n")
                     if (medHelp.isNotEmpty()) append("• Помощь: $medHelp\n")
                     if (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ")) append("• Препараты: $meds\n")
-                    if (json.optString("attack").isNotEmpty()) append("• Приступ: ${json.optString("attack")}\n")
-                    if (json.optString("therapyEffect").isNotEmpty()) append("• Эффект: ${json.optString("therapyEffect")}\n")
-                    if (json.optString("callResult").isNotEmpty()) append("• Итог: ${json.optString("callResult")}\n")
+                    if (attack.isNotEmpty()) append("• Приступ: $attack\n")
+                    if (effect.isNotEmpty()) append("• Эффект терапии: $effect\n")
+                    if (callResult.isNotEmpty()) append("• Результат выезда: $callResult\n")
                 }
             }.toString()
         } catch (e: Exception) {

@@ -6,6 +6,7 @@ import android.net.http.SslError
 import android.os.Bundle
 import android.webkit.*
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
@@ -19,6 +20,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var dbHelper: DatabaseHelper
+    private var backPressedTime: Long = 0
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,6 +29,24 @@ class MainActivity : AppCompatActivity() {
 
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
+
+        // Обработка жестов "Назад" и физической кнопки
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    // Возвращаемся из карты назад к общему списку
+                    webView.goBack()
+                } else {
+                    // Мы на главном экране: выход по двойному нажатию/свайпу
+                    if (System.currentTimeMillis() - backPressedTime < 2000) {
+                        finish()
+                    } else {
+                        backPressedTime = System.currentTimeMillis()
+                        Toast.makeText(this@MainActivity, "Нажмите назад ещё раз для выхода", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        })
 
         // Поддержка Cookies
         val cookieManager = CookieManager.getInstance()
@@ -46,7 +66,7 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Полифилл Notification: устраняем падение React до загрузки DOM
+        // Полифилл Notification: устраняем падение React
         val polyfillScript = """
             if (typeof window.Notification === 'undefined') {
                 function MockNotification(title, options) {
@@ -68,7 +88,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         WebView.setWebContentsDebuggingEnabled(true)
-
         webView.webChromeClient = WebChromeClient()
 
         webView.webViewClient = object : WebViewClient() {
@@ -83,7 +102,6 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                // Дублируем внедрение заглушки на старте страницы
                 view?.evaluateJavascript(polyfillScript, null)
             }
 

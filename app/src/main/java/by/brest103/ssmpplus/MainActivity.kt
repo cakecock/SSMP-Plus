@@ -1,6 +1,9 @@
 package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
@@ -26,15 +29,19 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
+
+data class MkbCodeItem(val code: String, val name: String, val letter: String)
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var dbHelper: DatabaseHelper
     private var backPressedTime: Long = 0
+    private var fullMkbList: List<MkbCodeItem> = emptyList()
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +50,8 @@ class MainActivity : AppCompatActivity() {
 
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
+
+        loadFullMkbAsync()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -122,6 +131,28 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://soft.103brest.by/ssmp/")
     }
 
+    private fun loadFullMkbAsync() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val jsonStr = assets.open("mkb10.json").bufferedReader().use { it.readText() }
+                val arr = JSONArray(jsonStr)
+                val list = ArrayList<MkbCodeItem>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val c = obj.optString("c")
+                    val n = obj.optString("n")
+                    if (c.isNotEmpty()) {
+                        val letter = c[0].uppercaseChar().toString()
+                        list.add(MkbCodeItem(c, n, letter))
+                    }
+                }
+                fullMkbList = list
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     private fun injectScript() {
         try {
             val jsCode = assets.open("injector.js").bufferedReader().use { it.readText() }
@@ -129,6 +160,149 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    // Выезжающий справочник по полной базе МКБ-10
+    private fun openMkbSheet() {
+        val bottomSheet = BottomSheetDialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(35, 20, 35, 25)
+            setBackgroundColor(Color.WHITE)
+        }
+
+        root.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(90, 8).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 14
+            }
+            background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
+            textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#00695C"))
+            setPadding(0, 0, 0, 10)
+        })
+
+        val categories = listOf(
+            Pair("Все", "ALL"),
+            Pair("❤️ I Кардио", "I"),
+            Pair("🫁 J Дыхание", "J"),
+            Pair("🚨 R Симптомы", "R"),
+            Pair("🩹 S Травмы", "S"),
+            Pair("🧪 T Токсико", "T"),
+            Pair("🧠 G Невро", "G"),
+            Pair("🤢 K ЖКТ", "K"),
+            Pair("🩸 E Эндокрин", "E"),
+            Pair("🏥 Z Прочее", "Z")
+        )
+
+        var selectedCategory = "ALL"
+        val chipsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setPadding(0, 0, 0, 12)
+        }
+        val chipsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        chipsScroll.addView(chipsLayout)
+        root.addView(chipsScroll)
+
+        val searchInput = EditText(this).apply {
+            hint = "Поиск (код или диагноз, напр. I48, инфаркт)..."
+            setPadding(35, 26, 35, 26)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#E0F2F1"))
+                cornerRadius = 20f
+            }
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.GRAY)
+        }
+        root.addView(searchInput)
+
+        val listView = ListView(this).apply {
+            divider = null
+            dividerHeight = 12
+            setPadding(0, 14, 0, 0)
+        }
+        root.addView(listView)
+
+        bottomSheet.setContentView(root)
+        bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.peekHeight = 1400
+
+        fun filterMkb() {
+            val q = searchInput.text.toString().trim().lowercase()
+            val filtered = fullMkbList.asSequence().filter { item ->
+                val matchCat = if (selectedCategory == "ALL") true else item.letter == selectedCategory
+                val matchText = q.isEmpty() || item.code.lowercase().contains(q) || item.name.lowercase().contains(q)
+                matchCat && matchText
+            }.take(70).toList()
+
+            val titles = filtered.map { "[${it.code}] ${it.name}" }
+            listView.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, titles) {
+                override fun getView(pos: Int, conv: View?, parent: ViewGroup): View {
+                    val tv = super.getView(pos, conv, parent) as TextView
+                    tv.setPadding(26, 20, 26, 20)
+                    tv.setTextColor(Color.parseColor("#263238"))
+                    tv.textSize = 14f
+                    tv.background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#F7FAFA"))
+                        setStroke(2, Color.parseColor("#E0EAEA"))
+                        cornerRadius = 14f
+                    }
+                    return tv
+                }
+            }
+
+            listView.setOnItemClickListener { _, _, pos, _ ->
+                val item = filtered[pos]
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("MKB-10", "[${item.code}] ${item.name}")
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, "📋 Скопировано: [${item.code}] ${item.name}", Toast.LENGTH_SHORT).show()
+                bottomSheet.dismiss()
+            }
+        }
+
+        fun updateCategoryChips() {
+            chipsLayout.removeAllViews()
+            categories.forEach { (label, key) ->
+                val isSel = key == selectedCategory
+                val chip = TextView(this).apply {
+                    text = label
+                    textSize = 12f
+                    typeface = if (isSel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    setTextColor(if (isSel) Color.WHITE else Color.parseColor("#004D40"))
+                    setPadding(22, 10, 22, 10)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor(if (isSel) "#00796B" else "#E0F2F1"))
+                        cornerRadius = 16f
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { rightMargin = 10 }
+                    setOnClickListener {
+                        selectedCategory = key
+                        updateCategoryChips()
+                        filterMkb()
+                    }
+                }
+                chipsLayout.addView(chip)
+            }
+        }
+
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { filterMkb() }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        })
+
+        updateCategoryChips()
+        filterMkb()
+        bottomSheet.show()
     }
 
     private fun openSearchSheet(isBestOnly: Boolean) {
@@ -283,7 +457,6 @@ class MainActivity : AppCompatActivity() {
                 header.addView(deleteBtn)
                 root.addView(header)
 
-                // Горизонтальные кнопки-чипсы вызовов
                 val callChipsScroll = HorizontalScrollView(this@MainActivity).apply {
                     isHorizontalScrollBarEnabled = false
                     setPadding(0, 4, 0, 10)
@@ -292,7 +465,6 @@ class MainActivity : AppCompatActivity() {
                 callChipsScroll.addView(callChipsLayout)
                 root.addView(callChipsScroll)
 
-                // Зафиксированные медицинские бейджи
                 val badgesScroll = HorizontalScrollView(this@MainActivity).apply {
                     isHorizontalScrollBarEnabled = false
                     setPadding(0, 0, 0, 12)
@@ -306,7 +478,6 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(Color.parseColor("#E0EAEA"))
                 })
 
-                // NestedScrollView: решает проблему зависания и складывания шторки при скролле вверх!
                 val scrollView = NestedScrollView(this@MainActivity).apply {
                     isFillViewport = true
                     isNestedScrollingEnabled = true
@@ -411,7 +582,7 @@ class MainActivity : AppCompatActivity() {
 
                 bottomSheet.setContentView(root)
                 bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
-                bottomSheet.behavior.skipCollapsed = true // Шторка держится полностью открытой и не схлопывается
+                bottomSheet.behavior.skipCollapsed = true
                 bottomSheet.behavior.peekHeight = 1400
                 bottomSheet.show()
             }
@@ -505,6 +676,9 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun openBestCardsDialog() = runOnUiThread { openSearchSheet(true) }
+
+        @JavascriptInterface
+        fun openMkbDialog() = runOnUiThread { openMkbSheet() }
 
         @JavascriptInterface
         fun saveCardData(jsonStr: String) {

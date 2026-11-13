@@ -263,27 +263,27 @@
         if (callResult) snap.callResult = callResult;
     }
 
+    // Вспомогательная функция клика по верхней вкладке
+    function getTabElement(kw) {
+        const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
+        return all.find(el => {
+            const rect = el.getBoundingClientRect();
+            const t = el.innerText ? el.innerText.toUpperCase() : '';
+            return rect.top >= 0 && rect.top < 140 && t.includes(kw);
+        });
+    }
+
     async function scanAllTabsCompletely() {
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
-        const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
-
-        function getTab(kw) {
-            return all.find(el => {
-                const rect = el.getBoundingClientRect();
-                const t = el.innerText ? el.innerText.toUpperCase() : '';
-                return rect.top >= 0 && rect.top < 140 && t.includes(kw);
-            });
-        }
-
-        let originalTab = getTab('ОБЪЕКТИВНЫЕ') || getTab('О ВЫЗОВЕ');
+        let originalTab = getTabElement('ОБЪЕКТИВНЫЕ') || getTabElement('О ВЫЗОВЕ');
 
         for (let kw of tabKeywords) {
-            let tab = getTab(kw);
+            let tab = getTabElement(kw);
             if (tab) {
                 tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                 tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                 tab.click();
-                await new Promise(res => setTimeout(res, 220));
+                await new Promise(res => setTimeout(res, 200));
                 scanAndMergeVisibleFields();
             }
         }
@@ -307,7 +307,6 @@
         bar.style.alignItems = 'flex-end';
         bar.style.gap = '10px';
 
-        // Единый стиль идеального кружка 44x44px с анимацией нажатия
         const roundStyle = `
             width:44px;
             height:44px;
@@ -326,7 +325,6 @@
         `;
 
         bar.innerHTML = `
-            <!-- Кнопки Главного экрана (компактные кружки 44px) -->
             <button id="btn-best-db" title="Образцы карт" style="background:linear-gradient(135deg, #00897B, #F57F17);color:white;${roundStyle}">
                 ⭐
             </button>
@@ -336,8 +334,6 @@
             <button id="btn-search-db" title="Общий архив" style="background:linear-gradient(135deg, #00695C, #004D40);color:white;${roundStyle}">
                 📂
             </button>
-
-            <!-- Кнопки внутри карты вызова (компактные кружки 44px) -->
             <button id="btn-save-db" title="Запомнить карту" style="background:linear-gradient(135deg, #00796B, #004D40);color:white;${roundStyle}">
                 💾
             </button>
@@ -383,7 +379,6 @@
         };
     }
 
-    // Мягкая всплывающая анимация кнопок
     function setBtnAnimated(btn, show) {
         if (!btn) return;
         if (show) {
@@ -415,7 +410,6 @@
         const btnSave = document.getElementById('btn-save-db');
         const btnFill = document.getElementById('btn-fill-db');
 
-        // Мгновенная анимированная смена без задержек
         setBtnAnimated(btnBest, !inCard);
         setBtnAnimated(btnMkb, !inCard);
         setBtnAnimated(btnSearch, !inCard);
@@ -427,7 +421,6 @@
         }
     }
 
-    // Мгновенная реакция на смену экрана в React через MutationObserver (0 мс задержки!)
     if (window.b103Observer) window.b103Observer.disconnect();
     window.b103Observer = new MutationObserver(() => updateVisibility());
     window.b103Observer.observe(document.body, { childList: true, subtree: true });
@@ -435,35 +428,200 @@
     setInterval(updateVisibility, 300);
 })();
 
-window.applyAutofill = function(jsonStr) {
+// ==========================================
+// ИНТЕЛЛЕКТУАЛЬНОЕ АВТОЗАПОЛНЕНИЕ (АВТОПИЛОТ)
+// ==========================================
+window.applyAutofill = async function(jsonStr) {
     try {
         const data = JSON.parse(jsonStr);
-        function setValFuzzy(keywords, value) {
-            if (!value) return;
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = "⏳";
+
+        // 1. Нативный установщик значений для виртуального DOM React
+        function setReactValue(input, value) {
+            if (!input || value === undefined || value === null || value === "") return;
+            try {
+                const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) {
+                    setter.call(input, value);
+                } else {
+                    input.value = value;
+                }
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (e) {
+                input.value = value;
+            }
+        }
+
+        function findInputForFill(keywords) {
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
             for (let kw of keywords) {
-                const target = all.find(el => el.textContent.trim().toLowerCase().includes(kw));
+                const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
                 if (target) {
-                    let container = target.closest('div');
-                    let input = container?.querySelector('input, textarea');
-                    if (input) {
-                        input.value = value;
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                        input.dispatchEvent(new Event('change', { bubbles: true }));
-                        break;
+                    let container = target.closest('.row, [class*="row"], .q-field, div');
+                    let inp = container?.querySelector('input, textarea');
+                    if (inp) return inp;
+                    let next = target.nextElementSibling || container?.nextElementSibling;
+                    let nextInp = next?.querySelector('input, textarea') || (next?.tagName === 'INPUT' ? next : null);
+                    if (nextInp) return nextInp;
+                }
+            }
+            return null;
+        }
+
+        // 2. Авто-клик по кнопкам-опциям (Пол, Положение, Зрачки, Исход)
+        function clickOption(targetText) {
+            if (!targetText) return;
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
+            const btn = buttons.find(b => b.children.length === 0 && b.innerText.trim().toUpperCase() === targetText.toUpperCase());
+            if (btn) {
+                const clickable = btn.closest('button, div[role="button"], [class*="btn"]') || btn;
+                const style = window.getComputedStyle(clickable);
+                const isAlreadyActive = style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || clickable.className.includes("active");
+                if (!isAlreadyActive) {
+                    clickable.click();
+                }
+            }
+        }
+
+        // 3. Авто-клик переключателей ДА / НЕТ
+        function clickYesNo(labelKeywords, choice) {
+            if (!choice) return;
+            const all = Array.from(document.querySelectorAll('label, div, span, p'));
+            let target = null;
+            for (let kw of labelKeywords) {
+                target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+                if (target) break;
+            }
+            if (!target) return;
+            let row = target.closest('.row, [class*="row"], .q-field') || target.parentElement?.parentElement || target.parentElement;
+            if (row) {
+                const btns = Array.from(row.querySelectorAll('button, div[role="button"], [class*="btn"]'));
+                for (let b of btns) {
+                    if (b.innerText.trim().toUpperCase() === choice.toUpperCase()) {
+                        const style = window.getComputedStyle(b);
+                        const isAlreadyActive = style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || b.className.includes("active");
+                        if (!isAlreadyActive) b.click();
                     }
                 }
             }
         }
 
-        setValFuzzy(["анамнез заболевания", "анамнез"], data.anamnesis);
-        setValFuzzy(["жалобы"], data.complaints);
-        setValFuzzy(["адаптированное ад"], data.bpAdapted);
-        setValFuzzy(["перенесенные заболевания"], data.pastDiseases);
-        setValFuzzy(["предварительный диагноз", "диагноз"], data.diagnosis);
-        setValFuzzy(["код по мкб"], data.mkb);
-        setValFuzzy(["локальный статус"], data.localStatus);
+        // 4. Заполнение двойного АД вокруг косой черты "/"
+        function fillDualBP(isAdapted, bpStr) {
+            if (!bpStr || !bpStr.includes('/')) return;
+            const parts = bpStr.split('/');
+            const all = Array.from(document.querySelectorAll('*'));
+            const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
+            for (let slash of slashes) {
+                let container = slash.closest('.row, [class*="row"], .q-field') || slash.parentElement?.parentElement || slash.parentElement;
+                if (container) {
+                    const text = container.innerText.toLowerCase();
+                    const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное") && !text.includes("после"));
+                    if (isMatch) {
+                        const inputs = Array.from(container.querySelectorAll('input')).filter(i => !i.type.includes('hidden'));
+                        if (inputs.length >= 2) {
+                            setReactValue(inputs[0], parts[0].trim());
+                            setReactValue(inputs[1], parts[1].trim());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Заполнение полей открытого в данный момент экрана
+        function fillCurrentScreen() {
+            // Текстовые поля и анамнез
+            setReactValue(findInputForFill(["жалобы"]), data.complaints);
+            setReactValue(findInputForFill(["анамнез заболевания", "анамнез"]), data.anamnesis);
+            setReactValue(findInputForFill(["перенесенные заболевания"]), data.pastDiseases);
+            setReactValue(findInputForFill(["предварительный диагноз", "диагноз"]), data.diagnosis);
+            setReactValue(findInputForFill(["код по мкб"]), data.mkb);
+            setReactValue(findInputForFill(["локальный статус"]), data.localStatus);
+
+            // АД
+            if (data.bpAdapted) fillDualBP(true, data.bpAdapted);
+            if (data.bp) fillDualBP(false, data.bp);
+
+            // ЭКГ
+            setReactValue(findInputForFill(["экг до оказания", "экг до"]), data.ecgBefore);
+            setReactValue(findInputForFill(["экг после оказания", "экг после"]), data.ecgAfter);
+
+            // Стандартный неврологический статус по умолчанию
+            setReactValue(findInputForFill(["шкала комы глазго (баллы)", "глазго (баллы)"]), data.glasgowScore || "15");
+            setReactValue(findInputForFill(["тонус мышц"]), "Норма");
+            setReactValue(findInputForFill(["патологические рефлексы"]), "Нет");
+            setReactValue(findInputForFill(["менингиальные знаки"]), "Нет");
+            setReactValue(findInputForFill(["плегии, парезы", "плегии"]), "Нет");
+            setReactValue(findInputForFill(["язык"]), data.tongue || "Влажный, не обложен");
+            setReactValue(findInputForFill(["слизистые"]), data.mucous || "Чистые");
+
+            // Нажатие кнопок-переключателей
+            if (data.gender) clickOption(data.gender);
+            clickOption(data.position || "АКТИВНОЕ");
+            clickOption(data.behavior || "СПОКОЙНОЕ");
+            clickOption(data.pupils || "МИОЗ");
+            clickOption(data.speech || "СОХРАНЕНА");
+            clickOption(data.face || "СИММЕТРИЧНОЕ");
+            clickOption(data.gait || "СВОБОДНАЯ");
+            clickOption(data.nystagmus || "НЕТ");
+            clickOption(data.liver || "НЕ УВЕЛИЧЕНА");
+            clickOption(data.urination || "НЕ НАРУШЕНО");
+
+            // Исход и помощь
+            clickOption(data.attack || "КУПИРОВАН");
+            clickOption(data.therapyEffect || "УЛУЧШЕНИЕ");
+            clickOption(data.callResult || "ОСТАВЛЕН НА МЕСТЕ");
+
+            // Да / Нет переключатели
+            clickYesNo(["аллергия"], data.allergy || "НЕТ");
+            clickYesNo(["реакция на свет"], data.lightReaction || "ДА");
+            clickYesNo(["высыпания"], "НЕТ");
+            clickYesNo(["перистальтика"], data.peristalsis || "ДА");
+            clickYesNo(["симптомы раздражения брюшины"], "НЕТ");
+            clickYesNo(["асцит"], "НЕТ");
+            clickYesNo(["периферические отеки", "отеки"], "НЕТ");
+            clickYesNo(["запах алкоголя"], "НЕТ");
+            clickYesNo(["запах ацетона"], "НЕТ");
+        }
+
+        // ЭКСПРЕСС-ПРОХОД ПО ВСЕМ ВКЛАДКАМ (заполняет ВСЮ карту целиком!)
+        const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
+        const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
+
+        function getTab(kw) {
+            return all.find(el => {
+                const rect = el.getBoundingClientRect();
+                const t = el.innerText ? el.innerText.toUpperCase() : '';
+                return rect.top >= 0 && rect.top < 140 && t.includes(kw);
+            });
+        }
+
+        let originalTab = getTab('ОБЪЕКТИВНЫЕ') || getTab('УТОЧНЕННЫЕ') || getTab('О ВЫЗОВЕ');
+
+        for (let kw of tabKeywords) {
+            let tab = getTab(kw);
+            if (tab) {
+                tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                tab.click();
+                await new Promise(r => setTimeout(r, 200));
+                fillCurrentScreen();
+            }
+        }
+
+        if (originalTab) {
+            originalTab.click();
+            await new Promise(r => setTimeout(r, 80));
+        }
+
+        if (fillBtn) fillBtn.innerText = "⚡";
     } catch (e) {
         console.error("Autofill error:", e);
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = "⚡";
     }
 };

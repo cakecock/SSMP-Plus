@@ -132,7 +132,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Современный BottomSheet поиска пациентов
     private fun showSearchDialog() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -141,7 +140,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.WHITE)
         }
 
-        // Индикатор перетаскивания (pull bar)
         val pullBar = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(100, 10).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -231,7 +229,6 @@ class MainActivity : AppCompatActivity() {
         performSearch("")
     }
 
-    // Современный экран истории вызовов с бейджами показателей и удалением
     private fun showPatientHistoryDialog(fio: String) {
         lifecycleScope.launch(Dispatchers.IO) {
             val history = dbHelper.getPatientHistory(fio).toMutableList()
@@ -247,7 +244,6 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(Color.WHITE)
                 }
 
-                // Индикатор вытягивания
                 root.addView(View(this@MainActivity).apply {
                     layoutParams = LinearLayout.LayoutParams(100, 10).apply {
                         gravity = Gravity.CENTER_HORIZONTAL
@@ -259,7 +255,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
 
-                // Шапка с кнопкой закрытия
                 val headerLayout = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -275,7 +270,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 headerLayout.addView(titleView)
 
-                // Кнопка удаления карты 🗑️
                 val deleteBtn = ImageButton(this@MainActivity).apply {
                     setImageResource(android.R.drawable.ic_menu_delete)
                     background = GradientDrawable().apply {
@@ -287,7 +281,6 @@ class MainActivity : AppCompatActivity() {
                 headerLayout.addView(deleteBtn)
                 root.addView(headerLayout)
 
-                // Переключатель вызовов
                 val spinner = Spinner(this@MainActivity).apply {
                     background = GradientDrawable().apply {
                         setColor(Color.parseColor("#E0F2F1"))
@@ -297,7 +290,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 root.addView(spinner)
 
-                // Скролл с полной картой
                 val scrollView = ScrollView(this@MainActivity).apply {
                     isFillViewport = true
                     setPadding(0, 16, 0, 10)
@@ -324,7 +316,6 @@ class MainActivity : AppCompatActivity() {
                     contentContainer.removeAllViews()
                     val json = try { JSONObject(item.jsonData) } catch (e: Exception) { JSONObject() }
 
-                    // Защита: скрываем удаление для встроенных карт
                     if (item.isBuiltin) {
                         deleteBtn.visibility = View.GONE
                     } else {
@@ -355,7 +346,6 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    // Медицинские бейджи показателей
                     val badgesLayout = LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.HORIZONTAL
                         setPadding(0, 12, 0, 12)
@@ -393,7 +383,6 @@ class MainActivity : AppCompatActivity() {
                     hScroll.addView(badgesLayout)
                     contentContainer.addView(hScroll)
 
-                    // Детальный текст
                     val detailsText = TextView(this@MainActivity).apply {
                         textSize = 15f
                         setTextIsSelectable(true)
@@ -441,4 +430,11 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("consciousness").isNotEmpty()) append("• Сознание: ${json.optString("consciousness")}\n")
 
                 val gScore = json.optString("glasgowScore")
-                val gTest = js
+                val gTest = json.optString("glasgowTest")
+                if (gScore.isNotEmpty() || gTest.isNotEmpty()) {
+                    append("• Шкала Глазго: ${if (gScore.isNotEmpty()) "$gScore баллов" else ""} ${if (gTest.isNotEmpty()) "($gTest)" else ""}\n")
+                }
+
+                if (json.optString("bpAdapted").isNotEmpty()) append("• Привычное АД: ${json.optString("bpAdapted")}\n")
+                if (json.optString("bp").isNotEmpty()) append("• АД на вызове: ${json.optString("bp")}\n")
+                if (json.optString("pulse").isNotEmpty()) a

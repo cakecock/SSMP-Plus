@@ -37,7 +37,6 @@ class MainActivity : AppCompatActivity() {
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
 
-        // Обработка кнопки и жеста "Назад"
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
@@ -53,7 +52,6 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Поддержка Cookies и сессий
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
@@ -71,7 +69,6 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Полифилл Notification для предотвращения падения React
         val polyfillScript = """
             if (typeof window.Notification === 'undefined') {
                 function MockNotification(title, options) {
@@ -129,7 +126,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Окно поиска со списком уникальных пациентов и количеством вызовов
     private fun showSearchDialog() {
         val dialogView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -184,7 +180,6 @@ class MainActivity : AppCompatActivity() {
         performSearch("")
     }
 
-    // Окно чтения полной карты со скроллом, переключателем вызовов и копированием
     private fun showPatientHistoryDialog(fio: String) {
         lifecycleScope.launch(Dispatchers.IO) {
             val history = dbHelper.getPatientHistory(fio)
@@ -198,7 +193,6 @@ class MainActivity : AppCompatActivity() {
                     setPadding(35, 20, 35, 10)
                 }
 
-                // Выпадающий переключатель прошлых вызовов
                 val spinnerTitles = history.mapIndexed { idx, item ->
                     val date = sdf.format(Date(item.timestamp))
                     val json = try { JSONObject(item.jsonData) } catch (e: Exception) { JSONObject() }
@@ -213,7 +207,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 container.addView(spinner)
 
-                // Область со скроллом для чтения подробной карты
                 val scrollView = ScrollView(this@MainActivity).apply {
                     isFillViewport = true
                     setPadding(0, 20, 0, 10)
@@ -221,7 +214,7 @@ class MainActivity : AppCompatActivity() {
 
                 val detailsText = TextView(this@MainActivity).apply {
                     textSize = 15f
-                    setTextIsSelectable(true) // Позволяет выделять и копировать текст пальцем
+                    setTextIsSelectable(true)
                     typeface = Typeface.DEFAULT
                 }
                 scrollView.addView(detailsText)
@@ -250,7 +243,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Красивое форматирование всей медицинской информации
     private fun formatFullCard(jsonData: String): String {
         return try {
             val json = JSONObject(jsonData)
@@ -268,7 +260,6 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("generalState").isNotEmpty()) append("• Состояние: ${json.optString("generalState")}\n")
                 if (json.optString("consciousness").isNotEmpty()) append("• Сознание: ${json.optString("consciousness")}\n")
 
-                // Шкала Глазго
                 val gScore = json.optString("glasgowScore")
                 val gTest = json.optString("glasgowTest")
                 if (gScore.isNotEmpty() || gTest.isNotEmpty()) {
@@ -280,23 +271,34 @@ class MainActivity : AppCompatActivity() {
                 if (json.optString("pulse").isNotEmpty()) append("• Пульс: ${json.optString("pulse")} уд/мин\n")
                 if (json.optString("rr").isNotEmpty()) append("• ЧДД: ${json.optString("rr")} в мин\n")
                 if (json.optString("saturation").isNotEmpty()) append("• Сатурация SpO2: ${json.optString("saturation")}%\n")
-                if (json.optString("glucose").isNotEmpty()) append("• Сахар крови: ${json.optString("glucose")} ммоль/л\n")
+                if (json.optString("glucose").isNotEmpty()) append("• Сахар: ${json.optString("glucose")} ммоль/л\n")
                 if (json.optString("temp").isNotEmpty()) append("• Температура: ${json.optString("temp")}°C\n")
 
-                if (json.optString("heartSounds").isNotEmpty()) append("• Тоны сердца: ${json.optString("heartSounds")}\n")
-                if (json.optString("lungs").isNotEmpty()) append("• Дыхание: ${json.optString("lungs")}\n")
-                if (json.optString("percussion").isNotEmpty()) append("• Перкуссия легких: ${json.optString("percussion")}\n")
-                if (json.optString("abdomen").isNotEmpty()) append("• Живот: ${json.optString("abdomen")}\n")
+                // Чистые тоны, дыхание, живот без [object Object]
+                if (json.optString("heartSounds").isNotEmpty() && !json.optString("heartSounds").contains("[object")) {
+                    append("• Тоны сердца: ${json.optString("heartSounds")}\n")
+                }
+                if (json.optString("lungs").isNotEmpty() && !json.optString("lungs").contains("[object")) {
+                    append("• Дыхание: ${json.optString("lungs")}\n")
+                }
+                if (json.optString("percussion").isNotEmpty() && !json.optString("percussion").contains("[object")) {
+                    append("• Перкуссия: ${json.optString("percussion")}\n")
+                }
+                if (json.optString("abdomen").isNotEmpty() && !json.optString("abdomen").contains("[object")) {
+                    append("• Живот: ${json.optString("abdomen")}\n")
+                }
                 if (json.optString("localStatus").isNotEmpty()) append("• Локально: ${json.optString("localStatus")}\n")
 
                 if (json.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${json.optString("complaints")}\n")
-                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез заболевания:\n${json.optString("anamnesis")}\n")
+                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез:\n${json.optString("anamnesis")}\n")
                 if (json.optString("pastDiseases").isNotEmpty()) append("\n🩹 Перенесенные болезни:\n${json.optString("pastDiseases")}\n")
 
-                if (json.optString("medHelp").isNotEmpty() || json.optString("medications").isNotEmpty() || json.optString("therapyEffect").isNotEmpty()) {
+                val meds = json.optString("medications")
+                val medHelp = json.optString("medHelp")
+                if (medHelp.isNotEmpty() || (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ"))) {
                     append("\n💉 ОКАЗАННАЯ ПОМОЩЬ И ТЕРАПИЯ:\n")
-                    if (json.optString("medHelp").isNotEmpty()) append("• Помощь: ${json.optString("medHelp")}\n")
-                    if (json.optString("medications").isNotEmpty()) append("• Препараты: ${json.optString("medications")}\n")
+                    if (medHelp.isNotEmpty()) append("• Помощь: $medHelp\n")
+                    if (meds.isNotEmpty() && !meds.contains("О ВЫЗОВЕ")) append("• Препараты: $meds\n")
                     if (json.optString("attack").isNotEmpty()) append("• Приступ: ${json.optString("attack")}\n")
                     if (json.optString("therapyEffect").isNotEmpty()) append("• Эффект: ${json.optString("therapyEffect")}\n")
                     if (json.optString("callResult").isNotEmpty()) append("• Итог: ${json.optString("callResult")}\n")

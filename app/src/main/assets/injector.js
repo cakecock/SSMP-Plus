@@ -263,7 +263,6 @@
         if (callResult) snap.callResult = callResult;
     }
 
-    // Вспомогательная функция клика по верхней вкладке
     function getTabElement(kw) {
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
         return all.find(el => {
@@ -292,6 +291,35 @@
             originalTab.click();
             await new Promise(res => setTimeout(res, 80));
         }
+    }
+
+    // Умное извлечение ФИО даже с закрытых вкладок
+    async function resolvePatientFio() {
+        if (window.currentCardSnapshot && window.currentCardSnapshot.fio && window.currentCardSnapshot.fio.length >= 3) {
+            return window.currentCardSnapshot.fio;
+        }
+
+        let fio = findInputFuzzy(["фио пациента", "фио"]);
+        if (fio && fio.length >= 3) return fio;
+
+        // Если открыта 3-я или 4-я вкладка — перещелкиваемся на вкладку "О вызове"
+        let tab1 = getTabElement('О ВЫЗОВЕ') || getTabElement('УТОЧНЕННЫЕ');
+        let currTab = getTabElement('ОБЪЕКТИВНЫЕ') || getTabElement('МЕДИЦИНСКАЯ');
+
+        if (tab1) {
+            tab1.click();
+            await new Promise(r => setTimeout(r, 150));
+            fio = findInputFuzzy(["фио пациента", "фио"]);
+            if (currTab) {
+                currTab.click();
+                await new Promise(r => setTimeout(r, 80));
+            }
+            if (fio && fio.length >= 3) {
+                window.currentCardSnapshot.fio = fio;
+                return fio;
+            }
+        }
+        return "";
     }
 
     let bar = document.getElementById('b103-toolbar');
@@ -365,16 +393,21 @@
             if (window.AndroidBridge && snap.fio) {
                 AndroidBridge.saveCardData(JSON.stringify(snap));
             } else {
-                alert("Укажите ФИО пациента");
+                alert("Укажите ФИО пациента для сохранения");
             }
         };
 
-        document.getElementById('btn-fill-db').onclick = function() {
-            const fio = findInputFuzzy(["фио пациента", "фио"]);
+        // НАЖАТИЕ АВТОЗАПОЛНЕНИЯ ⚡
+        document.getElementById('btn-fill-db').onclick = async function() {
+            const btn = document.getElementById('btn-fill-db');
+            btn.innerText = "⏳";
+            const fio = await resolvePatientFio();
+            btn.innerText = "⚡";
+
             if (window.AndroidBridge && fio) {
                 AndroidBridge.requestAutofill(fio);
             } else {
-                alert("Сначала укажите ФИО пациента");
+                alert("Не удалось определить фамилию. Откройте на секунду вкладку 'О вызове'!");
             }
         };
     }
@@ -429,15 +462,14 @@
 })();
 
 // ==========================================
-// ИНТЕЛЛЕКТУАЛЬНОЕ АВТОЗАПОЛНЕНИЕ (АВТОПИЛОТ)
+// ИНТЕЛЛЕКТУАЛЬНЫЙ АВТОПИЛОТ (ВЫПОЛНЕНИЕ)
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
     try {
-        const data = JSON.parse(jsonStr);
+        const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
         const fillBtn = document.getElementById('btn-fill-db');
         if (fillBtn) fillBtn.innerText = "⏳";
 
-        // 1. Нативный установщик значений для виртуального DOM React
         function setReactValue(input, value) {
             if (!input || value === undefined || value === null || value === "") return;
             try {
@@ -471,7 +503,6 @@ window.applyAutofill = async function(jsonStr) {
             return null;
         }
 
-        // 2. Авто-клик по кнопкам-опциям (Пол, Положение, Зрачки, Исход)
         function clickOption(targetText) {
             if (!targetText) return;
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
@@ -480,13 +511,10 @@ window.applyAutofill = async function(jsonStr) {
                 const clickable = btn.closest('button, div[role="button"], [class*="btn"]') || btn;
                 const style = window.getComputedStyle(clickable);
                 const isAlreadyActive = style.backgroundColor.includes("0, 121") || style.backgroundColor.includes("0, 105") || clickable.className.includes("active");
-                if (!isAlreadyActive) {
-                    clickable.click();
-                }
+                if (!isAlreadyActive) clickable.click();
             }
         }
 
-        // 3. Авто-клик переключателей ДА / НЕТ
         function clickYesNo(labelKeywords, choice) {
             if (!choice) return;
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
@@ -509,7 +537,6 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // 4. Заполнение двойного АД вокруг косой черты "/"
         function fillDualBP(isAdapted, bpStr) {
             if (!bpStr || !bpStr.includes('/')) return;
             const parts = bpStr.split('/');
@@ -532,9 +559,7 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Заполнение полей открытого в данный момент экрана
         function fillCurrentScreen() {
-            // Текстовые поля и анамнез
             setReactValue(findInputForFill(["жалобы"]), data.complaints);
             setReactValue(findInputForFill(["анамнез заболевания", "анамнез"]), data.anamnesis);
             setReactValue(findInputForFill(["перенесенные заболевания"]), data.pastDiseases);
@@ -542,15 +567,11 @@ window.applyAutofill = async function(jsonStr) {
             setReactValue(findInputForFill(["код по мкб"]), data.mkb);
             setReactValue(findInputForFill(["локальный статус"]), data.localStatus);
 
-            // АД
             if (data.bpAdapted) fillDualBP(true, data.bpAdapted);
-            if (data.bp) fillDualBP(false, data.bp);
 
-            // ЭКГ
             setReactValue(findInputForFill(["экг до оказания", "экг до"]), data.ecgBefore);
             setReactValue(findInputForFill(["экг после оказания", "экг после"]), data.ecgAfter);
 
-            // Стандартный неврологический статус по умолчанию
             setReactValue(findInputForFill(["шкала комы глазго (баллы)", "глазго (баллы)"]), data.glasgowScore || "15");
             setReactValue(findInputForFill(["тонус мышц"]), "Норма");
             setReactValue(findInputForFill(["патологические рефлексы"]), "Нет");
@@ -559,7 +580,6 @@ window.applyAutofill = async function(jsonStr) {
             setReactValue(findInputForFill(["язык"]), data.tongue || "Влажный, не обложен");
             setReactValue(findInputForFill(["слизистые"]), data.mucous || "Чистые");
 
-            // Нажатие кнопок-переключателей
             if (data.gender) clickOption(data.gender);
             clickOption(data.position || "АКТИВНОЕ");
             clickOption(data.behavior || "СПОКОЙНОЕ");
@@ -571,12 +591,10 @@ window.applyAutofill = async function(jsonStr) {
             clickOption(data.liver || "НЕ УВЕЛИЧЕНА");
             clickOption(data.urination || "НЕ НАРУШЕНО");
 
-            // Исход и помощь
             clickOption(data.attack || "КУПИРОВАН");
             clickOption(data.therapyEffect || "УЛУЧШЕНИЕ");
             clickOption(data.callResult || "ОСТАВЛЕН НА МЕСТЕ");
 
-            // Да / Нет переключатели
             clickYesNo(["аллергия"], data.allergy || "НЕТ");
             clickYesNo(["реакция на свет"], data.lightReaction || "ДА");
             clickYesNo(["высыпания"], "НЕТ");
@@ -588,7 +606,7 @@ window.applyAutofill = async function(jsonStr) {
             clickYesNo(["запах ацетона"], "НЕТ");
         }
 
-        // ЭКСПРЕСС-ПРОХОД ПО ВСЕМ ВКЛАДКАМ (заполняет ВСЮ карту целиком!)
+        // Обход всех вкладок для тотального заполнения карты
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
 

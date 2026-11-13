@@ -44,7 +44,7 @@
         return "";
     }
 
-    // Точный сбор АД по разделителю косой черты "/"
+    // Точный сбор АД строго по косой черте "/"
     function extractBPBySlash(isAdapted) {
         const all = Array.from(document.querySelectorAll('*'));
         const slashes = all.filter(el => el.children.length === 0 && el.textContent.trim() === '/');
@@ -56,9 +56,7 @@
                 const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное") && !text.includes("после"));
                 if (isMatch) {
                     const inputs = Array.from(container.querySelectorAll('input')).filter(i => /^\d{1,3}$/.test(i.value.trim()));
-                    if (inputs.length >= 2) {
-                        return `${inputs[0].value}/${inputs[1].value}`;
-                    }
+                    if (inputs.length >= 2) return `${inputs[0].value}/${inputs[1].value}`;
                 }
             }
         }
@@ -125,13 +123,11 @@
                     const drugName = lines[0];
                     const qtyFull = lines[qIndex];
                     const routeLine = lines.find(l => l.includes("Путь введения:"));
-                    
                     let cleanQty = qtyFull.replace(/Количество:\s*/i, '').trim();
                     let cleanRoute = '';
                     if (routeLine && !routeLine.includes("не определен")) {
                         cleanRoute = ` [${routeLine.replace(/Путь введения:\s*/i, '').trim()}]`;
                     }
-                    
                     if (drugName && !drugName.includes("Лекарственные") && !drugName.includes("ДОБАВИТЬ")) {
                         items.push(`${drugName} — ${cleanQty}${cleanRoute}`);
                     }
@@ -152,7 +148,6 @@
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
-        // Вкладка "О вызове"
         const fio = findInputFuzzy(["фио пациента", "фио"]);
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
@@ -172,7 +167,6 @@
         const apo = getDropdownOrChipsValue(["территориальная апо"]);
         if (apo) snap.apo = apo;
 
-        // Вкладка "Уточненные сведения"
         const complaints = findInputFuzzy(["жалобы"]);
         if (complaints) snap.complaints = complaints;
         const anamnesis = findInputFuzzy(["анамнез заболевания", "анамнез"]);
@@ -183,7 +177,6 @@
         const allergy = getYesNoToggle(["аллергия"]);
         if (allergy) snap.allergy = allergy;
 
-        // Вкладка "Объективные данные"
         const genState = getDropdownOrChipsValue(["общее состояние"]);
         if (genState) snap.generalState = genState;
         const consciousness = getDropdownOrChipsValue(["сознание"]);
@@ -196,7 +189,6 @@
         const gScore = findInputFuzzy(["шкала комы глазго (баллы)", "глазго (баллы)"]);
         if (gScore) snap.glasgowScore = gScore;
 
-        // Чистое АД без захвата чужих полей
         const bp = extractBPBySlash(false);
         if (bp) snap.bp = bp;
         const bpAdapt = extractBPBySlash(true);
@@ -214,7 +206,6 @@
         const gluc = findInputFuzzy(["гликемия 1", "гликемия", "сахар"]);
         if (gluc) snap.glucose = gluc;
 
-        // Органы
         const heart = getDropdownOrChipsValue(["тоны сердца"]);
         if (heart) snap.heartSounds = heart;
         const lungs = getDropdownOrChipsValue(["дыхание"]);
@@ -226,7 +217,6 @@
         const localStatus = findInputFuzzy(["локальный статус"]);
         if (localStatus) snap.localStatus = localStatus;
 
-        // Неврология
         const pupils = findActiveOption(["МИОЗ", "МИДРИАЗ", "АНИЗОКАРИЯ"]);
         if (pupils) snap.pupils = pupils;
         const lightReaction = getYesNoToggle(["реакция на свет"]);
@@ -254,7 +244,6 @@
         const urination = findActiveOption(["НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ"]);
         if (urination) snap.urination = urination;
 
-        // ЭКГ
         const ecgBefore = findInputFuzzy(["экг до оказания", "экг до"]);
         if (ecgBefore) snap.ecgBefore = ecgBefore;
         const ecgAfter = findInputFuzzy(["экг после оказания", "экг после"]);
@@ -265,7 +254,6 @@
         const mkb = findInputFuzzy(["код по мкб"]) || getDropdownOrChipsValue(["код по мкб"]);
         if (mkb) snap.mkb = mkb;
 
-        // Вкладка "Медицинская помощь"
         const meds = extractMedicationsCards();
         if (meds) snap.medications = meds;
 
@@ -319,13 +307,13 @@
         bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
         bar.style.alignItems = 'flex-end';
-        bar.style.gap = '10px';
+        bar.style.gap = '8px';
 
         const pillStyle = `
             border:none;
-            padding:11px 16px;
+            padding:10px 15px;
             border-radius:24px;
-            box-shadow:0 5px 15px rgba(0,0,0,0.25);
+            box-shadow:0 4px 14px rgba(0,0,0,0.25);
             font-size:12px;
             font-weight:700;
             cursor:pointer;
@@ -333,7 +321,6 @@
             text-align:right;
         `;
 
-        // Компактные круглые FAB кнопки
         const roundFabStyle = `
             width:48px;
             height:48px;
@@ -351,6 +338,9 @@
             <button id="btn-best-db" style="display:none;background:linear-gradient(135deg, #00897B, #F57F17);color:white;${pillStyle}">
                 ⭐ Образцы карт
             </button>
+            <button id="btn-mkb-db" style="display:none;background:linear-gradient(135deg, #00796B, #0288D1);color:white;${pillStyle}">
+                📖 Справочник МКБ
+            </button>
             <button id="btn-search-db" style="display:none;background:linear-gradient(135deg, #00695C, #004D40);color:white;${pillStyle}">
                 📂 Общий архив
             </button>
@@ -365,6 +355,10 @@
 
         document.getElementById('btn-best-db').onclick = function() {
             if (window.AndroidBridge) AndroidBridge.openBestCardsDialog();
+        };
+
+        document.getElementById('btn-mkb-db').onclick = function() {
+            if (window.AndroidBridge) AndroidBridge.openMkbDialog();
         };
 
         document.getElementById('btn-search-db').onclick = function() {
@@ -398,19 +392,22 @@
     function updateVisibility() {
         const inCard = isInsideCard();
         const btnBest = document.getElementById('btn-best-db');
+        const btnMkb = document.getElementById('btn-mkb-db');
         const btnSearch = document.getElementById('btn-search-db');
         const btnSave = document.getElementById('btn-save-db');
         const btnFill = document.getElementById('btn-fill-db');
 
-        if (btnBest && btnSearch && btnSave && btnFill) {
+        if (btnBest && btnMkb && btnSearch && btnSave && btnFill) {
             if (inCard) {
                 btnBest.style.display = 'none';
+                btnMkb.style.display = 'none';
                 btnSearch.style.display = 'none';
                 btnSave.style.display = 'flex';
                 btnFill.style.display = 'flex';
                 scanAndMergeVisibleFields();
             } else {
                 btnBest.style.display = 'block';
+                btnMkb.style.display = 'block';
                 btnSearch.style.display = 'block';
                 btnSave.style.display = 'none';
                 btnFill.style.display = 'none';

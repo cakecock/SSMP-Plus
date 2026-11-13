@@ -25,24 +25,55 @@ class MainActivity : AppCompatActivity() {
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
 
+        // 1. Включаем поддержку Cookie и сессий
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+        // 2. Полные настройки для React SPA
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            allowContentAccess = true
             allowFileAccess = true
+            allowContentAccess = true
+            loadWithOverviewMode = true
+            useWideViewPort = true
+            cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            // Притворяемся полноценным мобильным Chrome, чтобы сайт не выдавал пустую страницу
+            // Корректный User-Agent современного мобильного Chrome
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        webView.webChromeClient = WebChromeClient()
+        // Включаем возможность отладки
+        WebView.setWebContentsDebuggingEnabled(true)
+
+        // Перехватываем ошибки JavaScript в консоли и показываем их
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                if (consoleMessage?.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    val msg = consoleMessage.message()
+                    // Игнорируем мелкие предупреждения о CSS
+                    if (!msg.contains("CSS_CHUNK_LOAD_FAILED")) {
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Ошибка JS: $msg", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                return super.onConsoleMessage(consoleMessage)
+            }
+        }
 
         webView.webViewClient = object : WebViewClient() {
-            // Игнорируем ошибки ведомственных сертификатов (ГосСУОК / Минздрав)
+            // Пропуск сертификатов Минздрава/ГосСУОК
             @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                 handler?.proceed()
+            }
+
+            // Удерживаем все переходы строго внутри приложения
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                return false
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -51,6 +82,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         webView.loadUrl("https://soft.103brest.by/ssmp/")
     }
 

@@ -42,13 +42,57 @@ class MainActivity : AppCompatActivity() {
                         finish()
                     } else {
                         backPressedTime = System.currentTimeMillis()
+package by.brest103.ssmpplus
+
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.net.http.SslError
+import android.os.Bundle
+import android.webkit.*
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private lateinit var dbHelper: DatabaseHelper
+    private var backPressedTime: Long = 0
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        dbHelper = DatabaseHelper(this)
+        webView = findViewById(R.id.webView)
+
+        // Обработка жестов "Назад" и физической кнопки
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    // Возврат из карты вызова назад к списку карт
+                    webView.goBack()
+                } else {
+                    // Мы на главном экране: выход по двойному свайпу/нажатию
+                    if (System.currentTimeMillis() - backPressedTime < 2000) {
+                        finish()
+                    } else {
+                        backPressedTime = System.currentTimeMillis()
                         Toast.makeText(this@MainActivity, "Нажмите назад ещё раз для выхода", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
         })
 
-        // Поддержка Cookies
+        // Поддержка Cookies и авторизационных сессий
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
@@ -66,7 +110,7 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Полифилл Notification: устраняем падение React
+        // Полифилл Notification: предотвращает падение React-движка сайта
         val polyfillScript = """
             if (typeof window.Notification === 'undefined') {
                 function MockNotification(title, options) {
@@ -125,6 +169,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class WebAppInterface {
+        // Принудительное сохранение по кнопке "Запомнить карту"
         @JavascriptInterface
         fun saveCardData(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -150,6 +195,36 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Автоматическое сохранение новых пациентов при первичном заполнении
+        @JavascriptInterface
+        fun autoSaveCardData(jsonStr: String) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val json = JSONObject(jsonStr)
+                    val fio = json.optString("fio").trim()
+                    if (fio.length < 5) return@launch
+
+                    // Проверяем: есть ли уже этот пациент в локальной базе?
+                    val existing = dbHelper.getBestCardForPatient(fio)
+                    if (existing == null) {
+                        val birthDate = json.optString("birthDate")
+                        var score = 0
+                        if (json.optString("anamnesis").length > 10) score += 40
+                        if (json.optString("complaints").isNotEmpty()) score += 30
+                        if (json.optString("bpAdapted").isNotEmpty()) score += 30
+
+                        dbHelper.saveCard(fio, birthDate, score, jsonStr)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(applicationContext, "Пациент $fio добавлен в базу", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        // Автозаполнение по кнопке "Автозаполнение"
         @JavascriptInterface
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {

@@ -3,13 +3,13 @@
         window.currentCardSnapshot = {};
     }
 
-    // Железобетонная проверка активности кнопки (белый текст на бирюзовом фоне)
+    let isAutofilling = false; // Флаг блокировки конфликтов сохранения
+
     function isButtonActive(el) {
         if (!el) return false;
         const btn = el.closest('button, div[role="button"], [class*="btn"]') || el;
         const s = window.getComputedStyle(btn);
         
-        // 1. Проверка системных классов активности
         if (btn.classList.contains('active') || 
             btn.classList.contains('q-btn--active') || 
             btn.classList.contains('v-btn--active') ||
@@ -18,14 +18,12 @@
             return true;
         }
 
-        // 2. Визуальная сигнатура: белый текст на цветном фоне
         const color = s.color;
         const bg = s.backgroundColor;
         const isWhiteText = color.includes('255, 255, 255') || color.includes('250, 250, 250');
         const isColoredBg = !bg.includes('rgba(0, 0, 0, 0)') && !bg.includes('255, 255, 255') && !bg.includes('transparent');
         if (isWhiteText && isColoredBg) return true;
 
-        // 3. Бирюзовые оттенки сайта 103
         if (bg.includes('0, 121') || bg.includes('0, 105') || bg.includes('0, 137') || bg.includes('0, 77') || bg.includes('38, 166')) {
             return true;
         }
@@ -161,7 +159,7 @@
     }
 
     function scanAndMergeVisibleFields() {
-        if (!isInsideCard()) return;
+        if (!isInsideCard() || isAutofilling) return; // Не сканируем во время автозаполнения
         const snap = window.currentCardSnapshot;
 
         const fioInp = findInputNearLabel(["фио пациента", "фио"]);
@@ -318,9 +316,7 @@
         }
 
         let inp = findInputNearLabel(["фио пациента", "фио"]);
-        if (inp && inp.value.trim().length >= 3) {
-            return inp.value.trim();
-        }
+        if (inp && inp.value.trim().length >= 3) return inp.value.trim();
 
         let tab1 = getTabElement('О ВЫЗОВЕ') || getTabElement('УТОЧНЕННЫЕ');
         let currTab = getTabElement('ОБЪЕКТИВНЫЕ') || getTabElement('МЕДИЦИНСКАЯ');
@@ -466,31 +462,27 @@
 })();
 
 // ==========================================
-// ИНТЕЛЛЕКТУАЛЬНЫЙ АВТОПИЛОТ (БЕЗ МИГАНИЯ И СБРОСОВ)
+// ИНТЕЛЛЕКТУАЛЬНЫЙ АВТОПИЛОТ (С ЗАЩИТОЙ ОТ ГОНОК)
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
+    let isAutofilling = true; // Блокируем параллельное автосохранение
+    const fillBtn = document.getElementById('btn-fill-db');
+    if (fillBtn) fillBtn.innerText = "⏳";
+
     try {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-        const fillBtn = document.getElementById('btn-fill-db');
-        if (fillBtn) fillBtn.innerText = "⏳";
 
-        // Принудительная перезапись поля с предварительной очисткой старого мусора
         function setInputValue(input, value) {
             if (!input || value === undefined || value === null) return;
             const strVal = String(value).trim();
             if (strVal === "") return;
-            
-            // Если значение уже в точности такое же — не дергаем DOM
             if (input.value.trim() === strVal) return;
 
             try {
                 input.focus();
-                
-                // 1. Очищаем старое неверное значение
                 input.value = '';
                 input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
 
-                // 2. Вставляем новое через нативный прототип
                 const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                 if (setter) {
@@ -523,15 +515,12 @@ window.applyAutofill = async function(jsonStr) {
             return null;
         }
 
-        // БЕЗОПАСНЫЙ КЛИК ПО КНОПКЕ: если кнопка УЖЕ активна — мы её НЕ трогаем!
         function selectOption(targetText) {
             if (!targetText) return;
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"], [class*="btn"], span, a'));
             const targetBtn = buttons.find(b => b.children.length === 0 && b.innerText.trim().toUpperCase() === targetText.toUpperCase());
             if (targetBtn) {
                 const clickable = targetBtn.closest('button, div[role="button"], [class*="btn"]') || targetBtn;
-                
-                // Проверяем: если уже активна — кликать ЗАПРЕЩЕНО (чтобы не отжать обратно!)
                 const style = window.getComputedStyle(clickable);
                 const color = style.color;
                 const bg = style.backgroundColor;
@@ -545,7 +534,6 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // БЕЗОПАСНЫЙ КЛИК ДА / НЕТ
         function selectYesNo(labelKeywords, targetChoice) {
             if (!targetChoice) return;
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
@@ -645,10 +633,8 @@ window.applyAutofill = async function(jsonStr) {
             selectYesNo(["запах ацетона"], "НЕТ");
         }
 
-        // 1. СНАЧАЛА ЗАПОЛНЯЕМ ЭКРАН, НА КОТОРОМ ТЫ СЕЙЧАС (МГНОВЕННО)
         fillCurrentScreen();
 
-        // 2. ЗАТЕМ ТИХО ПРОХОДИМСЯ ТОЛЬКО ПО ДРУГИМ ВКЛАДКАМ (БЕЗ ДВОЙНЫХ ПЕРЕКЛЮЧЕНИЙ)
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
 
@@ -662,7 +648,6 @@ window.applyAutofill = async function(jsonStr) {
 
         let originalTab = getTab('ОБЪЕКТИВНЫЕ') || getTab('УТОЧНЕННЫЕ') || getTab('О ВЫЗОВЕ');
 
-        // Проходимся по вкладкам аккуратно
         for (let kw of tabKeywords) {
             let tab = getTab(kw);
             if (tab && tab !== originalTab) {
@@ -674,7 +659,6 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Возвращаемся на исходную вкладку
         if (originalTab) {
             originalTab.click();
             await new Promise(r => setTimeout(r, 80));
@@ -683,7 +667,8 @@ window.applyAutofill = async function(jsonStr) {
         if (fillBtn) fillBtn.innerText = "⚡";
     } catch (e) {
         console.error("Autofill error:", e);
-        const fillBtn = document.getElementById('btn-fill-db');
         if (fillBtn) fillBtn.innerText = "⚡";
+    } finally {
+        setTimeout(() => { isAutofilling = false; }, 1000);
     }
 };

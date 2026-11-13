@@ -1,12 +1,15 @@
 package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Bundle
 import android.webkit.*
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -25,12 +28,11 @@ class MainActivity : AppCompatActivity() {
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
 
-        // 1. Включаем поддержку Cookie и сессий
+        // Поддержка Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        // 2. Полные настройки для React SPA
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -41,19 +43,36 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            // Корректный User-Agent современного мобильного Chrome
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Включаем возможность отладки
+        // Полифилл Notification: устраняем падение React до загрузки DOM
+        val polyfillScript = """
+            if (typeof window.Notification === 'undefined') {
+                function MockNotification(title, options) {
+                    this.title = title;
+                    this.options = options;
+                    this.close = function() {};
+                }
+                MockNotification.permission = 'granted';
+                MockNotification.requestPermission = function(cb) {
+                    if (typeof cb === 'function') cb('granted');
+                    return Promise.resolve('granted');
+                };
+                window.Notification = MockNotification;
+            }
+        """.trimIndent()
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, polyfillScript, setOf("*"))
+        }
+
         WebView.setWebContentsDebuggingEnabled(true)
 
-        // Перехватываем ошибки JavaScript в консоли и показываем их
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 if (consoleMessage?.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
                     val msg = consoleMessage.message()
-                    // Игнорируем мелкие предупреждения о CSS
                     if (!msg.contains("CSS_CHUNK_LOAD_FAILED")) {
                         runOnUiThread {
                             Toast.makeText(this@MainActivity, "Ошибка JS: $msg", Toast.LENGTH_LONG).show()
@@ -65,15 +84,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
-            // Пропуск сертификатов Минздрава/ГосСУОК
             @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                 handler?.proceed()
             }
 
-            // Удерживаем все переходы строго внутри приложения
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 return false
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // Дублируем внедрение заглушки на старте страницы
+                view?.evaluateJavascript(polyfillScript, null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {

@@ -139,10 +139,12 @@ class MainActivity : AppCompatActivity() {
                 val list = ArrayList<MkbCodeItem>(arr.length())
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    val c = obj.optString("c")
-                    val n = obj.optString("n")
-                    if (c.isNotEmpty()) {
-                        val letter = c[0].uppercaseChar().toString()
+                    val c = obj.optString("c").trim().uppercase()
+                    val n = obj.optString("n").trim()
+                    
+                    // Строгая фильтрация: первая буква A-Z + наличие цифры
+                    if (c.length >= 3 && c[0] in 'A'..'Z' && c.any { it.isDigit() }) {
+                        val letter = c[0].toString()
                         list.add(MkbCodeItem(c, n, letter))
                     }
                 }
@@ -162,7 +164,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Выезжающий справочник по полной базе МКБ-10
     private fun openMkbSheet() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -180,7 +181,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
+            text = "📖 Справочник МКБ-10 (${fullMkbList.size} диагнозов)"
             textSize = 19f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#00695C"))
@@ -210,7 +211,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(chipsScroll)
 
         val searchInput = EditText(this).apply {
-            hint = "Поиск (код или диагноз, напр. I48, инфаркт)..."
+            hint = "Поиск по коду или болезни (I48, инфаркт)..."
             setPadding(35, 26, 35, 26)
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#E0F2F1"))
@@ -238,7 +239,7 @@ class MainActivity : AppCompatActivity() {
                 val matchCat = if (selectedCategory == "ALL") true else item.letter == selectedCategory
                 val matchText = q.isEmpty() || item.code.lowercase().contains(q) || item.name.lowercase().contains(q)
                 matchCat && matchText
-            }.take(70).toList()
+            }.take(80).toList()
 
             val titles = filtered.map { "[${it.code}] ${it.name}" }
             listView.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, titles) {

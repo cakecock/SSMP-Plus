@@ -238,7 +238,6 @@ class MainActivity : AppCompatActivity() {
         listView.setOnItemClickListener { _, _, pos, _ -> onClick(pos) }
     }
 
-    // Современный экран истории вызовов: зафиксированная верхняя панель (чипсы + бейджи)
     private fun showPatientHistoryDialog(fio: String) {
         lifecycleScope.launch(Dispatchers.IO) {
             val history = dbHelper.getPatientHistory(fio).toMutableList()
@@ -254,7 +253,6 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(Color.WHITE)
                 }
 
-                // Индикатор вытягивания
                 root.addView(View(this@MainActivity).apply {
                     layoutParams = LinearLayout.LayoutParams(90, 8).apply {
                         gravity = Gravity.CENTER_HORIZONTAL
@@ -263,7 +261,6 @@ class MainActivity : AppCompatActivity() {
                     background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
                 })
 
-                // Шапка: Имя + кнопка Удалить
                 val header = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -285,35 +282,29 @@ class MainActivity : AppCompatActivity() {
                 header.addView(deleteBtn)
                 root.addView(header)
 
-                // ЗАФИКСИРОВАННЫЙ БЛОК: Горизонтальные кнопки-чипсы вызовов (вместо глючного спиннера!)
+                // Горизонтальные кнопки-чипсы вызовов
                 val callChipsScroll = HorizontalScrollView(this@MainActivity).apply {
                     isHorizontalScrollBarEnabled = false
                     setPadding(0, 4, 0, 10)
                 }
-                val callChipsLayout = LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                }
+                val callChipsLayout = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
                 callChipsScroll.addView(callChipsLayout)
                 root.addView(callChipsScroll)
 
-                // ЗАФИКСИРОВАННЫЙ БЛОК: Цветные медицинские бейджи (АД, ЧСС, SpO2)
+                // Зафиксированные медицинские бейджи
                 val badgesScroll = HorizontalScrollView(this@MainActivity).apply {
                     isHorizontalScrollBarEnabled = false
                     setPadding(0, 0, 0, 12)
                 }
-                val badgesLayout = LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                }
+                val badgesLayout = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
                 badgesScroll.addView(badgesLayout)
                 root.addView(badgesScroll)
 
-                // Тонкий стильный разделитель между шапкой и текстом
                 root.addView(View(this@MainActivity).apply {
                     layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
                     setBackgroundColor(Color.parseColor("#E0EAEA"))
                 })
 
-                // ЗОНА СКРОЛЛА (скроллится только текст карты!)
                 val scrollView = ScrollView(this@MainActivity).apply {
                     isFillViewport = true
                     setPadding(0, 12, 0, 10)
@@ -321,7 +312,7 @@ class MainActivity : AppCompatActivity() {
                 val detailsText = TextView(this@MainActivity).apply {
                     textSize = 15f
                     setTextIsSelectable(true)
-                    setTextColor(Color.parseColor("#263238")) // Четкий высококонтрастный темный цвет
+                    setTextColor(Color.parseColor("#263238"))
                     setLineSpacing(6f, 1.15f)
                     setPadding(4, 8, 4, 25)
                 }
@@ -334,7 +325,6 @@ class MainActivity : AppCompatActivity() {
                     val itm = history[selectedIndex]
                     val j = try { JSONObject(itm.jsonData) } catch (e: Exception) { JSONObject() }
 
-                    // Перерисовка кнопок вызовов
                     callChipsLayout.removeAllViews()
                     history.forEachIndexed { idx, card ->
                         val date = sdf.format(Date(card.timestamp))
@@ -361,7 +351,6 @@ class MainActivity : AppCompatActivity() {
                         callChipsLayout.addView(chip)
                     }
 
-                    // Перерисовка цветных бейджей
                     badgesLayout.removeAllViews()
                     fun addB(t: String, c: String) {
                         badgesLayout.addView(TextView(this@MainActivity).apply {
@@ -376,13 +365,12 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     val bp = j.optString("bp").ifEmpty { j.optString("bpAdapted") }
-                    if (bp.isNotEmpty() && !bp.contains(".202")) addB("❤️ $bp", "#E53935")
+                    if (bp.isNotEmpty() && !bp.contains("ул.") && !bp.contains(".")) addB("❤️ $bp", "#E53935")
                     if (j.optString("pulse").isNotEmpty()) addB("💓 ${j.optString("pulse")}", "#D81B60")
                     if (j.optString("saturation").isNotEmpty()) addB("🫁 ${j.optString("saturation")}%", "#00897B")
                     if (j.optString("glucose").isNotEmpty()) addB("🩸 ${j.optString("glucose")}", "#8E24AA")
                     if (j.optString("glasgowScore").isNotEmpty()) addB("🧠 ${j.optString("glasgowScore")} б", "#3949AB")
 
-                    // Обновление кнопки удаления
                     if (itm.isBuiltin) {
                         deleteBtn.visibility = View.GONE
                     } else {
@@ -397,9 +385,7 @@ class MainActivity : AppCompatActivity() {
                                             history.removeAt(selectedIndex)
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(this@MainActivity, "Удалено", Toast.LENGTH_SHORT).show()
-                                                if (history.isEmpty()) {
-                                                    bottomSheet.dismiss()
-                                                } else {
+                                                if (history.isEmpty()) bottomSheet.dismiss() else {
                                                     selectedIndex = 0
                                                     renderActiveCard()
                                                 }
@@ -434,20 +420,30 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("gender").isNotEmpty()) b.append("⚧ Пол: ${j.optString("gender")}\n")
             if (j.optString("address").isNotEmpty()) b.append("📍 Адрес: ${j.optString("address")}\n")
             if (j.optString("callReason").isNotEmpty()) b.append("🚨 Повод: ${j.optString("callReason")}\n")
+            if (j.optString("apo").isNotEmpty()) b.append("🏥 АПО: ${j.optString("apo")}\n")
 
             b.append("\n📋 ДИАГНОЗ:\n• ${j.optString("diagnosis")}\n")
             if (j.optString("mkb").isNotEmpty()) b.append("• Код МКБ: ${j.optString("mkb")}\n")
+
+            val ecgB = j.optString("ecgBefore")
+            val ecgA = j.optString("ecgAfter")
+            if (ecgB.isNotEmpty() || ecgA.isNotEmpty()) {
+                b.append("\n📈 ЭКГ:\n")
+                if (ecgB.isNotEmpty()) b.append("• До помощи: $ecgB\n")
+                if (ecgA.isNotEmpty()) b.append("• После помощи: $ecgA\n")
+            }
 
             b.append("\n🩺 ОБЪЕКТИВНО:\n")
             if (j.optString("generalState").isNotEmpty()) b.append("• Состояние: ${j.optString("generalState")}\n")
             if (j.optString("consciousness").isNotEmpty()) b.append("• Сознание: ${j.optString("consciousness")}\n")
             if (j.optString("position").isNotEmpty()) b.append("• Положение: ${j.optString("position")}\n")
+            if (j.optString("behavior").isNotEmpty()) b.append("• Поведение: ${j.optString("behavior")}\n")
             if (j.optString("glasgowScore").isNotEmpty()) b.append("• Глазго: ${j.optString("glasgowScore")} б\n")
 
             val bpAd = j.optString("bpAdapted")
-            if (bpAd.isNotEmpty() && !bpAd.contains(".202")) b.append("• Привычное АД: $bpAd\n")
+            if (bpAd.isNotEmpty() && !bpAd.contains(".")) b.append("• Привычное АД: $bpAd\n")
             val bp = j.optString("bp")
-            if (bp.isNotEmpty() && !bp.contains(".202")) b.append("• АД на вызове: $bp\n")
+            if (bp.isNotEmpty() && !bp.contains(".")) b.append("• АД на вызове: $bp\n")
 
             if (j.optString("pulse").isNotEmpty()) b.append("• Пульс: ${j.optString("pulse")} уд/мин\n")
             if (j.optString("rr").isNotEmpty()) b.append("• ЧДД: ${j.optString("rr")} в мин\n")
@@ -455,14 +451,25 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("glucose").isNotEmpty()) b.append("• Сахар крови: ${j.optString("glucose")} ммоль/л\n")
             if (j.optString("temp").isNotEmpty()) b.append("• Температура: ${j.optString("temp")}°C\n")
 
-            if (j.optString("heartSounds").isNotEmpty() && !j.optString("heartSounds").contains("[object")) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
-            if (j.optString("lungs").isNotEmpty() && !j.optString("lungs").contains("[object")) b.append("• Дыхание: ${j.optString("lungs")}\n")
-            if (j.optString("percussion").isNotEmpty() && !j.optString("percussion").contains("[object")) b.append("• Перкуссия: ${j.optString("percussion")}\n")
-            if (j.optString("abdomen").isNotEmpty() && !j.optString("abdomen").contains("[object")) b.append("• Живот: ${j.optString("abdomen")}\n")
+            if (j.optString("heartSounds").isNotEmpty()) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
+            if (j.optString("lungs").isNotEmpty()) b.append("• Дыхание: ${j.optString("lungs")}\n")
+            if (j.optString("percussion").isNotEmpty()) b.append("• Перкуссия: ${j.optString("percussion")}\n")
+            if (j.optString("abdomen").isNotEmpty()) b.append("• Живот: ${j.optString("abdomen")}\n")
 
             if (j.optString("pupils").isNotEmpty()) b.append("• Зрачки: ${j.optString("pupils")}\n")
+            if (j.optString("lightReaction").isNotEmpty()) b.append("• Реакция на свет: ${j.optString("lightReaction")}\n")
             if (j.optString("speech").isNotEmpty()) b.append("• Речь: ${j.optString("speech")}\n")
             if (j.optString("face").isNotEmpty()) b.append("• Лицо: ${j.optString("face")}\n")
+            if (j.optString("gait").isNotEmpty()) b.append("• Походка: ${j.optString("gait")}\n")
+            if (j.optString("nystagmus").isNotEmpty()) b.append("• Нистагм: ${j.optString("nystagmus")}\n")
+
+            if (j.optString("skin").isNotEmpty()) b.append("• Кожа: ${j.optString("skin")}\n")
+            if (j.optString("tongue").isNotEmpty()) b.append("• Язык: ${j.optString("tongue")}\n")
+            if (j.optString("mucous").isNotEmpty()) b.append("• Слизистые: ${j.optString("mucous")}\n")
+
+            if (j.optString("peristalsis").isNotEmpty()) b.append("• Перистальтика: ${j.optString("peristalsis")}\n")
+            if (j.optString("liver").isNotEmpty()) b.append("• Печень: ${j.optString("liver")}\n")
+            if (j.optString("urination").isNotEmpty()) b.append("• Мочеиспускание: ${j.optString("urination")}\n")
             if (j.optString("localStatus").isNotEmpty()) b.append("• Локально: ${j.optString("localStatus")}\n")
 
             if (j.optString("complaints").isNotEmpty()) b.append("\n🗣️ Жалобы:\n${j.optString("complaints")}\n")
@@ -471,14 +478,16 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("allergy").isNotEmpty()) b.append("⚠️ Аллергия: ${j.optString("allergy")}\n")
 
             val meds = j.optString("medications")
-            val help = j.optString("medHelp")
-            if (help.isNotEmpty() || meds.isNotEmpty()) {
+            val attack = j.optString("attack")
+            val effect = j.optString("therapyEffect")
+            val callResult = j.optString("callResult")
+
+            if (meds.isNotEmpty() || attack.isNotEmpty() || effect.isNotEmpty() || callResult.isNotEmpty()) {
                 b.append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
-                if (help.isNotEmpty()) b.append("• Помощь: $help\n")
-                if (meds.isNotEmpty()) b.append("• Препараты: $meds\n")
-                if (j.optString("attack").isNotEmpty()) b.append("• Приступ: ${j.optString("attack")}\n")
-                if (j.optString("therapyEffect").isNotEmpty()) b.append("• Эффект: ${j.optString("therapyEffect")}\n")
-                if (j.optString("callResult").isNotEmpty()) b.append("• Итог: ${j.optString("callResult")}\n")
+                if (meds.isNotEmpty()) b.append("• Препараты:\n• $meds\n")
+                if (attack.isNotEmpty()) b.append("• Приступ: $attack\n")
+                if (effect.isNotEmpty()) b.append("• Эффект: $effect\n")
+                if (callResult.isNotEmpty()) b.append("• Итог: $callResult\n")
             }
             b.toString()
         } catch (e: Exception) { "Ошибка" }

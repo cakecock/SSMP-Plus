@@ -1,4 +1,4 @@
-name: Build SSMP Plus APK
+name: Build and Release SSMP Plus
 
 on:
   push:
@@ -38,8 +38,6 @@ jobs:
           git add ssmp-release.jks
           git commit -m "chore: save permanent keystore [skip ci]" || true
           git push || true
-        else
-          echo "Permanent keystore already exists."
         fi
 
     - name: Setup Gradle 8.5
@@ -47,11 +45,25 @@ jobs:
       with:
         gradle-version: '8.5'
 
-    - name: Build Signed APK
-      run: gradle assembleRelease --no-daemon
+    - name: Build Signed APK with Auto-Version
+      run: |
+        gradle assembleRelease \
+          -PappVersionCode=${{ github.run_number }} \
+          -PappVersionName=1.0.${{ github.run_number }} \
+          --no-daemon
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: SSMP-Plus-Signed-APK
-        path: app/build/outputs/apk/release/*.apk
+    - name: Prepare APK for Release
+      run: |
+        cp app/build/outputs/apk/release/*.apk SSMP-Plus-v1.0.${{ github.run_number }}.apk
+
+    - name: Publish to GitHub Releases
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create v1.0.${{ github.run_number }} \
+          SSMP-Plus-v1.0.${{ github.run_number }}.apk \
+          --title "SSMP Plus v1.0.${{ github.run_number }}" \
+          --notes "### Обновление SSMP Plus
+          - **Версия:** 1.0.${{ github.run_number }} (сборка #${{ github.run_number }})
+          - Прямая установка APK без архивов.
+          - Автосохранение, интеллектуальное автозаполнение и локальный архив."

@@ -5,6 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val vCode = project.findProperty("appVersionCode")?.toString()?.toIntOrNull() ?: 1
+val vName = project.findProperty("appVersionName")?.toString() ?: "1.0.0"
+
 android {
     namespace = "by.brest103.ssmpplus"
     compileSdk = 34
@@ -13,8 +16,8 @@ android {
         applicationId = "by.brest103.ssmpplus"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = vCode
+        versionName = vName
     }
 
     signingConfigs {

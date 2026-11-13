@@ -93,19 +93,20 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return deletedRows > 0
     }
 
-    // Умный поиск карты: сначала по полному ФИО, а если не найдено — по фамилии
+    // Умный выбор лучшей карты из 5 последних вызовов
     fun getBestCardForPatient(fio: String): String? {
         val db = readableDatabase
         val cleanFio = fio.trim().lowercase()
         val surname = cleanFio.split(" ").firstOrNull()?.trim() ?: cleanFio
 
+        // Запрашиваем до 5 последних вызовов пациента
         val cursor = db.rawQuery(
             """
             SELECT id, score, json_data 
             FROM cards 
             WHERE fio = ? OR fio LIKE ? 
             ORDER BY (fio = ?) DESC, timestamp DESC 
-            LIMIT 2
+            LIMIT 5
             """.trimIndent(),
             arrayOf(cleanFio, "%$surname%", cleanFio)
         )
@@ -122,10 +123,15 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         if (list.size == 1) return list[0].second
 
         val latest = list[0]
-        val previous = list[1]
+        // 1. Если последний вызов свежий и хорошо заполнен (score >= 60%) — берем его
+        if (latest.first >= 60) {
+            return latest.second
+        }
 
-        return if (latest.first < 40 && previous.first >= 60) {
-            previous.second
+        // 2. Если последний вызов пустой или отказник (< 60%), ищем среди прошлых 4 вызовов самый полный
+        val bestPast = list.drop(1).maxByOrNull { it.first }
+        return if (bestPast != null && bestPast.first >= 50 && bestPast.first > latest.first) {
+            bestPast.second
         } else {
             latest.second
         }

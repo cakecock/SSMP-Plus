@@ -35,11 +35,7 @@ jobs:
     - name: Build Signed APK
       run: |
         chmod +x gradlew || gradle wrapper
-        ./gradlew assembleRelease \
-          -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/ssmp-release.jks \
-          -Pandroid.injected.signing.store.password=SSMP_Brest_2026_Secure \
-          -Pandroid.injected.signing.key.alias=ssmp_plus_key \
-          -Pandroid.injected.signing.key.password=SSMP_Brest_2026_Secure
+        ./gradlew assembleRelease --stacktrace --no-daemon
 
     - name: Upload APK
       uses: actions/upload-artifact@v4

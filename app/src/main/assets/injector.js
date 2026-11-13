@@ -35,14 +35,13 @@
         };
     }
 
-    // Автоматическое сохранение при заполнении
+    // Автосохранение при заполнении
     let autoSaveTimer = null;
     function triggerAutoSave() {
         if (!isInsideCard()) return;
         clearTimeout(autoSaveTimer);
         autoSaveTimer = setTimeout(() => {
             const data = collectCurrentData();
-            // Сохраняем, если есть ФИО и хотя бы какие-то сведения
             if (data.fio.length >= 5 && (data.anamnesis || data.complaints || data.bpAdapted)) {
                 if (window.AndroidBridge && window.AndroidBridge.autoSaveCardData) {
                     window.AndroidBridge.autoSaveCardData(JSON.stringify(data));
@@ -63,19 +62,28 @@
         bar.style.bottom = '85px';
         bar.style.right = '16px';
         bar.style.zIndex = '99999';
-        bar.style.display = 'none';
+        bar.style.display = 'flex';
         bar.style.flexDirection = 'column';
         bar.style.gap = '8px';
 
         bar.innerHTML = `
-            <button id="btn-save-db" style="background:#00796B;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
+            <button id="btn-search-db" style="display:none;background:#00695C;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
+                🔍 Поиск в архиве
+            </button>
+            <button id="btn-save-db" style="display:none;background:#00796B;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
                 💾 Запомнить карту
             </button>
-            <button id="btn-fill-db" style="background:#0288D1;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
+            <button id="btn-fill-db" style="display:none;background:#0288D1;color:white;border:none;padding:10px 14px;border-radius:24px;box-shadow:0 3px 6px rgba(0,0,0,0.3);font-size:12px;font-weight:bold;cursor:pointer;">
                 ⚡ Автозаполнение
             </button>
         `;
         document.body.appendChild(bar);
+
+        document.getElementById('btn-search-db').onclick = function() {
+            if (window.AndroidBridge) {
+                AndroidBridge.openSearchDialog();
+            }
+        };
 
         document.getElementById('btn-save-db').onclick = function() {
             const payload = collectCurrentData();
@@ -97,8 +105,21 @@
     }
 
     function updateVisibility() {
-        if (bar) {
-            bar.style.display = isInsideCard() ? 'flex' : 'none';
+        const inCard = isInsideCard();
+        const btnSearch = document.getElementById('btn-search-db');
+        const btnSave = document.getElementById('btn-save-db');
+        const btnFill = document.getElementById('btn-fill-db');
+
+        if (btnSearch && btnSave && btnFill) {
+            if (inCard) {
+                btnSearch.style.display = 'none';
+                btnSave.style.display = 'block';
+                btnFill.style.display = 'block';
+            } else {
+                btnSearch.style.display = 'block';
+                btnSave.style.display = 'none';
+                btnFill.style.display = 'none';
+            }
         }
     }
 

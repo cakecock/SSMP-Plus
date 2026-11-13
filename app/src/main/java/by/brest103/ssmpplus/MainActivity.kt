@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity() {
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
 
-        // Обработка кнопки и жеста "Назад"
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
@@ -51,7 +50,6 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Поддержка Cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
@@ -69,7 +67,6 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        // Полифилл Notification
         val polyfillScript = """
             if (typeof window.Notification === 'undefined') {
                 function MockNotification(title, options) {
@@ -127,7 +124,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Окно встроенного поиска по локальному архиву
     private fun showSearchDialog() {
         val dialogView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -184,15 +180,27 @@ class MainActivity : AppCompatActivity() {
         try {
             val json = JSONObject(jsonData)
             val info = StringBuilder().apply {
-                append("ФИО: ${json.optString("fio")}\n")
-                if (json.optString("birthDate").isNotEmpty()) append("Дата рожд.: ${json.optString("birthDate")}\n")
-                if (json.optString("bpAdapted").isNotEmpty()) append("Адаптированное АД: ${json.optString("bpAdapted")}\n")
-                if (json.optString("complaints").isNotEmpty()) append("\nЖалобы:\n${json.optString("complaints")}\n")
-                if (json.optString("anamnesis").isNotEmpty()) append("\nАнамнез:\n${json.optString("anamnesis")}\n")
+                append("👤 ФИО: ${json.optString("fio")}\n")
+                if (json.optString("birthDate").isNotEmpty()) append("🎂 Дата рожд.: ${json.optString("birthDate")}\n")
+                if (json.optString("address").isNotEmpty()) append("📍 Адрес: ${json.optString("address")}\n")
+                if (json.optString("callReason").isNotEmpty()) append("🚨 Повод: ${json.optString("callReason")}\n")
+                
+                if (json.optString("bpAdapted").isNotEmpty()) append("❤️ Адаптированное АД: ${json.optString("bpAdapted")}\n")
+                if (json.optString("bp").isNotEmpty()) append("🩺 АД на вызове: ${json.optString("bp")}\n")
+                if (json.optString("pulse").isNotEmpty()) append("💓 Пульс: ${json.optString("pulse")}\n")
+                if (json.optString("saturation").isNotEmpty()) append("🫁 SpO2: ${json.optString("saturation")}%\n")
+                if (json.optString("glucose").isNotEmpty()) append("🩸 Гликемия: ${json.optString("glucose")} ммоль/л\n")
+                
+                if (json.optString("diagnosis").isNotEmpty()) append("\n📋 Диагноз: ${json.optString("diagnosis")}\n")
+                if (json.optString("mkb").isNotEmpty()) append("🔢 МКБ: ${json.optString("mkb")}\n")
+
+                if (json.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${json.optString("complaints")}\n")
+                if (json.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез:\n${json.optString("anamnesis")}\n")
+                if (json.optString("pastDiseases").isNotEmpty()) append("\n🩹 Перенесенные болезни:\n${json.optString("pastDiseases")}\n")
             }
 
             AlertDialog.Builder(this)
-                .setTitle("Данные из архива")
+                .setTitle("Полные данные из архива")
                 .setMessage(info.toString())
                 .setPositiveButton("Понятно", null)
                 .show()
@@ -219,14 +227,16 @@ class MainActivity : AppCompatActivity() {
                     if (fio.isEmpty()) return@launch
 
                     var score = 0
-                    if (json.optString("anamnesis").length > 10) score += 40
-                    if (json.optString("complaints").isNotEmpty()) score += 30
-                    if (json.optString("bpAdapted").isNotEmpty()) score += 30
+                    if (json.optString("anamnesis").length > 10) score += 30
+                    if (json.optString("complaints").isNotEmpty()) score += 20
+                    if (json.optString("bpAdapted").isNotEmpty()) score += 20
+                    if (json.optString("diagnosis").isNotEmpty()) score += 20
+                    if (json.optString("pastDiseases").isNotEmpty()) score += 10
 
-                    dbHelper.saveCard(fio, birthDate, score, jsonStr)
+                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
 
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(applicationContext, "Карта сохранена в локальную базу", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "Карта обновлена в архиве", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -242,19 +252,14 @@ class MainActivity : AppCompatActivity() {
                     val fio = json.optString("fio").trim()
                     if (fio.length < 5) return@launch
 
-                    val existing = dbHelper.getBestCardForPatient(fio)
-                    if (existing == null) {
-                        val birthDate = json.optString("birthDate")
-                        var score = 0
-                        if (json.optString("anamnesis").length > 10) score += 40
-                        if (json.optString("complaints").isNotEmpty()) score += 30
-                        if (json.optString("bpAdapted").isNotEmpty()) score += 30
+                    val birthDate = json.optString("birthDate")
+                    var score = 0
+                    if (json.optString("anamnesis").length > 10) score += 30
+                    if (json.optString("complaints").isNotEmpty()) score += 20
+                    if (json.optString("bpAdapted").isNotEmpty()) score += 20
+                    if (json.optString("diagnosis").isNotEmpty()) score += 20
 
-                        dbHelper.saveCard(fio, birthDate, score, jsonStr)
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(applicationContext, "Пациент $fio добавлен в базу", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -269,9 +274,9 @@ class MainActivity : AppCompatActivity() {
                     if (jsonCard != null) {
                         val safeJson = jsonCard.replace("'", "\\'")
                         webView.evaluateJavascript("applyAutofill('$safeJson');", null)
-                        Toast.makeText(applicationContext, "Данные автозаполнены из истории", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "Данные автозаполнены из архива", Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(applicationContext, "Пациент не найден в локальной базе", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "Пациент не найден в базе", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

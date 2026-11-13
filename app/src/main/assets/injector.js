@@ -65,7 +65,7 @@
     function findInputFuzzy(keywords) {
         const all = Array.from(document.querySelectorAll('label, div, span, p'));
         for (let kw of keywords) {
-            const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+            const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw) && !el.textContent.toLowerCase().includes("поиск"));
             if (target) {
                 let container = target.closest('.row, [class*="row"], .q-field, div');
                 if (container) {
@@ -142,11 +142,35 @@
         return (text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
 
+    // Извлечение ФИО пациента (СТРОГО исключая поиск в шапке!)
+    function getCleanPatientFio() {
+        if (window.currentCardSnapshot && window.currentCardSnapshot.fio && window.currentCardSnapshot.fio.length >= 3) {
+            return window.currentCardSnapshot.fio;
+        }
+
+        const all = Array.from(document.querySelectorAll('label, div, span, p'));
+        for (let el of all) {
+            if (el.children.length === 0) {
+                const t = el.textContent.trim().toLowerCase();
+                if ((t === "фио пациента" || t === "фио" || t === "пациент") && !t.includes("поиск")) {
+                    const container = el.closest('.row, [class*="row"], .q-field, div');
+                    if (container) {
+                        const inp = container.querySelector('input, textarea');
+                        if (inp && inp.value && inp.value.trim().length >= 3 && !inp.placeholder?.toLowerCase().includes("поиск")) {
+                            return inp.value.trim();
+                        }
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
     function scanAndMergeVisibleFields() {
         if (!isInsideCard()) return;
         const snap = window.currentCardSnapshot;
 
-        const fio = findInputFuzzy(["фио пациента", "фио"]);
+        const fio = getCleanPatientFio();
         if (fio && fio.length >= 3) {
             if (snap.fio && snap.fio.toLowerCase() !== fio.toLowerCase()) window.currentCardSnapshot = {};
             window.currentCardSnapshot.fio = fio;
@@ -293,35 +317,6 @@
         }
     }
 
-    // Умное извлечение ФИО даже с закрытых вкладок
-    async function resolvePatientFio() {
-        if (window.currentCardSnapshot && window.currentCardSnapshot.fio && window.currentCardSnapshot.fio.length >= 3) {
-            return window.currentCardSnapshot.fio;
-        }
-
-        let fio = findInputFuzzy(["фио пациента", "фио"]);
-        if (fio && fio.length >= 3) return fio;
-
-        // Если открыта 3-я или 4-я вкладка — перещелкиваемся на вкладку "О вызове"
-        let tab1 = getTabElement('О ВЫЗОВЕ') || getTabElement('УТОЧНЕННЫЕ');
-        let currTab = getTabElement('ОБЪЕКТИВНЫЕ') || getTabElement('МЕДИЦИНСКАЯ');
-
-        if (tab1) {
-            tab1.click();
-            await new Promise(r => setTimeout(r, 150));
-            fio = findInputFuzzy(["фио пациента", "фио"]);
-            if (currTab) {
-                currTab.click();
-                await new Promise(r => setTimeout(r, 80));
-            }
-            if (fio && fio.length >= 3) {
-                window.currentCardSnapshot.fio = fio;
-                return fio;
-            }
-        }
-        return "";
-    }
-
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -398,16 +393,11 @@
         };
 
         // НАЖАТИЕ АВТОЗАПОЛНЕНИЯ ⚡
-        document.getElementById('btn-fill-db').onclick = async function() {
-            const btn = document.getElementById('btn-fill-db');
-            btn.innerText = "⏳";
-            const fio = await resolvePatientFio();
-            btn.innerText = "⚡";
-
-            if (window.AndroidBridge && fio) {
+        document.getElementById('btn-fill-db').onclick = function() {
+            const fio = getCleanPatientFio();
+            // Передаем ФИО в Android (если пусто — Android сам откроет выбор пациента)
+            if (window.AndroidBridge) {
                 AndroidBridge.requestAutofill(fio);
-            } else {
-                alert("Не удалось определить фамилию. Откройте на секунду вкладку 'О вызове'!");
             }
         };
     }
@@ -473,6 +463,7 @@ window.applyAutofill = async function(jsonStr) {
         function setReactValue(input, value) {
             if (!input || value === undefined || value === null || value === "") return;
             try {
+                input.dispatchEvent(new Event('focus', { bubbles: true }));
                 const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                 if (setter) {
@@ -482,6 +473,7 @@ window.applyAutofill = async function(jsonStr) {
                 }
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
             } catch (e) {
                 input.value = value;
             }
@@ -490,13 +482,14 @@ window.applyAutofill = async function(jsonStr) {
         function findInputForFill(keywords) {
             const all = Array.from(document.querySelectorAll('label, div, span, p'));
             for (let kw of keywords) {
-                const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
+                const target = all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase() === kw.toLowerCase())
+                              || all.find(el => el.children.length === 0 && el.textContent.trim().toLowerCase().includes(kw));
                 if (target) {
                     let container = target.closest('.row, [class*="row"], .q-field, div');
                     let inp = container?.querySelector('input, textarea');
                     if (inp) return inp;
                     let next = target.nextElementSibling || container?.nextElementSibling;
-                    let nextInp = next?.querySelector('input, textarea') || (next?.tagName === 'INPUT' ? next : null);
+                    let nextInp = next?.querySelector('input, textarea') || (next?.tagName === 'INPUT' || next?.tagName === 'TEXTAREA' ? next : null);
                     if (nextInp) return nextInp;
                 }
             }
@@ -606,7 +599,10 @@ window.applyAutofill = async function(jsonStr) {
             clickYesNo(["запах ацетона"], "НЕТ");
         }
 
-        // Обход всех вкладок для тотального заполнения карты
+        // Заполняем сначала текущий открытый экран
+        fillCurrentScreen();
+
+        // Затем обходим остальные вкладки
         const tabKeywords = ['О ВЫЗОВЕ', 'УТОЧНЕННЫЕ', 'ОБЪЕКТИВНЫЕ', 'МЕДИЦИНСКАЯ'];
         const all = Array.from(document.querySelectorAll('button, div[role="tab"], [class*="tab"], a, div'));
 
@@ -634,6 +630,7 @@ window.applyAutofill = async function(jsonStr) {
         if (originalTab) {
             originalTab.click();
             await new Promise(r => setTimeout(r, 80));
+            fillCurrentScreen();
         }
 
         if (fillBtn) fillBtn.innerText = "⚡";

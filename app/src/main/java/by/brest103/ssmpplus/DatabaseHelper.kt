@@ -34,16 +34,37 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         onCreate(db)
     }
 
-    fun saveCard(fio: String, birthDate: String, score: Int, jsonData: String) {
+    // Сохранение или обновление (без дубликатов в течение смены)
+    fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String) {
         val db = writableDatabase
+        val cleanFio = fio.trim().lowercase()
+        val now = System.currentTimeMillis()
+        val twelveHoursAgo = now - (12 * 60 * 60 * 1000)
+
+        // Ищем: сохраняли ли мы этого пациента за последние 12 часов?
+        val cursor = db.rawQuery(
+            "SELECT id FROM cards WHERE fio = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
+            arrayOf(cleanFio, twelveHoursAgo.toString())
+        )
+
+        val existingId = if (cursor.moveToFirst()) cursor.getLong(0) else null
+        cursor.close()
+
         val values = ContentValues().apply {
-            put("fio", fio.trim().lowercase())
+            put("fio", cleanFio)
             put("birth_date", birthDate)
-            put("timestamp", System.currentTimeMillis())
+            put("timestamp", now)
             put("score", score)
             put("json_data", jsonData)
         }
-        db.insert("cards", null, values)
+
+        if (existingId != null) {
+            // Обновляем существующую карту
+            db.update("cards", values, "id = ?", arrayOf(existingId.toString()))
+        } else {
+            // Создаем новую запись (новый вызов)
+            db.insert("cards", null, values)
+        }
     }
 
     fun getBestCardForPatient(fio: String): String? {
@@ -80,26 +101,28 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Поиск по базе (по фрагменту ФИО)
+    // Поиск по архиву БЕЗ дубликатов (выводит самую свежую карту на каждого человека)
     fun searchPatients(query: String): List<FoundCard> {
         val results = mutableListOf<FoundCard>()
         val db = readableDatabase
-        val cursor = db.query(
-            "cards",
-            arrayOf("fio", "birth_date", "timestamp", "json_data"),
-            "fio LIKE ?",
-            arrayOf("%${query.trim().lowercase()}%"),
-            null,
-            null,
-            "timestamp DESC",
-            "15"
+        val cursor = db.rawQuery(
+            """
+            SELECT fio, birth_date, MAX(timestamp) as max_time, json_data 
+            FROM cards 
+            WHERE fio LIKE ? 
+            GROUP BY fio 
+            ORDER BY max_time DESC 
+            LIMIT 20
+            """.trimIndent(),
+            arrayOf("%${query.trim().lowercase()}%")
         )
+
         while (cursor.moveToNext()) {
             results.add(
                 FoundCard(
                     fio = cursor.getString(cursor.getColumnIndexOrThrow("fio")),
                     birthDate = cursor.getString(cursor.getColumnIndexOrThrow("birth_date")),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow("max_time")),
                     jsonData = cursor.getString(cursor.getColumnIndexOrThrow("json_data"))
                 )
             )

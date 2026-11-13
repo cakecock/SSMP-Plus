@@ -1,5 +1,4 @@
 (function() {
-    // Вспомогательная функция поиска input / textarea по тексту заголовка рядом
     function findInputByLabel(text) {
         const labels = Array.from(document.querySelectorAll('label, div, span, p'));
         const target = labels.find(el => el.textContent.trim().toLowerCase() === text.toLowerCase());
@@ -13,26 +12,58 @@
         return null;
     }
 
-    // Проверка: находится ли пользователь внутри карты вызова
     function isInsideCard() {
         const text = document.body ? document.body.innerText : '';
-        // Вкладки, которые есть ТОЛЬКО внутри карты вызова:
         const hasCardTabs = text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ');
         const hasCardDetails = text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || text.includes('МЕДИЦИНСКАЯ ПОМОЩЬ');
         return hasCardTabs || hasCardDetails;
     }
 
-    // Создаем панель кнопок (если еще не создана)
+    function collectCurrentData() {
+        const fio = findInputByLabel("ФИО")?.value || "";
+        const birthDate = findInputByLabel("Дата рождения")?.value || "";
+        const anamnesis = findInputByLabel("Анамнез заболевания")?.value || "";
+        const complaints = findInputByLabel("Жалобы")?.value || "";
+        const bpAdapted = findInputByLabel("Адаптированное АД (мм.рт.ст.)")?.value || "";
+
+        return {
+            fio: fio.trim(),
+            birthDate: birthDate,
+            anamnesis: anamnesis,
+            complaints: complaints,
+            bpAdapted: bpAdapted
+        };
+    }
+
+    // Автоматическое сохранение при заполнении
+    let autoSaveTimer = null;
+    function triggerAutoSave() {
+        if (!isInsideCard()) return;
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = setTimeout(() => {
+            const data = collectCurrentData();
+            // Сохраняем, если есть ФИО и хотя бы какие-то сведения
+            if (data.fio.length >= 5 && (data.anamnesis || data.complaints || data.bpAdapted)) {
+                if (window.AndroidBridge && window.AndroidBridge.autoSaveCardData) {
+                    window.AndroidBridge.autoSaveCardData(JSON.stringify(data));
+                }
+            }
+        }, 1500);
+    }
+
+    document.addEventListener('input', triggerAutoSave, true);
+    document.addEventListener('change', triggerAutoSave, true);
+
+    // Панель кнопок
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
         bar.id = 'b103-toolbar';
         bar.style.position = 'fixed';
-        // Располагаем чуть выше стандартной круглой кнопки меню
         bar.style.bottom = '85px';
         bar.style.right = '16px';
         bar.style.zIndex = '99999';
-        bar.style.display = 'none'; // По умолчанию скрыта
+        bar.style.display = 'none';
         bar.style.flexDirection = 'column';
         bar.style.gap = '8px';
 
@@ -47,22 +78,11 @@
         document.body.appendChild(bar);
 
         document.getElementById('btn-save-db').onclick = function() {
-            const fio = findInputByLabel("ФИО")?.value || "";
-            const birthDate = findInputByLabel("Дата рождения")?.value || "";
-            const anamnesis = findInputByLabel("Анамнез заболевания")?.value || "";
-            const complaints = findInputByLabel("Жалобы")?.value || "";
-            const bpAdapted = findInputByLabel("Адаптированное АД (мм.рт.ст.)")?.value || "";
-
-            const payload = {
-                fio: fio,
-                birthDate: birthDate,
-                anamnesis: anamnesis,
-                complaints: complaints,
-                bpAdapted: bpAdapted
-            };
-
-            if (window.AndroidBridge) {
+            const payload = collectCurrentData();
+            if (window.AndroidBridge && payload.fio) {
                 AndroidBridge.saveCardData(JSON.stringify(payload));
+            } else {
+                alert("Укажите ФИО пациента для сохранения");
             }
         };
 
@@ -76,20 +96,17 @@
         };
     }
 
-    // Регулярная проверка видимости: показываем панель ТОЛЬКО внутри карты
     function updateVisibility() {
         if (bar) {
             bar.style.display = isInsideCard() ? 'flex' : 'none';
         }
     }
 
-    // Запускаем проверку каждые 400мс (работает плавно и без нагрузки)
     if (!window.b103VisibilityTimer) {
         window.b103VisibilityTimer = setInterval(updateVisibility, 400);
     }
 })();
 
-// Применение данных автозаполнения
 window.applyAutofill = function(jsonStr) {
     try {
         const data = JSON.parse(jsonStr);

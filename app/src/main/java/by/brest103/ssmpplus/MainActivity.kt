@@ -132,6 +132,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 1. Диалог: ОБЩИЙ АРХИВ (все пациенты и вызовы)
     private fun showSearchDialog() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -140,7 +141,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.WHITE)
         }
 
-        val pullBar = View(this).apply {
+        root.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(100, 10).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 bottomMargin = 24
@@ -149,11 +150,10 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#B0BEC5"))
                 cornerRadius = 5f
             }
-        }
-        root.addView(pullBar)
+        })
 
         val title = TextView(this).apply {
-            text = "🔍 Архив вызовов"
+            text = "📂 Общий архив вызовов"
             textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#004D40"))
@@ -214,6 +214,100 @@ class MainActivity : AppCompatActivity() {
                         val summary = summaries[position]
                         bottomSheet.dismiss()
                         showPatientHistoryDialog(summary.fio)
+                    }
+                }
+            }
+        }
+
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { performSearch(s.toString()) }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        })
+
+        bottomSheet.show()
+        performSearch("")
+    }
+
+    // 2. Диалог: БАЗА ОБРАЗЦОВ (эталонные, лучшие карты для помощи в заполнении)
+    private fun showBestCardsDialog() {
+        val bottomSheet = BottomSheetDialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 24, 40, 30)
+            setBackgroundColor(Color.WHITE)
+        }
+
+        root.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(100, 10).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 24
+            }
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#B0BEC5"))
+                cornerRadius = 5f
+            }
+        })
+
+        val title = TextView(this).apply {
+            text = "⭐ Образцы карт (Помощь в заполнении)"
+            textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#E65100"))
+            setPadding(0, 0, 0, 16)
+        }
+        root.addView(title)
+
+        val searchInput = EditText(this).apply {
+            hint = "Поиск по диагнозу, МКБ (напр. ОКС, I48)..."
+            setPadding(35, 28, 35, 28)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#FFF8E1"))
+                setStroke(2, Color.parseColor("#FFE082"))
+                cornerRadius = 24f
+            }
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.GRAY)
+        }
+        root.addView(searchInput)
+
+        val listView = ListView(this).apply {
+            divider = null
+            dividerHeight = 16
+            setPadding(0, 20, 0, 0)
+        }
+        root.addView(listView)
+
+        bottomSheet.setContentView(root)
+        bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.peekHeight = 1200
+
+        fun performSearch(query: String) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val samples = dbHelper.searchBestCardSamples(query)
+                withContext(Dispatchers.Main) {
+                    val titles = samples.map {
+                        val mkbText = if (it.mkb.isNotEmpty()) "[${it.mkb}] " else ""
+                        "⭐ ${it.score}% полноты • ${it.fio.uppercase()}\n📋 $mkbText${it.diagnosis}"
+                    }
+                    val adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_list_item_1, titles) {
+                        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                            val view = super.getView(position, convertView, parent) as TextView
+                            view.setPadding(30, 24, 30, 24)
+                            view.setTextColor(Color.parseColor("#263238"))
+                            view.background = GradientDrawable().apply {
+                                setColor(Color.parseColor("#FFFDE7"))
+                                setStroke(2, Color.parseColor("#FFE082"))
+                                cornerRadius = 18f
+                            }
+                            return view
+                        }
+                    }
+                    listView.adapter = adapter
+                    listView.setOnItemClickListener { _, _, position, _ ->
+                        val sample = samples[position]
+                        bottomSheet.dismiss()
+                        showPatientHistoryDialog(sample.fio)
                     }
                 }
             }
@@ -367,74 +461,4 @@ class MainActivity : AppCompatActivity() {
                                 LinearLayout.LayoutParams.WRAP_CONTENT
                             ).apply { rightMargin = 12 }
                         }
-                        badgesLayout.addView(badge)
-                    }
-
-                    val bp = json.optString("bp").ifEmpty { json.optString("bpAdapted") }
-                    if (bp.isNotEmpty()) addBadge("❤️ $bp", "#E53935")
-                    if (json.optString("pulse").isNotEmpty()) addBadge("💓 ${json.optString("pulse")}", "#D81B60")
-                    if (json.optString("saturation").isNotEmpty()) addBadge("🫁 ${json.optString("saturation")}%", "#00897B")
-                    if (json.optString("glucose").isNotEmpty()) addBadge("🩸 ${json.optString("glucose")}", "#8E24AA")
-                    if (json.optString("glasgowScore").isNotEmpty()) addBadge("🧠 ${json.optString("glasgowScore")} б", "#3949AB")
-
-                    val hScroll = HorizontalScrollView(this@MainActivity).apply {
-                        isHorizontalScrollBarEnabled = false
-                    }
-                    hScroll.addView(badgesLayout)
-                    contentContainer.addView(hScroll)
-
-                    val detailsText = TextView(this@MainActivity).apply {
-                        textSize = 15f
-                        setTextIsSelectable(true)
-                        setTextColor(Color.parseColor("#37474F"))
-                        setLineSpacing(6f, 1.15f)
-                        text = formatFullCard(item.jsonData)
-                        setPadding(10, 10, 10, 30)
-                    }
-                    contentContainer.addView(detailsText)
-                }
-
-                spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                        renderCardView(history[position])
-                    }
-                    override fun onNothingSelected(parent: AdapterView<*>?) {}
-                }
-
-                updateSpinner()
-                renderCardView(history[0])
-
-                bottomSheet.setContentView(root)
-                bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
-                bottomSheet.behavior.peekHeight = 1400
-                bottomSheet.show()
-            }
-        }
-    }
-
-    private fun formatFullCard(jsonData: String): String {
-        return try {
-            val json = JSONObject(jsonData)
-            StringBuilder().apply {
-                if (json.optString("birthDate").isNotEmpty()) append("🎂 Родился: ${json.optString("birthDate")}\n")
-                if (json.optString("gender").isNotEmpty()) append("⚧ Пол: ${json.optString("gender")}\n")
-                if (json.optString("address").isNotEmpty()) append("📍 Адрес: ${json.optString("address")}\n")
-                if (json.optString("callReason").isNotEmpty()) append("🚨 Повод: ${json.optString("callReason")}\n")
-
-                append("\n📋 ДИАГНОЗ:\n")
-                if (json.optString("diagnosis").isNotEmpty()) append("• ${json.optString("diagnosis")}\n")
-                if (json.optString("mkb").isNotEmpty()) append("• Код МКБ: ${json.optString("mkb")}\n")
-
-                append("\n🩺 ОБЪЕКТИВНЫЙ СТАТУС:\n")
-                if (json.optString("generalState").isNotEmpty()) append("• Состояние: ${json.optString("generalState")}\n")
-                if (json.optString("consciousness").isNotEmpty()) append("• Сознание: ${json.optString("consciousness")}\n")
-
-                val gScore = json.optString("glasgowScore")
-                val gTest = json.optString("glasgowTest")
-                if (gScore.isNotEmpty() || gTest.isNotEmpty()) {
-                    append("• Шкала Глазго: ${if (gScore.isNotEmpty()) "$gScore баллов" else ""} ${if (gTest.isNotEmpty()) "($gTest)" else ""}\n")
-                }
-
-                if (json.optString("bpAdapted").isNotEmpty()) append("• Привычное АД: ${json.optString("bpAdapted")}\n")
-                if (json.optString("bp").isNotEmpty()) append("• АД на вызове: ${json.optString("bp")}\n")
-                if (json.optString("pulse").isNotEmpty()) a
+             

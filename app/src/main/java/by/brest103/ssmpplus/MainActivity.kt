@@ -1,6 +1,7 @@
 package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
+import android.net.http.SslError
 import android.os.Bundle
 import android.webkit.*
 import android.widget.Toast
@@ -28,11 +29,22 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
+            allowContentAccess = true
+            allowFileAccess = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            // Притворяемся полноценным мобильным Chrome, чтобы сайт не выдавал пустую страницу
+            userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
-        webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
+        webView.webChromeClient = WebChromeClient()
 
         webView.webViewClient = object : WebViewClient() {
+            // Игнорируем ошибки ведомственных сертификатов (ГосСУОК / Минздрав)
+            @SuppressLint("WebViewClientOnReceivedSslError")
+            override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                handler?.proceed()
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 injectScript()
@@ -83,7 +95,6 @@ class MainActivity : AppCompatActivity() {
                 val jsonCard = dbHelper.getBestCardForPatient(fio)
                 withContext(Dispatchers.Main) {
                     if (jsonCard != null) {
-                        // Экранируем одинарные кавычки для безопасной передачи в JS
                         val safeJson = jsonCard.replace("'", "\\'")
                         webView.evaluateJavascript("applyAutofill('$safeJson');", null)
                         Toast.makeText(applicationContext, "Данные автозаполнены из истории", Toast.LENGTH_SHORT).show()

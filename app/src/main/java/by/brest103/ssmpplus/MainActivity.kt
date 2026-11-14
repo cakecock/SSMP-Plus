@@ -170,7 +170,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Запасной экран: выбор пациента из архива, если имя не распознано автоматически
     private fun showAutofillPickerSheet() {
         lifecycleScope.launch(Dispatchers.IO) {
             val summaries = dbHelper.searchPatientSummaries("")
@@ -277,12 +276,12 @@ class MainActivity : AppCompatActivity() {
             Pair("🫁 J Дыхание", "J"),
             Pair("🧠 G Невро", "G"),
             Pair("🩹 S Травмы", "S"),
-            Pair("🧪 T Токсико/Ожоги", "T"),
-            Pair("🚨 R Симптомы/Кома", "R"),
+            Pair("🧪 T Токсико", "T"),
+            Pair("🚨 R Симптомы", "R"),
             Pair("🤢 K ЖКТ", "K"),
             Pair("🩸 E Эндокрин", "E"),
             Pair("🤰 O Акушерство", "O"),
-            Pair("🏥 Z Транспорт/Отказ", "Z"),
+            Pair("🏥 Z Прочее", "Z"),
             Pair("🦠 A/B Инфекции", "AB"),
             Pair("🤪 F Психиатрия", "F"),
             Pair("🚽 N Урология", "N"),
@@ -797,6 +796,54 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
 
+        // ПРЯМОЙ ПЕРЕХВАТ СЕРВЕРНОГО API: сохраняет идеальный JSON карты вызова напрямую
+        @JavascriptInterface
+        fun saveApiCard(jsonStr: String) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val raw = JSONObject(jsonStr)
+                    val patient = raw.optJSONObject("patient") ?: JSONObject()
+                    val fio = patient.optString("fullName").ifEmpty { raw.optString("initialFullName") }.trim()
+                    if (fio.isEmpty()) return@launch
+
+                    val bDate = patient.optString("birthDate").ifEmpty { raw.optString("dateOfRegistration") }
+                    val complaints = raw.optString("complaints")
+                    val anamnesis = raw.optString("anamnesis")
+                    val diag = raw.optString("diagnosis")
+
+                    var score = 0
+                    if (anamnesis.length > 10) score += 30
+                    if (complaints.isNotEmpty()) score += 25
+                    if (diag.isNotEmpty()) score += 25
+                    if (raw.optJSONArray("medications")?.length() ?: 0 > 0) score += 20
+
+                    // Формируем чистый адаптированный JSON для нашего архива
+                    val card = JSONObject().apply {
+                        put("fio", fio)
+                        put("birthDate", bDate)
+                        put("address", raw.optString("address"))
+                        put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
+                        put("gender", if (patient.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")
+                        put("complaints", complaints)
+                        put("anamnesis", anamnesis)
+                        put("diagnosis", diag)
+                        put("mkb", raw.optJSONObject("icd")?.optString("code") ?: "")
+                        put("bp", raw.optString("arterialPressure"))
+                        put("bpAdapted", raw.optString("arterialPressureAdaptive"))
+                        put("pulse", raw.optString("pulse"))
+                        put("temp", raw.optString("skinTemp"))
+                        put("saturation", raw.optString("saturation1"))
+                        put("glucose", raw.optString("glycemia1"))
+                        put("localStatus", raw.optString("localStatus"))
+                    }
+
+                    dbHelper.saveOrUpdateCard(fio, bDate, score, card.toString())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
         @JavascriptInterface
         fun saveCardData(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -819,26 +866,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun autoSaveCardData(jsonStr: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val j = JSONObject(jsonStr)
-                    val fio = j.optString("fio").trim()
-                    if (fio.length < 5) return@launch
-
-                    val birthDate = j.optString("birthDate")
-                    var score = 0
-                    if (j.optString("anamnesis").length > 10) score += 30
-                    if (j.optString("complaints").isNotEmpty()) score += 20
-                    if (j.optString("bpAdapted").isNotEmpty()) score += 20
-                    if (j.optString("diagnosis").isNotEmpty()) score += 20
-
-                    dbHelper.saveOrUpdateCard(fio, birthDate, score, jsonStr)
-                } catch (e: Exception) { e.printStackTrace() }
-            }
-        }
-
-        @JavascriptInterface
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val cleanFio = fio.trim()
@@ -853,7 +880,6 @@ class MainActivity : AppCompatActivity() {
                         webView.evaluateJavascript("applyAutofill($safe);", null)
                         Toast.makeText(applicationContext, "⚡ Данные успешно автозаполнены!", Toast.LENGTH_SHORT).show()
                     } else {
-                        // Если по фамилии не нашлось — предлагаем выбрать карту вручную!
                         showAutofillPickerSheet()
                     }
                 }

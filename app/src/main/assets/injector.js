@@ -31,6 +31,7 @@
             } catch (e) {}
             return res;
         };
+
         const origOpen = XMLHttpRequest.prototype.open;
         const origSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.open = function(m, u) { this._url = u; return origOpen.apply(this, arguments); };
@@ -58,12 +59,23 @@
         };
     }
 
-    function findVisMui(kws) {
-        const labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label'));
-        for (let kw of kws) {
-            for (let t of labels.filter(l => l.innerText && l.innerText.trim().toLowerCase().includes(kw.toLowerCase()))) {
-                const inp = t.closest('.MuiFormControl-root, .MuiGrid-item')?.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
-                if (inp && inp.offsetParent !== null) return inp;
+    // Универсальный поиск видимого поля по ключевым словам (охватывает label, p, span, div)
+    function findInputByKw(keywords, exact = false) {
+        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        for (let kw of keywords) {
+            const kwL = kw.toLowerCase();
+            const target = all.find(el => {
+                if (!el.innerText || el.offsetParent === null) return false;
+                const t = el.innerText.trim().toLowerCase();
+                return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 30;
+            });
+            if (target) {
+                let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
+                for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                    const inp = p.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
+                    if (inp && inp.offsetParent !== null) return inp;
+                    p = p.parentElement;
+                }
             }
         }
         return null;
@@ -71,7 +83,7 @@
 
     function scrapeCache() {
         const c = window.b103ScreenCache;
-        const g = (k) => findVisMui([k])?.value?.trim();
+        const g = (k) => findInputByKw([k])?.value?.trim();
         if (g("экг до оказания")) c.electrocardiogramBefore = g("экг до оказания");
         if (g("экг после оказания")) c.electrocardiogramAfter = g("экг после оказания");
         if (g("предварительный диагноз")) c.diagnosis = g("предварительный диагноз");
@@ -129,7 +141,7 @@
             }
         };
         document.getElementById('btn-fill-db').onclick = () => {
-            const fio = findVisMui(["фио"])?.value?.trim() || "";
+            const fio = findInputByKw(["фио"])?.value?.trim() || "";
             window.AndroidBridge?.requestAutofill(fio);
         };
     }
@@ -176,13 +188,15 @@ window.setAndApplyAutofill = function(jsonStr) {
     } catch (e) {}
 };
 
+// ==========================================
+// ТОЧНЫЙ АВТОПИЛОТ (БЕЗ ДЕРГАНИЯ ЭКРАНА)
+// ==========================================
 window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
     window.b103IsApplying = true;
     const fillBtn = document.getElementById('btn-fill-db');
     if (fillBtn) fillBtn.innerText = "⏳";
 
-    // Скрываем мерцание открывающихся выпадающих списков
     let hideStyle = document.getElementById('b103-hide-menus');
     if (!hideStyle) {
         hideStyle = document.createElement('style');
@@ -202,7 +216,7 @@ window.applyAutofill = async function(jsonStr) {
             return s;
         }
 
-        // Чистая вставка БЕЗ фокуса и БЕЗ дергания экрана
+        // Вставка текста без focus()/blur() — экран стоит на месте!
         function setVal(inp, val) {
             if (!inp || val === undefined || val === null || inp.disabled) return;
             const str = String(val).trim();
@@ -217,21 +231,33 @@ window.applyAutofill = async function(jsonStr) {
             } catch (e) { inp.value = str; }
         }
 
-        function findAll(kws, exact = false) {
-            const res = [], labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label'));
-            for (let kw of kws) {
+        // Поиск всех подходящих видимых инпутов (включая p, span, label, div)
+        function findInputs(keywords, exact = false) {
+            const res = [];
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            for (let kw of keywords) {
+                const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    const t = (l.innerText || '').trim().toLowerCase();
-                    if (exact ? t === kw.toLowerCase() : t.includes(kw.toLowerCase())) {
-                        const inp = l.closest('.MuiFormControl-root, .MuiGrid-item')?.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
-                        if (inp && inp.offsetParent !== null && !res.includes(inp)) res.push(inp);
+                    if (!l.innerText || l.offsetParent === null) continue;
+                    const t = l.innerText.trim().toLowerCase();
+                    const isMatch = exact ? t === kwL : (t === kwL || t.includes(kwL));
+                    if (isMatch && t.length < kwL.length + 30) {
+                        let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
+                        for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                            const inp = p.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
+                            if (inp && inp.offsetParent !== null && !res.includes(inp)) {
+                                res.push(inp);
+                                break;
+                            }
+                            p = p.parentElement;
+                        }
                     }
                 }
             }
             return res;
         }
 
-        const setAll = (kws, val, ex = false) => { if (val) findAll(kws, ex).forEach(i => setVal(i, val)); };
+        const setAll = (kws, val, ex = false) => { if (val) findInputs(kws, ex).forEach(i => setVal(i, val)); };
 
         function formatBirthDateAndCalcAge(rawDateStr) {
             if (!rawDateStr) return { dateStr: "", ageStr: "" };
@@ -264,19 +290,21 @@ window.applyAutofill = async function(jsonStr) {
             return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
         }
 
-        // Надежный выбор выпадающих списков: для одиночных списков кликаем и НЕ нажимаем Escape!
-        async function selDrop(kws, valStr, ex = false) {
+        // Выпадающие списки Material-UI: для одиночных кликаем пункт БЕЗ Escape (меню закрывается само и выбор не сбрасывается!)
+        async function selectDropdown(keywords, valStr) {
             if (!valStr) return;
             const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-            const labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label'));
+            if (vals.length === 0) return;
+
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
             const ctrls = [];
-            for (let kw of kws) {
-                const kwLower = kw.toLowerCase();
+            for (let kw of keywords) {
+                const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText) continue;
+                    if (!l.innerText || l.offsetParent === null) continue;
                     const t = l.innerText.trim().toLowerCase();
-                    if (ex ? t === kwLower : t.includes(kwLower)) {
-                        const c = l.closest('.MuiFormControl-root, .MuiGrid-item');
+                    if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 30) {
+                        const c = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
                         if (c && c.offsetParent !== null && !ctrls.includes(c)) ctrls.push(c);
                     }
                 }
@@ -289,36 +317,39 @@ window.applyAutofill = async function(jsonStr) {
                 const isMulti = btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                 const curText = (btn.innerText || '').trim().toLowerCase();
 
-                // Одиночный список: если уже выбрано нужное значение — не трогаем!
                 if (!isMulti && curText === vals[0]) continue;
-                // Мультиселект: если все значения уже присутствуют — не трогаем!
                 if (isMulti && vals.every(v => curText.includes(v))) continue;
 
+                // Открываем меню через mousedown + click
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-                await new Promise(r => setTimeout(r, 85));
+                btn.click();
+                await new Promise(r => setTimeout(r, 90));
 
                 const popover = document.querySelector('.MuiPopover-root') || document;
                 const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root, .MuiAutocomplete-option'));
 
                 if (opts.length > 0) {
                     if (!isMulti) {
-                        // ОДИНОЧНЫЙ СПИСОК (Состояние, Сознание, Возраст ед.):
-                        const matchOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === vals[0])
-                                      || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(vals[0]));
-                        if (matchOpt) {
-                            matchOpt.click(); // В одиночном списке клик сам закрывает меню и фиксирует выбор!
+                        // ОДИНОЧНЫЙ СПИСОК (Состояние, Сознание, Возраст ед.): строго игнорируем "не выбрано"!
+                        const match = opts.find(o => {
+                            const ot = (o.innerText || '').trim().toLowerCase();
+                            return ot !== "не выбрано" && (ot === vals[0] || ot.includes(vals[0]));
+                        });
+                        if (match) {
+                            match.click(); // В одиночном списке клик сам штатно закрывает меню и фиксирует значение!
                             await new Promise(r => setTimeout(r, 80));
                         } else {
-                            // Если не найдено — закрываем Escape
-                            document.querySelector('ul[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
                             await new Promise(r => setTimeout(r, 40));
                         }
                     } else {
                         // МУЛЬТИСЕЛЕКТ (Тоны, Дыхание, Живот, Кожа):
                         const wanted = new Set();
                         for (let v of vals) {
-                            const m = opts.find(o => (o.innerText || '').trim().toLowerCase() === v)
-                                   || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(v));
+                            const m = opts.find(o => {
+                                const ot = (o.innerText || '').trim().toLowerCase();
+                                return ot !== "не выбрано" && (ot === v || ot.includes(v));
+                            });
                             if (m) wanted.add(m);
                         }
                         for (let o of opts) {
@@ -329,44 +360,63 @@ window.applyAutofill = async function(jsonStr) {
                                 await new Promise(r => setTimeout(r, 35));
                             }
                         }
-                        // Для мультиселекта закрываем Escape после установки всех галочек
-                        document.querySelector('ul[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
                         await new Promise(r => setTimeout(r, 40));
                     }
                 }
             }
         }
 
-        function selGroupBtn(kws, choice, exactLabel = false) {
-            if (!choice) return;
-            const chUp = choice.trim().toUpperCase();
-            const labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label, p, span'));
-            for (let kw of kws) {
-                const kwL = kw.toLowerCase();
-                labels.filter(l => {
-                    if (l.offsetParent === null || l.children.length > 0 || !l.innerText) return false;
-                    const lt = l.innerText.trim().toLowerCase();
-                    return exactLabel ? lt === kwL : lt.includes(kwL);
-                }).forEach(t => {
-                    let p = t.closest('.MuiFormControl-root, .MuiGrid-item') || t.parentElement;
-                    for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                        const btns = Array.from(p.querySelectorAll('button, div[role="button"]'));
-                        const desired = btns.find(b => {
-                            const bt = (b.innerText || '').trim().toUpperCase();
-                            return bt === chUp || (chUp.includes("СИММЕТР") && bt.startsWith("А") && chUp.startsWith("А") && bt.includes("СИМ"));
-                        });
-                        if (desired) {
-                            const s = window.getComputedStyle(desired);
-                            const on = (s.color.includes('255, 255, 255') && !s.backgroundColor.includes('0, 0, 0, 0') && !s.backgroundColor.includes('255, 255, 255')) || desired.className.includes('MuiButton-contained');
-                            if (!on) desired.click();
-                            break;
-                        }
-                        p = p.parentElement;
-                    }
-                });
+        // ПРЯМОЙ НАДЕЖНЫЙ КЛИК ПО УНИКАЛЬНЫМ КНОПКАМ (без лишних проверок родителей)
+        function clickUniqueButton(targetText) {
+            if (!targetText) return;
+            const targetUp = targetText.trim().toUpperCase();
+            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const btn = btns.find(b => {
+                if (b.offsetParent === null) return false;
+                const bt = (b.innerText || '').trim().toUpperCase();
+                return bt === targetUp || (targetUp.includes("СИММЕТР") && targetUp.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ"));
+            });
+            if (btn) {
+                const s = window.getComputedStyle(btn);
+                const isWhite = s.color.includes('255, 255, 255');
+                const isColored = !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                const isAlreadyOn = (isWhite && isColored) || btn.className.includes('MuiButton-contained');
+                if (!isAlreadyOn) btn.click();
             }
         }
 
+        // ЛОКАЛЬНЫЙ КЛИК ДЛЯ КНОПОК "ДА / НЕТ"
+        function clickYesNoInRow(keywords, choice) {
+            if (!choice) return;
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            for (let kw of keywords) {
+                const kwL = kw.toLowerCase();
+                const target = labels.find(el => {
+                    if (!el.innerText || el.offsetParent === null) return false;
+                    const t = el.innerText.trim().toLowerCase();
+                    return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 30;
+                });
+                if (target) {
+                    let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
+                    for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                        const btns = Array.from(p.querySelectorAll('button, div[role="button"]'));
+                        const desired = btns.find(b => (b.innerText || '').trim().toUpperCase() === choice.toUpperCase());
+                        if (desired) {
+                            const s = window.getComputedStyle(desired);
+                            const isWhite = s.color.includes('255, 255, 255');
+                            const isColored = !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                            const isAlreadyOn = (isWhite && isColored) || desired.className.includes('MuiButton-contained');
+                            if (!isAlreadyOn) desired.click();
+                            return;
+                        }
+                        p = p.parentElement;
+                    }
+                }
+            }
+        }
+
+        // Заполнение АД строго по бокам от знака "/"
         function fillBP(isAd, raw) {
             const str = normBp(raw); if (!str.includes('/')) return;
             const p = str.split('/');
@@ -387,7 +437,8 @@ window.applyAutofill = async function(jsonStr) {
 
         // 1. ПАСПОРТНЫЕ ДАННЫЕ, ДАТА РОЖДЕНИЯ (00:00) И ВОЗРАСТ
         if (data.fio) setAll(["фио"], data.fio, true);
-        const bDateInps = findAll(["дата рождения"]);
+
+        const bDateInps = findInputs(["дата рождения"]);
         if (bDateInps.length > 0) {
             const now = new Date();
             const todayIso = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
@@ -407,17 +458,23 @@ window.applyAutofill = async function(jsonStr) {
                 const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawB);
                 if (dateStr) setVal(bDateInps[0], dateStr);
                 const finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || ageStr;
-                if (finAge) setAll(["возраст"], finalAge, true);
+                if (finAge) setAll(["возраст"], finAge, true);
             } else if (data.age) {
                 setAll(["возраст"], data.age, true);
             }
         }
-        await selDrop(["возраст (ед.)"], data.ageUnit || window.lastLoadedApiCard?.ageType?.type || "Лет", true);
+
+        // Выбираем "Возраст (ед.)" (Лет)
+        const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || "Лет";
+        await selectDropdown(["возраст (ед.)"], unitVal);
+
         if (data.address) setAll(["место жительства (пребывания)"], data.address);
 
         // 2. ЖАЛОБЫ, АНАМНЕЗ, ДИАГНОЗ
-        setAll(["жалобы"], data.complaints); setAll(["анамнез заболевания"], data.anamnesis);
-        setAll(["перенесенные заболевания"], data.pastDiseases); setAll(["предварительный диагноз"], data.diagnosis);
+        setAll(["жалобы"], data.complaints);
+        setAll(["анамнез заболевания"], data.anamnesis);
+        setAll(["перенесенные заболевания"], data.pastDiseases);
+        setAll(["предварительный диагноз"], data.diagnosis);
         setAll(["локальный статус"], data.localStatus);
 
         // 3. АД, ПУЛЬС, ЧДД, ТЕМПЕРАТУРА
@@ -430,49 +487,55 @@ window.applyAutofill = async function(jsonStr) {
         if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], data.glucose);
 
         // 4. ЭКГ И НЕВРОЛОГИЯ
-        setAll(["экг до оказания"], data.ecgBefore); setAll(["экг после оказания"], data.ecgAfter);
+        setAll(["экг до оказания"], data.ecgBefore);
+        setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
-        setAll(["тонус мышц"], "Норма"); setAll(["патологические рефлексы"], "Нет");
-        setAll(["менингиальные знаки"], "Нет"); setAll(["плегии, парезы"], "Нет");
-        setAll(["язык"], data.tongue || "Влажный, не обложен"); setAll(["слизистые"], data.mucous || "Чистые");
+        setAll(["тонус мышц"], "Норма");
+        setAll(["патологические рефлексы"], "Нет");
+        setAll(["менингиальные знаки"], "Нет");
+        setAll(["плегии, парезы"], "Нет");
+        setAll(["язык"], data.tongue || "Влажный, не обложен");
+        setAll(["слизистые"], data.mucous || "Чистые");
 
-        // 5. КНОПКИ-ПЕРЕКЛЮЧАТЕЛИ
-        if (data.gender) selGroupBtn(["пол"], data.gender, true);
-        selGroupBtn(["положение"], data.position || "АКТИВНОЕ", true);
-        selGroupBtn(["поведение"], data.behavior || "СПОКОЙНОЕ", true);
-        if (data.pupils) selGroupBtn(["зрачки"], data.pupils, true);
-        selGroupBtn(["реакция на свет"], data.lightReaction || "ДА", true);
-        selGroupBtn(["речь"], data.speech || "СОХРАНЕНА", true);
-        selGroupBtn(["походка"], data.gait || "СВОБОДНАЯ", true);
-        selGroupBtn(["лицо"], data.face || "СИММЕТРИЧНОЕ", true);
-        selGroupBtn(["нистагм"], data.nystagmus || "НЕТ", true);
-        selGroupBtn(["высыпания"], data.rash || "НЕТ", true);
-        selGroupBtn(["пульс, ударов в минуту"], data.pulseExists || (data.pulse === "0" ? "НЕТ" : "ДА"), true);
-        selGroupBtn(["асцит"], data.ascites || "НЕТ", true);
-        selGroupBtn(["периферические отеки"], data.edema || "НЕТ", true);
-        selGroupBtn(["запах алкоголя"], data.alcohol || "НЕТ", true);
-        selGroupBtn(["запах ацетона"], data.acetone || "НЕТ", true);
-        selGroupBtn(["симптомы раздражения брюшины"], data.peritoneal || "НЕТ", true);
-        selGroupBtn(["перистальтика"], data.peristalsis || "ДА", true);
-        selGroupBtn(["печень"], data.liver || "НЕ УВЕЛИЧЕНА", true);
-        selGroupBtn(["мочеиспускание"], data.urination || "НЕ НАРУШЕНО", true);
-        selGroupBtn(["стул"], data.stool || "НЕ НАРУШЕН", true);
-        selGroupBtn(["аллергия"], data.allergy || "НЕТ", true);
+        // 5. ПРЯМЫЕ КЛИКИ ПО ВСЕМ УНИКАЛЬНЫМ КНОПКАМ
+        if (data.gender) clickUniqueButton(data.gender);
+        clickUniqueButton(data.position || "АКТИВНОЕ");
+        clickUniqueButton(data.behavior || "СПОКОЙНОЕ");
+        if (data.pupils) clickUniqueButton(data.pupils);
+        clickUniqueButton(data.speech || "СОХРАНЕНА");
+        clickUniqueButton(data.face || "СИММЕТРИЧНОЕ");
+        clickUniqueButton(data.gait || "СВОБОДНАЯ");
+        clickUniqueButton(data.nystagmus || "НЕТ");
+        clickUniqueButton(data.liver || "НЕ УВЕЛИЧЕНА");
+        clickUniqueButton(data.urination || "НЕ НАРУШЕНО");
+        clickUniqueButton(data.stool || "НЕ НАРУШЕН");
 
-        selGroupBtn(["приступ"], data.attack || "КУПИРОВАН", true);
-        selGroupBtn(["результат оказания"], data.therapyEffect || "УЛУЧШЕНИЕ", true);
+        clickUniqueButton(data.attack || "КУПИРОВАН");
+        clickUniqueButton(data.therapyEffect || "УЛУЧШЕНИЕ");
         const dyn = (data.therapyEffect === "БЕЗ ЭФФЕКТА") ? "БЕЗ ДИНАМИКИ" : (data.therapyEffect || "УЛУЧШЕНИЕ");
-        selGroupBtn(["динамика состояния"], dyn, true);
-        if (data.callResult) selGroupBtn(["результат выезда"], data.callResult, true);
+        clickUniqueButton(dyn);
+        if (data.callResult) clickUniqueButton(data.callResult);
+
+        // КЛИКИ ДЛЯ КНОПОК "ДА / НЕТ"
+        clickYesNoInRow(["аллергия"], data.allergy || "НЕТ");
+        clickYesNoInRow(["реакция на свет"], data.lightReaction || "ДА");
+        clickYesNoInRow(["высыпания"], data.rash || "НЕТ");
+        clickYesNoInRow(["пульс, ударов в минуту"], data.pulseExists || (data.pulse === "0" ? "НЕТ" : "ДА"));
+        clickYesNoInRow(["асцит"], data.ascites || "НЕТ");
+        clickYesNoInRow(["периферические отеки"], data.edema || "НЕТ");
+        clickYesNoInRow(["запах алкоголя"], data.alcohol || "НЕТ");
+        clickYesNoInRow(["запах ацетона"], data.acetone || "НЕТ");
+        clickYesNoInRow(["симптомы раздражения брюшины"], data.peritoneal || "НЕТ");
+        clickYesNoInRow(["перистальтика"], data.peristalsis || "ДА");
 
         // 6. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
-        await selDrop(["общее состояние"], data.generalState || "Удовлетворительное", true);
-        await selDrop(["сознание"], data.consciousness || "Ясное", true);
-        if (data.skin) await selDrop(["кожа"], data.skin, true);
-        if (data.heartSounds) await selDrop(["тоны сердца"], data.heartSounds, true);
-        if (data.lungs) await selDrop(["дыхание"], data.lungs, true);
-        if (data.percussion) await selDrop(["перкуссия легких"], data.percussion, true);
-        if (data.abdomen) await selDrop(["живот"], data.abdomen, true);
+        await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное");
+        await selectDropdown(["сознание"], data.consciousness || "Ясное");
+        if (data.skin) await selectDropdown(["кожа"], data.skin);
+        if (data.heartSounds) await selectDropdown(["тоны сердца"], data.heartSounds);
+        if (data.lungs) await selectDropdown(["дыхание"], data.lungs);
+        if (data.percussion) await selectDropdown(["перкуссия легких"], data.percussion);
+        if (data.abdomen) await selectDropdown(["живот"], data.abdomen);
     } catch (e) { console.error(e); } finally {
         document.getElementById('b103-hide-menus')?.remove();
         if (fillBtn) fillBtn.innerText = "⚡";

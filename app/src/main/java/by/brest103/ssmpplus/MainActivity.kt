@@ -59,9 +59,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun roundBg(hex: String, r: Float, strokeHex: String? = null) = GradientDrawable().apply {
-        setColor(Color.parseColor(hex))
-        cornerRadius = r
-        strokeHex?.let { setStroke(2, Color.parseColor(it)) }
+        setColor(Color.parseColor(hex)); cornerRadius = r; strokeHex?.let { setStroke(2, Color.parseColor(it)) }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -137,8 +135,7 @@ class MainActivity : AppCompatActivity() {
         try { webView.evaluateJavascript(assets.open("injector.js").bufferedReader().use { it.readText() }, null) } catch (_: Exception) {}
     }
 
-    // ХЕЛПЕРЫ ИНТЕРФЕЙСА
-    private fun createSheet(title: String, titleColor: String): Triple<BottomSheetDialog, LinearLayout, LinearLayout> {
+    private fun createSheet(title: String, titleColor: String): Pair<BottomSheetDialog, LinearLayout> {
         val bs = BottomSheetDialog(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 18, 36, 24); setBackgroundColor(Color.WHITE) }
         root.addView(View(this).apply {
@@ -151,11 +148,11 @@ class MainActivity : AppCompatActivity() {
         })
         bs.setContentView(root)
         bs.behavior.apply { state = BottomSheetBehavior.STATE_EXPANDED; skipCollapsed = true; peekHeight = 1400 }
-        return Triple(bs, root, root)
+        return bs to root
     }
 
     private fun makeListView(root: LinearLayout): ListView = ListView(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         isNestedScrollingEnabled = true; divider = null; dividerHeight = 12; setPadding(0, 14, 0, 0)
         root.addView(this)
     }
@@ -170,10 +167,9 @@ class MainActivity : AppCompatActivity() {
         lv.setOnItemClickListener { _, _, pos, _ -> onClick(pos) }
     }
 
-    // МЕНЮ И ПОДМЕНЮ ИНСТРУМЕНТОВ
     private fun showMenuDialog(title: String, builders: (android.app.Dialog, LinearLayout) -> Unit) {
         val dialog = android.app.Dialog(this).apply { requestWindowFeature(Window.FEATURE_NO_TITLE); window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)) }
-        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(900, ViewGroup.LayoutParams.WRAP_CONTENT) }
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(900, -2) }
         val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 24) }
         hdr.addView(TextView(this).apply { text = title; textSize = 19.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#212121")); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         hdr.addView(TextView(this).apply { text = "✕"; textSize = 20f; setTextColor(Color.GRAY); setPadding(16, 4, 8, 4); setOnClickListener { dialog.dismiss() } })
@@ -197,15 +193,15 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, card, "📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
         addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10") { openMkbSheet() }
         addDialogBtn(d, card, "🧮 КАЛЬКУЛЯТОРЫ И НОРМЫ", "#0277BD") { showToolsSubMenu() }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2) }
         fun half(t: String, mr: Int, act: () -> Unit) = TextView(this).apply {
-            text = t; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(12, 26, 12, 26); background = roundBg("#00695C", 10f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = mr }
+            text = t; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 1
+            setPadding(12, 28, 12, 28); background = roundBg("#00695C", 10f)
+            layoutParams = LinearLayout.LayoutParams(0, -1, 1f).apply { rightMargin = mr }
             setOnClickListener { d.dismiss(); act() }
         }
-        row.addView(half("📥 ИМПОРТ БАЗЫ", 14) { importDbLauncher.launch(arrayOf("*/*")) })
-        row.addView(half("📤 ЭКСПОРТ БАЗЫ", 0) { exportDbLauncher.launch("ssmp_archive_${SimpleDateFormat("dd_MM_yyyy", Locale.getDefault()).format(Date())}.json") })
+        row.addView(half("📥 ИМПОРТ", 14) { importDbLauncher.launch(arrayOf("*/*")) })
+        row.addView(half("📤 ЭКСПОРТ", 0) { exportDbLauncher.launch("ssmp_archive_${SimpleDateFormat("dd_MM_yyyy", Locale.getDefault()).format(Date())}.json") })
         card.addView(row)
     }
 
@@ -214,9 +210,8 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, card, "🧠 ШКАЛА ГЛАЗГО И ШОК-ИНДЕКС", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
     }
 
-    // ВЫБОР АВТОЗАПОЛНЕНИЯ ⚡
     private fun showAutofillPickerSheet(currentFio: String = "") {
-        val (bs, root, _) = createSheet("⚡ Выберите шаблон или карту:", "#0288D1")
+        val (bs, root) = createSheet("⚡ Выберите шаблон или карту:", "#0288D1")
         val cleanFio = currentFio.trim()
         if (cleanFio.length >= 3) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -277,9 +272,8 @@ class MainActivity : AppCompatActivity() {
         bs.show(); update("")
     }
 
-    // СПРАВОЧНИК МКБ-10
     private fun openMkbSheet() {
-        val (bs, root, _) = createSheet("📖 Справочник МКБ-10 (${fullMkbList.size} кодов)", "#00695C")
+        val (bs, root) = createSheet("📖 Справочник МКБ-10 (${fullMkbList.size} кодов)", "#00695C")
         val cats = listOf("🌟 Все" to "ALL", "❤️ I Кардио" to "I", "🫁 J Дыхание" to "J", "🧠 G Невро" to "G", "🩹 S Травмы" to "S", "🧪 T Токсико" to "T", "🚨 R Симптомы" to "R", "🤢 K ЖКТ" to "K", "🩸 E Эндокрин" to "E", "🤰 O Акушерство" to "O", "🏥 Z Прочее" to "Z", "🦠 A/B Инфекции" to "AB", "🤪 F Психиатрия" to "F", "🚽 N Урология" to "N", "🦴 M Кости" to "M", "🎗️ C/D Онко" to "CD", "👂 H ЛОР" to "H", "👶 P/Q Дети" to "PQ", "⚠️ V-Y Причины" to "VY")
         var selCat = "ALL"
         val chipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -320,10 +314,9 @@ class MainActivity : AppCompatActivity() {
         renderChips(); filter(); bs.show()
     }
 
-    // ОБРАЗЦЫ И АРХИВ
     private fun openSearchSheet(isBest: Boolean) {
         val total = dbHelper.searchBuiltInTemplates("").size
-        val (bs, root, _) = createSheet(if (isBest) "⭐ Образцы карт ($total шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
+        val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($total шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
         val qInp = EditText(this).apply {
             hint = if (isBest) "Поиск по диагнозу или СЛР..." else "Поиск по фамилии..."
             setPadding(30, 22, 30, 22); background = roundBg(if (isBest) "#FFF8E1" else "#F0F4F4", 18f, if (isBest) "#FFE082" else null); setTextColor(Color.BLACK)
@@ -350,7 +343,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showTemplatePreview(s: BestCardSample) {
-        val (bs, root, _) = createSheet("${if (s.isCustom) "📌" else "⭐"} ${s.title}", "#E65100")
+        val (bs, root) = createSheet("${if (s.isCustom) "📌" else "⭐"} ${s.title}", "#E65100")
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
         bar.addView(TextView(this).apply {
             text = "⚡ Вставить в карту"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
@@ -377,7 +370,7 @@ class MainActivity : AppCompatActivity() {
         val history = dbHelper.getPatientHistory(fio).toMutableList()
         if (history.isEmpty()) return@launch
         withContext(Dispatchers.Main) {
-            val (bs, root, _) = createSheet(fio.uppercase(), "#004D40")
+            val (bs, root) = createSheet(fio.uppercase(), "#004D40")
             val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
 
             val actions = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
@@ -449,7 +442,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ПАРСИНГ И ФОРМАТИРОВАНИЕ ДАННЫХ КАРТЫ
     private fun cleanBpString(raw: String): String {
         val s = raw.trim().replace("null", "")
         if (s.isEmpty()) return ""
@@ -479,8 +471,7 @@ class MainActivity : AppCompatActivity() {
             add("🎂 Родился", "birthDate"); add("⏳ Возраст", "age", " ${j.optString("ageUnit")}".trimEnd())
             add("⚧ Пол", "gender"); add("📍 Адрес", "address"); add("🚨 Повод", "callReason"); add("🏥 АПО", "apo")
 
-            append("\n📋 ДИАГНОЗ:\n• ${j.optString("diagnosis")}\n")
-            add("• Код МКБ", "mkb")
+            append("\n📋 ДИАГНОЗ:\n• ${j.optString("diagnosis")}\n"); add("• Код МКБ", "mkb")
             if (j.optString("recommendedTherapy").isNotEmpty()) append("\n💊 ПРОТОКОЛЬНАЯ ТЕРАПИЯ (подсказка):\n${j.optString("recommendedTherapy")}\n")
 
             if (j.optString("ecgBefore").isNotEmpty() || j.optString("ecgAfter").isNotEmpty()) {
@@ -495,11 +486,12 @@ class MainActivity : AppCompatActivity() {
             add("• Пульс", "pulse", " уд/мин"); add("• ЧДД", "rr", " в мин"); add("• SpO2", "saturation", "%")
             add("• Сахар", "glucose", " ммоль/л"); add("• Температура", "temp", "°C")
             add("• Тоны сердца", "heartSounds"); add("• Дыхание", "lungs"); add("• Перкуссия", "percussion")
-            add("• Живот", "abdomen"); add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
+            add("• Живот", "abdomen"); add("• Кожа", "skin"); add("• Высыпания", "rash")
+            add("• Отеки", "edema"); add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
             add("• Речь", "speech"); add("• Лицо", "face"); add("• Походка", "gait"); add("• Нистагм", "nystagmus")
-            add("• Кожа", "skin"); add("• Язык", "tongue"); add("• Слизистые", "mucous")
-            add("• Перистальтика", "peristalsis"); add("• Печень", "liver"); add("• Мочеиспускание", "urination")
-            add("• Локально", "localStatus")
+            add("• Язык", "tongue"); add("• Слизистые", "mucous"); add("• Перистальтика", "peristalsis")
+            add("• Печень", "liver"); add("• Брюшина", "peritoneal"); add("• Мочеиспускание", "urination"); add("• Стул", "stool")
+            add("• Запах алкоголя", "alcohol"); add("• Запах ацетона", "acetone"); add("• Локально", "localStatus")
 
             if (j.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${j.optString("complaints")}\n")
             if (j.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез:\n${j.optString("anamnesis")}\n")
@@ -508,8 +500,7 @@ class MainActivity : AppCompatActivity() {
 
             val meds = cleanMedicationsString(j.optString("medications"))
             if (meds.isNotEmpty() || j.optString("attack").isNotEmpty() || j.optString("therapyEffect").isNotEmpty() || j.optString("callResult").isNotEmpty()) {
-                append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
-                add("• Помощь", "medHelp")
+                append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n"); add("• Помощь", "medHelp")
                 if (meds.isNotEmpty()) append("• Препараты:\n• $meds\n")
                 add("• Приступ", "attack"); add("• Эффект", "therapyEffect"); add("• Итог", "callResult")
             }
@@ -598,6 +589,10 @@ class MainActivity : AppCompatActivity() {
                 put("glucose", raw.optString("glycemia1").replace("null", ""))
                 put("heartSounds", jArr("heartSounds")); put("lungs", jArr("breaths")); put("percussion", jArr("percussionOfLungs"))
                 put("abdomen", jArr("stomachs")); put("skin", jArr("skins")); put("urination", jArr("urinations").uppercase())
+                put("stool", raw.optJSONObject("defecatio")?.optString("type")?.uppercase() ?: "")
+                put("edema", if (raw.optBoolean("peripheralEdema", false)) "ДА" else "НЕТ")
+                put("rash", if (raw.optBoolean("skinRashes", false)) "ДА" else "НЕТ")
+                put("ascites", if (raw.optBoolean("ascites", false)) "ДА" else "НЕТ")
                 put("medHelp", jArr("medicalAssistanceProvided")); put("medications", meds)
                 put("pupils", raw.optJSONObject("pupils")?.optString("type")?.uppercase() ?: "")
                 put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")

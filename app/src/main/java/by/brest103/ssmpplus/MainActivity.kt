@@ -2,14 +2,13 @@ package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
 import android.content.*
+import android.content.ClipboardManager
 import android.graphics.*
 import android.graphics.drawable.*
 import android.net.http.SslError
 import android.os.Bundle
-import android.text.*
-import android.view.*
-import android.webkit.*
-import android.widget.*
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.*

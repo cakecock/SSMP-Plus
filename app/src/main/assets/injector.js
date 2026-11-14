@@ -59,50 +59,21 @@
         };
     }
 
-    // ===== ВИДИМОСТЬ ЭЛЕМЕНТОВ =====
-    // Карта вызова построена на react-swipeable-views: ВСЕ вкладки постоянно
-    // находятся в DOM, неактивные лишь сдвинуты по горизонтали и помечены
-    // aria-hidden="true". Поэтому offsetParent !== null ещё не значит, что поле
-    // принадлежит активной вкладке (из-за этого раньше заполнялось «Заключение»).
-    function isElementOnScreen(el) {
-        if (!el || el.offsetParent === null) return false;
-        // Поле внутри неактивного слайда (вкладки) — не трогаем.
-        if (el.closest && el.closest('[data-swipeable="true"][aria-hidden="true"]')) return false;
-        const r = el.getBoundingClientRect();
-        if (!r || r.width === 0 || r.height === 0) return false;
-        const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-        // Соседние слайды сдвинуты на целую ширину экрана, поэтому их центр
-        // за пределами viewport. Проверяем центр, а не края: поле может быть
-        // чуть шире экрана, но всё равно принадлежать активной вкладке.
-        const cx = (r.left + r.right) / 2;
-        if (vw > 0 && (cx < 0 || cx > vw)) return false;
-        return true;
-    }
-    window.b103IsElementOnScreen = isElementOnScreen;
-
-    // Активна ли вкладка «Заключение» (её автозаполнение запрещено).
-    window.b103IsConclusionTab = function() {
-        const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
-        const cur = tabs.find(t => t.getAttribute('aria-selected') === 'true');
-        return !!(cur && (cur.innerText || '').toUpperCase().includes('ЗАКЛЮЧЕНИЕ'));
-    };
-
     // Универсальный поиск видимого поля по ключевым словам (охватывает label, p, span, div)
     function findInputByKw(keywords, exact = false) {
         const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText) return false;
+                if (!el.innerText || el.offsetParent === null) return false;
                 const t = el.innerText.trim().toLowerCase();
-                if (!((exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 30)) return false;
-                return isElementOnScreen(el);
+                return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 30;
             });
             if (target) {
                 let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
                 for (let i = 0; i < 4 && p && p !== document.body; i++) {
                     const inp = p.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
-                    if (inp && isElementOnScreen(inp)) return inp;
+                    if (inp && inp.offsetParent !== null) return inp;
                     p = p.parentElement;
                 }
             }
@@ -113,23 +84,14 @@
     function scrapeCache() {
         const c = window.b103ScreenCache;
         const g = (k) => findInputByKw([k])?.value?.trim();
-        const put = (kw, prop) => { const v = g(kw); if (v) c[prop] = v; };
-        put("экг до оказания", "electrocardiogramBefore");
-        put("экг после оказания", "electrocardiogramAfter");
-        put("предварительный диагноз", "diagnosis");
-        put("жалобы", "complaints");
-        put("анамнез заболевания", "anamnesis");
-        put("локальный статус", "localStatus");
+        if (g("экг до оказания")) c.electrocardiogramBefore = g("экг до оказания");
+        if (g("экг после оказания")) c.electrocardiogramAfter = g("экг после оказания");
+        if (g("предварительный диагноз")) c.diagnosis = g("предварительный диагноз");
+        if (g("жалобы")) c.complaints = g("жалобы");
+        if (g("анамнез заболевания")) c.anamnesis = g("анамнез заболевания");
+        if (g("локальный статус")) c.localStatus = g("локальный статус");
 
-        // XPath быстрее, чем перебор всего DOM через querySelectorAll('*').
-        let qtyNodes = [];
-        try {
-            const xp = document.evaluate("//*[contains(text(),'Количество:')]", document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-            for (let i = 0; i < xp.snapshotLength; i++) qtyNodes.push(xp.snapshotItem(i));
-        } catch (err) {
-            qtyNodes = Array.from(document.querySelectorAll('*')).filter(n => n.children.length === 0 && n.textContent && n.textContent.includes("Количество:"));
-        }
-        qtyNodes = qtyNodes.filter(n => n.children.length === 0 && isElementOnScreen(n));
+        const qtyNodes = Array.from(document.querySelectorAll('*')).filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
         if (qtyNodes.length > 0) {
             const meds = [];
             for (let q of qtyNodes) {
@@ -152,14 +114,6 @@
     }
 
     function isInsideCard() {
-        // Дешёвая проверка по разметке карты вызова (swipeable-контейнер есть
-        // только в карте), чтобы не читать document.body.innerText каждые 300 мс.
-        if (document.querySelector('.react-swipeable-view-container')) return true;
-        const tabs = document.querySelectorAll('[role="tab"]');
-        for (let i = 0; i < tabs.length; i++) {
-            const tx = (tabs[i].innerText || '').toUpperCase();
-            if (tx.includes('ОБЪЕКТИВНЫЕ') || tx.includes('УТОЧНЕННЫЕ') || tx.includes('МЕДИЦИНСКАЯ')) return true;
-        }
         const t = document.body ? document.body.innerText : '';
         return (t.includes('О ВЫЗОВЕ') && t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
@@ -187,29 +141,15 @@
             }
         };
         document.getElementById('btn-fill-db').onclick = () => {
-            if (window.b103IsConclusionTab && window.b103IsConclusionTab()) {
-                window.AndroidBridge?.notifyUser("Вкладка «Заключение» не заполняется автоматически — заполните её вручную");
-                return;
-            }
-            // ФИО берём из карты вызова, а не с экрана: на вкладке «Заключение»
-            // поле «ФИО» — это уже принимающий медработник.
-            const apiFio = window.lastLoadedApiCard?.patient?.fullName || window.lastLoadedApiCard?.initialFullName || "";
-            const fio = apiFio || findInputByKw(["фио"])?.value?.trim() || "";
+            const fio = findInputByKw(["фио"])?.value?.trim() || "";
             window.AndroidBridge?.requestAutofill(fio);
         };
     }
 
-    let lastScrapeAt = 0;
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
-        const now = Date.now();
-        // Раньше полный обход DOM выполнялся каждые 300 мс; на большой карте это
-        // заметно подтормаживало WebView. Теперь — не чаще раза в 2,5 с.
-        if (inCard && !window.b103IsApplying && !document.hidden && now - lastScrapeAt > 2500) {
-            lastScrapeAt = now;
-            scrapeCache();
-        }
+        if (inCard) scrapeCache();
         const m = document.getElementById('btn-main-menu');
         const s = document.getElementById('btn-save-db');
         const f = document.getElementById('btn-fill-db');
@@ -230,11 +170,8 @@
             const rect = tab.getBoundingClientRect();
             if (rect.top < 0 || rect.top > 130) return;
             const t = (tab.innerText || '').toUpperCase();
-            if (t.includes('ЗАКЛЮЧЕНИЕ')) return; // эту вкладку заполняем только вручную
             if (t.includes('УТОЧНЕННЫЕ') || t.includes('ОБЪЕКТИВНЫЕ') || t.includes('МЕДИЦИНСКАЯ')) {
-                // Ждём окончания анимации SwipeableViews (0,35 с), иначе поля
-                // соседних вкладок ещё частично видны и могут быть заполнены.
-                setTimeout(() => window.applyAutofill(window.activeAutofillData), 450);
+                setTimeout(() => window.applyAutofill(window.activeAutofillData), 180);
             }
         }, true);
     }
@@ -256,11 +193,6 @@ window.setAndApplyAutofill = function(jsonStr) {
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
-    // «Заключение» заполняем только вручную: автопилот туда больше не лезет.
-    if (window.b103IsConclusionTab && window.b103IsConclusionTab()) {
-        window.AndroidBridge?.notifyUser("Вкладка «Заключение» не заполняется автоматически — заполните её вручную");
-        return;
-    }
     window.b103IsApplying = true;
     const fillBtn = document.getElementById('btn-fill-db');
     if (fillBtn) fillBtn.innerText = "⏳";
@@ -273,40 +205,8 @@ window.applyAutofill = async function(jsonStr) {
         document.head.appendChild(hideStyle);
     }
 
-    const onScreen = (el) => (window.b103IsElementOnScreen ? window.b103IsElementOnScreen(el) : true);
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    // Самое «свежее» открытое меню (последнее в DOM).
-    function getOpenPopover() {
-        const pops = Array.from(document.querySelectorAll('.MuiPopover-root'))
-            .filter(p => p.getAttribute('aria-hidden') !== 'true');
-        return pops.length ? pops[pops.length - 1] : null;
-    }
-
-    // Закрытие меню Material-UI. ВАЖНО: MUI ловит Escape на корне поповера
-    // (onKeyDown у Modal), поэтому событие нужно отправлять ВНУТРИ него, а не
-    // на document.body — иначе меню остаётся открытым.
-    async function closeMenus(rounds = 3, wait = 120) {
-        for (let i = 0; i < rounds; i++) {
-            const pops = Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root'))
-                .filter(p => p.isConnected);
-            if (pops.length === 0) return;
-            for (const p of pops) {
-                const target = p.querySelector('[role="listbox"], [role="menu"], .MuiPaper-root') || p;
-                target.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
-                    bubbles: true, cancelable: true
-                }));
-            }
-            await sleep(wait);
-        }
-    }
-
     try {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-
-        // На случай, если меню осталось открытым с прошлого раза.
-        await closeMenus(1, 60);
 
         function normBp(v) {
             if (!v) return "";
@@ -338,14 +238,14 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText || !onScreen(l)) continue;
+                    if (!l.innerText || l.offsetParent === null) continue;
                     const t = l.innerText.trim().toLowerCase();
                     const isMatch = exact ? t === kwL : (t === kwL || t.includes(kwL));
                     if (isMatch && t.length < kwL.length + 30) {
                         let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
                         for (let i = 0; i < 4 && p && p !== document.body; i++) {
                             const inp = p.querySelector('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])');
-                            if (inp && onScreen(inp) && !res.includes(inp)) {
+                            if (inp && inp.offsetParent !== null && !res.includes(inp)) {
                                 res.push(inp);
                                 break;
                             }
@@ -401,79 +301,69 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText || !onScreen(l)) continue;
+                    if (!l.innerText || l.offsetParent === null) continue;
                     const t = l.innerText.trim().toLowerCase();
                     if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 30) {
                         const c = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
-                        if (c && onScreen(c) && !ctrls.includes(c)) ctrls.push(c);
+                        if (c && c.offsetParent !== null && !ctrls.includes(c)) ctrls.push(c);
                     }
                 }
             }
 
             for (let c of ctrls) {
                 const btn = c.querySelector('.MuiSelect-root, [role="button"], .MuiAutocomplete-popupIndicator');
-                if (!btn || !onScreen(btn)) continue;
+                if (!btn || btn.offsetParent === null) continue;
 
-                let isMulti = btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
+                const isMulti = btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                 const curText = (btn.innerText || '').trim().toLowerCase();
 
                 if (!isMulti && curText === vals[0]) continue;
                 if (isMulti && vals.every(v => curText.includes(v))) continue;
 
-                // Меню от предыдущего поля должно быть закрыто, иначе Escape/клик
-                // попадут не в тот список и часть меню останется висеть.
-                await closeMenus(1, 60);
-
-                // Открываем меню через mousedown (у MUI Select это onMouseDown).
+                // Открываем меню через mousedown + click
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 btn.click();
-                await sleep(110);
+                await new Promise(r => setTimeout(r, 90));
 
-                const popover = getOpenPopover();
-                if (!popover) continue;
+                const popover = document.querySelector('.MuiPopover-root') || document;
                 const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root, .MuiAutocomplete-option'));
-                if (opts.length === 0) { await closeMenus(1, 80); continue; }
 
-                const txt = (o) => (o.innerText || '').trim().toLowerCase();
-                const findOpt = (v) => opts.find(o => {
-                    const ot = txt(o);
-                    return ot !== "не выбрано" && (ot === v || ot.includes(v));
-                });
-                const isSelected = (o) => o.getAttribute('aria-selected') === 'true' ||
-                    o.classList.contains('Mui-selected') ||
-                    !!o.querySelector('input[type="checkbox"]:checked');
-
-                if (!isMulti) {
-                    // ОДИНОЧНЫЙ СПИСОК (Состояние, Сознание, Возраст ед.): строго игнорируем "не выбрано"!
-                    const match = findOpt(vals[0]);
-                    if (match) {
-                        if (!isSelected(match)) {
-                            match.click(); // в одиночном списке клик сам закрывает меню
-                            await sleep(80);
+                if (opts.length > 0) {
+                    if (!isMulti) {
+                        // ОДИНОЧНЫЙ СПИСОК (Состояние, Сознание, Возраст ед.): строго игнорируем "не выбрано"!
+                        const match = opts.find(o => {
+                            const ot = (o.innerText || '').trim().toLowerCase();
+                            return ot !== "не выбрано" && (ot === vals[0] || ot.includes(vals[0]));
+                        });
+                        if (match) {
+                            match.click(); // В одиночном списке клик сам штатно закрывает меню и фиксирует значение!
+                            await new Promise(r => setTimeout(r, 80));
+                        } else {
+                            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                            await new Promise(r => setTimeout(r, 40));
                         }
+                    } else {
+                        // МУЛЬТИСЕЛЕКТ (Тоны, Дыхание, Живот, Кожа):
+                        const wanted = new Set();
+                        for (let v of vals) {
+                            const m = opts.find(o => {
+                                const ot = (o.innerText || '').trim().toLowerCase();
+                                return ot !== "не выбрано" && (ot === v || ot.includes(v));
+                            });
+                            if (m) wanted.add(m);
+                        }
+                        for (let o of opts) {
+                            const shouldBe = wanted.has(o);
+                            const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
+                            if (shouldBe !== isSel) {
+                                o.click();
+                                await new Promise(r => setTimeout(r, 35));
+                            }
+                        }
+                        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                        await new Promise(r => setTimeout(r, 40));
                     }
-                    // Если меню всё ещё раскрыто — это мультиселект с одним значением
-                    // в шаблоне (например, «Дыхание: Везикулярное»).
-                    isMulti = btn.getAttribute('aria-expanded') === 'true';
-                    if (!isMulti) { await closeMenus(1, 80); continue; }
                 }
-
-                // МУЛЬТИСЕЛЕКТ (Тоны, Дыхание, Перкуссия, Живот, Кожа):
-                const wanted = new Set();
-                for (let v of vals) {
-                    const m = findOpt(v);
-                    if (m) wanted.add(m);
-                }
-                for (let o of opts) {
-                    if (!o.isConnected) continue;
-                    const shouldBe = wanted.has(o);
-                    if (shouldBe !== isSelected(o)) {
-                        o.click();
-                        await sleep(40);
-                    }
-                }
-                // Закрываем именно это меню (Escape внутри поповера).
-                await closeMenus(2, 120);
             }
         }
 
@@ -483,7 +373,7 @@ window.applyAutofill = async function(jsonStr) {
             const targetUp = targetText.trim().toUpperCase();
             const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const btn = btns.find(b => {
-                if (!onScreen(b)) return false;
+                if (b.offsetParent === null) return false;
                 const bt = (b.innerText || '').trim().toUpperCase();
                 return bt === targetUp || (targetUp.includes("СИММЕТР") && targetUp.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ"));
             });
@@ -503,7 +393,7 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 const target = labels.find(el => {
-                    if (!el.innerText || !onScreen(el)) return false;
+                    if (!el.innerText || el.offsetParent === null) return false;
                     const t = el.innerText.trim().toLowerCase();
                     return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 30;
                 });
@@ -511,7 +401,7 @@ window.applyAutofill = async function(jsonStr) {
                     let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
                     for (let i = 0; i < 4 && p && p !== document.body; i++) {
                         const btns = Array.from(p.querySelectorAll('button, div[role="button"]'));
-                        const desired = btns.find(b => onScreen(b) && (b.innerText || '').trim().toUpperCase() === choice.toUpperCase());
+                        const desired = btns.find(b => (b.innerText || '').trim().toUpperCase() === choice.toUpperCase());
                         if (desired) {
                             const s = window.getComputedStyle(desired);
                             const isWhite = s.color.includes('255, 255, 255');
@@ -530,7 +420,7 @@ window.applyAutofill = async function(jsonStr) {
         function fillBP(isAd, raw) {
             const str = normBp(raw); if (!str.includes('/')) return;
             const p = str.split('/');
-            Array.from(document.querySelectorAll('*')).filter(e => onScreen(e) && e.children.length === 0 && e.textContent.trim() === '/').forEach(sl => {
+            Array.from(document.querySelectorAll('*')).filter(e => e.offsetParent !== null && e.children.length === 0 && e.textContent.trim() === '/').forEach(sl => {
                 let pr = sl.parentElement;
                 for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
                     const inps = Array.from(pr.querySelectorAll('input:not([type="hidden"]):not([disabled])'));
@@ -647,9 +537,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.percussion) await selectDropdown(["перкуссия легких"], data.percussion);
         if (data.abdomen) await selectDropdown(["живот"], data.abdomen);
     } catch (e) { console.error(e); } finally {
-        // Закрываем все меню ДО снятия маски, иначе пользователь увидит
-        // оставшиеся открытыми списки (Перкуссия, Дыхание и т.д.).
-        await closeMenus(4, 120);
         document.getElementById('b103-hide-menus')?.remove();
         if (fillBtn) fillBtn.innerText = "⚡";
         setTimeout(() => { window.b103IsApplying = false; }, 200);

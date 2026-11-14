@@ -170,80 +170,103 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Шторка выбора карты для автозаполнения (с живым поиском по архиву!)
     private fun showAutofillPickerSheet() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val summaries = dbHelper.searchPatientSummaries("")
-            withContext(Dispatchers.Main) {
-                if (summaries.isEmpty()) {
-                    Toast.makeText(this@MainActivity, "В архиве пока нет сохраненных карт", Toast.LENGTH_LONG).show()
-                    return@withContext
-                }
+        val bottomSheet = BottomSheetDialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 24, 40, 30)
+            setBackgroundColor(Color.WHITE)
+        }
 
-                val bottomSheet = BottomSheetDialog(this@MainActivity)
-                val root = LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(40, 24, 40, 30)
-                    setBackgroundColor(Color.WHITE)
-                }
+        root.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(90, 8).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = 16
+            }
+            background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
+        })
 
-                root.addView(View(this@MainActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(90, 8).apply {
-                        gravity = Gravity.CENTER_HORIZONTAL
-                        bottomMargin = 16
-                    }
-                    background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
-                })
+        root.addView(TextView(this).apply {
+            text = "⚡ Выберите карту для автозаполнения:"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#0288D1"))
+            setPadding(0, 0, 0, 12)
+        })
 
-                root.addView(TextView(this@MainActivity).apply {
-                    text = "⚡ Выберите карту для автозаполнения:"
-                    textSize = 17f
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(Color.parseColor("#0288D1"))
-                    setPadding(0, 0, 0, 14)
-                })
+        val searchInput = EditText(this).apply {
+            hint = "Поиск по фамилии или диагнозу..."
+            setPadding(35, 26, 35, 26)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F0F8FF"))
+                setStroke(2, Color.parseColor("#BBDEFB"))
+                cornerRadius = 20f
+            }
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.GRAY)
+        }
+        root.addView(searchInput)
 
-                val listView = ListView(this@MainActivity).apply {
-                    divider = null
-                    dividerHeight = 12
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-                }
-                root.addView(listView)
+        val listView = ListView(this).apply {
+            divider = null
+            dividerHeight = 12
+            isNestedScrollingEnabled = true
+            setPadding(0, 14, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        root.addView(listView)
 
-                val titles = summaries.map { "👤 ${it.fio.uppercase()}\n📋 ${it.lastReason}" }
-                listView.adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_list_item_1, titles) {
-                    override fun getView(pos: Int, conv: View?, parent: ViewGroup): View {
-                        val tv = super.getView(pos, conv, parent) as TextView
-                        tv.setPadding(26, 20, 26, 20)
-                        tv.setTextColor(Color.parseColor("#263238"))
-                        tv.background = GradientDrawable().apply {
-                            setColor(Color.parseColor("#F0F8FF"))
-                            setStroke(2, Color.parseColor("#BBDEFB"))
-                            cornerRadius = 16f
+        bottomSheet.setContentView(root)
+        bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        bottomSheet.behavior.skipCollapsed = true
+        bottomSheet.behavior.peekHeight = 1350
+
+        fun updateList(query: String) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val summaries = dbHelper.searchPatientSummaries(query)
+                withContext(Dispatchers.Main) {
+                    val titles = summaries.map { "👤 ${it.fio.uppercase()}\n📋 ${it.lastReason}" }
+                    listView.adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_list_item_1, titles) {
+                        override fun getView(pos: Int, conv: View?, parent: ViewGroup): View {
+                            val tv = super.getView(pos, conv, parent) as TextView
+                            tv.setPadding(26, 20, 26, 20)
+                            tv.setTextColor(Color.parseColor("#263238"))
+                            tv.background = GradientDrawable().apply {
+                                setColor(Color.parseColor("#F0F8FF"))
+                                setStroke(2, Color.parseColor("#BBDEFB"))
+                                cornerRadius = 16f
+                            }
+                            return tv
                         }
-                        return tv
                     }
-                }
 
-                listView.setOnItemClickListener { _, _, pos, _ ->
-                    val chosen = summaries[pos]
-                    bottomSheet.dismiss()
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        val cardJson = dbHelper.getBestCardForPatient(chosen.fio)
-                        withContext(Dispatchers.Main) {
-                            if (cardJson != null) {
-                                val safe = JSONObject.quote(cardJson)
-                                webView.evaluateJavascript("applyAutofill($safe);", null)
-                                Toast.makeText(applicationContext, "⚡ Карта ${chosen.fio.uppercase()} заполнена!", Toast.LENGTH_SHORT).show()
+                    listView.setOnItemClickListener { _, _, pos, _ ->
+                        val chosen = summaries[pos]
+                        bottomSheet.dismiss()
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val cardJson = dbHelper.getBestCardForPatient(chosen.fio)
+                            withContext(Dispatchers.Main) {
+                                if (cardJson != null) {
+                                    val safe = JSONObject.quote(cardJson)
+                                    webView.evaluateJavascript("applyAutofill($safe);", null)
+                                    Toast.makeText(applicationContext, "⚡ Карта ${chosen.fio.uppercase()} заполнена!", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                     }
                 }
-
-                bottomSheet.setContentView(root)
-                bottomSheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
-                bottomSheet.show()
             }
         }
+
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { updateList(s.toString()) }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        })
+
+        bottomSheet.show()
+        updateList("")
     }
 
     private fun openMkbSheet() {
@@ -287,7 +310,7 @@ class MainActivity : AppCompatActivity() {
             Pair("🚽 N Урология", "N"),
             Pair("🦴 M Костно-мышечн.", "M"),
             Pair("🎗️ C/D Онкология", "CD"),
-            Pair("👀 H Глаз/Ухо", "H"),
+            Pair("👀 H ЛОР", "H"),
             Pair("👶 P/Q Перинатал.", "PQ"),
             Pair("⚠️ V-Y Внешн. причины", "VY")
         )
@@ -707,6 +730,7 @@ class MainActivity : AppCompatActivity() {
             val j = JSONObject(jsonStr)
             val b = StringBuilder()
             if (j.optString("birthDate").isNotEmpty()) b.append("🎂 Родился: ${j.optString("birthDate")}\n")
+            if (j.optString("age").isNotEmpty()) b.append("⏳ Возраст: ${j.optString("age")} ${j.optString("ageUnit")}\n")
             if (j.optString("gender").isNotEmpty()) b.append("⚧ Пол: ${j.optString("gender")}\n")
             if (j.optString("address").isNotEmpty()) b.append("📍 Адрес: ${j.optString("address")}\n")
             if (j.optString("callReason").isNotEmpty()) b.append("🚨 Повод: ${j.optString("callReason")}\n")
@@ -741,10 +765,10 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("glucose").isNotEmpty()) b.append("• Сахар крови: ${j.optString("glucose")} ммоль/л\n")
             if (j.optString("temp").isNotEmpty()) b.append("• Температура: ${j.optString("temp")}°C\n")
 
-            if (j.optString("heartSounds").isNotEmpty() && !j.optString("heartSounds").contains("[object")) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
-            if (j.optString("lungs").isNotEmpty() && !j.optString("lungs").contains("[object")) b.append("• Дыхание: ${j.optString("lungs")}\n")
-            if (j.optString("percussion").isNotEmpty() && !j.optString("percussion").contains("[object")) b.append("• Перкуссия: ${j.optString("percussion")}\n")
-            if (j.optString("abdomen").isNotEmpty() && !j.optString("abdomen").contains("[object")) b.append("• Живот: ${j.optString("abdomen")}\n")
+            if (j.optString("heartSounds").isNotEmpty()) b.append("• Тоны сердца: ${j.optString("heartSounds")}\n")
+            if (j.optString("lungs").isNotEmpty()) b.append("• Дыхание: ${j.optString("lungs")}\n")
+            if (j.optString("percussion").isNotEmpty()) b.append("• Перкуссия: ${j.optString("percussion")}\n")
+            if (j.optString("abdomen").isNotEmpty()) b.append("• Живот: ${j.optString("abdomen")}\n")
 
             if (j.optString("pupils").isNotEmpty()) b.append("• Зрачки: ${j.optString("pupils")}\n")
             if (j.optString("lightReaction").isNotEmpty()) b.append("• Реакция на свет: ${j.optString("lightReaction")}\n")
@@ -783,6 +807,100 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { "Ошибка" }
     }
 
+    // Универсальный парсер полного серверного JSON карты вызова
+    private fun parseServerCardJson(jsonStr: String): Triple<String, String, Pair<Int, JSONObject>>? {
+        return try {
+            val raw = JSONObject(jsonStr)
+            val patient = raw.optJSONObject("patient") ?: JSONObject()
+            val fio = patient.optString("fullName").ifEmpty { raw.optString("initialFullName") }.trim()
+            if (fio.isEmpty()) return null
+
+            var bDate = patient.optString("birthDate")
+            if (bDate.contains("T") && bDate.contains("-")) {
+                val p = bDate.substringBefore("T").split("-")
+                if (p.size == 3) bDate = "${p[2]}.${p[1]}.${p[0]} / 00:00"
+            }
+
+            fun joinArr(key: String): String {
+                val arr = raw.optJSONArray(key) ?: return ""
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i)
+                    val t = item?.optString("type") ?: arr.optString(i)
+                    if (t.isNotEmpty()) list.add(t)
+                }
+                return list.joinToString(", ")
+            }
+
+            val complaints = raw.optString("complaints").replace("null", "")
+            val anamnesis = raw.optString("anamnesis").replace("null", "")
+            val diag = raw.optString("diagnosis").replace("null", "")
+
+            var score = 0
+            if (anamnesis.length > 10) score += 35
+            if (complaints.isNotEmpty()) score += 25
+            if (diag.isNotEmpty()) score += 25
+            if (raw.optString("arterialPressure").replace("null", "").isNotEmpty()) score += 15
+
+            val icdObj = raw.optJSONObject("icd")
+            val mkbStr = if (icdObj != null) "[${icdObj.optString("code")}] ${icdObj.optString("name")}".trim() else ""
+
+            val card = JSONObject().apply {
+                put("fio", fio)
+                put("birthDate", bDate)
+                put("age", raw.optString("age").replace("null", ""))
+                put("ageUnit", raw.optJSONObject("ageType")?.optString("type") ?: "")
+                put("address", patient.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", ""))
+                put("apo", patient.optJSONObject("territorialMedicalFacility")?.optString("type") ?: "")
+                put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
+                put("gender", if (patient.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")
+                put("complaints", complaints)
+                put("anamnesis", anamnesis)
+                put("pastDiseases", raw.optString("pastIllnesses").replace("null", ""))
+                put("allergy", if (raw.optBoolean("allergy", false)) "ДА" else "НЕТ")
+                put("generalState", raw.optJSONObject("generalState")?.optString("type") ?: "")
+                put("consciousness", raw.optJSONObject("consciousness")?.optString("type") ?: "")
+                put("position", raw.optJSONObject("position")?.optString("type")?.uppercase() ?: "")
+                put("behavior", raw.optJSONObject("behavior")?.optString("type")?.uppercase() ?: "")
+                put("glasgowScore", raw.optString("comaScale").replace("null", ""))
+                put("bp", raw.optString("arterialPressure").replace("null", ""))
+                put("bpAdapted", raw.optString("arterialPressureAdaptive").replace("null", ""))
+                put("pulse", raw.optString("pulse").replace("null", ""))
+                put("rr", raw.optString("breathCount").replace("null", ""))
+                put("temp", raw.optString("skinTemp").replace("null", ""))
+                put("saturation", raw.optString("saturation1").replace("null", ""))
+                put("glucose", raw.optString("glycemia1").replace("null", ""))
+                put("heartSounds", joinArr("heartSounds"))
+                put("lungs", joinArr("breaths"))
+                put("percussion", joinArr("percussionOfLungs"))
+                put("abdomen", joinArr("stomachs"))
+                put("skin", joinArr("skins"))
+                put("urination", joinArr("urinations").uppercase())
+                put("pupils", raw.optJSONObject("pupils")?.optString("type")?.uppercase() ?: "")
+                put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")
+                put("speech", raw.optJSONObject("speech")?.optString("type")?.uppercase() ?: "")
+                put("gait", raw.optJSONObject("gait")?.optString("type")?.uppercase() ?: "")
+                put("face", raw.optJSONObject("face")?.optString("type")?.uppercase() ?: "")
+                put("nystagmus", raw.optJSONObject("nystagmus")?.optString("type")?.uppercase() ?: "")
+                put("tongue", raw.optString("tongue").replace("null", ""))
+                put("mucous", raw.optString("mucosa").replace("null", ""))
+                put("liver", raw.optJSONObject("liver")?.optString("type")?.uppercase() ?: "")
+                put("peristalsis", if (raw.optBoolean("peristalsis", true)) "ДА" else "НЕТ")
+                put("localStatus", raw.optString("localStatus").replace("null", ""))
+                put("ecgBefore", raw.optString("electrocardiogramBefore").replace("null", ""))
+                put("ecgAfter", raw.optString("electrocardiogramAfter").replace("null", ""))
+                put("diagnosis", diag)
+                put("mkb", mkbStr)
+                put("attack", raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: "")
+                put("therapyEffect", raw.optJSONObject("result")?.optString("type")?.uppercase() ?: "")
+                put("callResult", raw.optJSONObject("resultDeparture")?.optString("type")?.uppercase() ?: "")
+            }
+            Triple(fio, bDate, Pair(score, card))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     inner class WebAppInterface {
         @JavascriptInterface
         fun openSearchDialog() = runOnUiThread { openSearchSheet(false) }
@@ -794,74 +912,31 @@ class MainActivity : AppCompatActivity() {
         fun openMkbDialog() = runOnUiThread { openMkbSheet() }
 
         @JavascriptInterface
+        fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet() }
+
+        @JavascriptInterface
         fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
 
-        // ПРЯМОЙ ПЕРЕХВАТ СЕРВЕРНОГО API: сохраняет идеальный JSON карты вызова напрямую
         @JavascriptInterface
         fun saveApiCard(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val raw = JSONObject(jsonStr)
-                    val patient = raw.optJSONObject("patient") ?: JSONObject()
-                    val fio = patient.optString("fullName").ifEmpty { raw.optString("initialFullName") }.trim()
-                    if (fio.isEmpty()) return@launch
-
-                    val bDate = patient.optString("birthDate").ifEmpty { raw.optString("dateOfRegistration") }
-                    val complaints = raw.optString("complaints")
-                    val anamnesis = raw.optString("anamnesis")
-                    val diag = raw.optString("diagnosis")
-
-                    var score = 0
-                    if (anamnesis.length > 10) score += 30
-                    if (complaints.isNotEmpty()) score += 25
-                    if (diag.isNotEmpty()) score += 25
-                    if (raw.optJSONArray("medications")?.length() ?: 0 > 0) score += 20
-
-                    // Формируем чистый адаптированный JSON для нашего архива
-                    val card = JSONObject().apply {
-                        put("fio", fio)
-                        put("birthDate", bDate)
-                        put("address", raw.optString("address"))
-                        put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
-                        put("gender", if (patient.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")
-                        put("complaints", complaints)
-                        put("anamnesis", anamnesis)
-                        put("diagnosis", diag)
-                        put("mkb", raw.optJSONObject("icd")?.optString("code") ?: "")
-                        put("bp", raw.optString("arterialPressure"))
-                        put("bpAdapted", raw.optString("arterialPressureAdaptive"))
-                        put("pulse", raw.optString("pulse"))
-                        put("temp", raw.optString("skinTemp"))
-                        put("saturation", raw.optString("saturation1"))
-                        put("glucose", raw.optString("glycemia1"))
-                        put("localStatus", raw.optString("localStatus"))
-                    }
-
-                    dbHelper.saveOrUpdateCard(fio, bDate, score, card.toString())
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                val parsed = parseServerCardJson(jsonStr) ?: return@launch
+                val (fio, bDate, scoreAndCard) = parsed
+                if (scoreAndCard.first >= 25) {
+                    dbHelper.saveOrUpdateCard(fio, bDate, scoreAndCard.first, scoreAndCard.second.toString())
                 }
             }
         }
 
         @JavascriptInterface
-        fun saveCardData(jsonStr: String) {
+        fun saveApiCardForced(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val j = JSONObject(jsonStr)
-                    val fio = j.optString("fio").trim()
-                    if (fio.isEmpty()) return@launch
-
-                    var score = 0
-                    if (j.optString("anamnesis").length > 10) score += 30
-                    if (j.optString("complaints").isNotEmpty()) score += 20
-                    if (j.optString("bpAdapted").isNotEmpty()) score += 20
-                    if (j.optString("diagnosis").isNotEmpty()) score += 20
-                    if (j.optString("pastDiseases").isNotEmpty()) score += 10
-
-                    dbHelper.saveOrUpdateCard(fio, j.optString("birthDate"), score, jsonStr)
-                    withContext(Dispatchers.Main) { Toast.makeText(applicationContext, "Карта сохранена в архив", Toast.LENGTH_SHORT).show() }
-                } catch (e: Exception) { e.printStackTrace() }
+                val parsed = parseServerCardJson(jsonStr) ?: return@launch
+                val (fio, bDate, scoreAndCard) = parsed
+                dbHelper.saveOrUpdateCard(fio, bDate, scoreAndCard.first, scoreAndCard.second.toString())
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, "💾 Карта $fio сохранена в архив!", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
@@ -869,18 +944,23 @@ class MainActivity : AppCompatActivity() {
         fun requestAutofill(fio: String) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val cleanFio = fio.trim()
-                var jsonCard: String? = null
-                if (cleanFio.isNotEmpty()) {
-                    jsonCard = dbHelper.getBestCardForPatient(cleanFio)
+                if (cleanFio.isEmpty()) {
+                    withContext(Dispatchers.Main) { showAutofillPickerSheet() }
+                    return@launch
                 }
 
+                // 1. Сначала ищем в локальной базе телефона
+                val localCard = dbHelper.getBestCardForPatient(cleanFio)
                 withContext(Dispatchers.Main) {
-                    if (jsonCard != null) {
-                        val safe = JSONObject.quote(jsonCard)
+                    if (localCard != null) {
+                        val safe = JSONObject.quote(localCard)
                         webView.evaluateJavascript("applyAutofill($safe);", null)
-                        Toast.makeText(applicationContext, "⚡ Данные успешно автозаполнены!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "⚡ Заполнено из локального архива!", Toast.LENGTH_SHORT).show()
                     } else {
-                        showAutofillPickerSheet()
+                        // 2. Если в телефоне нет — ищем прошлые вызовы пациента на сервере всех подстанций!
+                        val safeFio = JSONObject.quote(cleanFio)
+                        Toast.makeText(applicationContext, "🔍 Поиск прошлых карт $cleanFio на сервере...", Toast.LENGTH_SHORT).show()
+                        webView.evaluateJavascript("searchServerAndAutofill($safeFio);", null)
                     }
                 }
             }

@@ -209,6 +209,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Очистка и расшифровка АД из серверного формата {"sys":130,"dis":80} -> "130/80"
+    private fun cleanBpString(rawBp: String): String {
+        val s = rawBp.trim().replace("null", "")
+        if (s.isEmpty()) return ""
+        if (s.startsWith("{")) {
+            return try {
+                val o = JSONObject(s)
+                val sys = o.optString("sys").ifEmpty { o.optString("systolic") }.replace("null", "").trim()
+                val dis = o.optString("dis").ifEmpty { o.optString("dia") }.ifEmpty { o.optString("diastolic") }.replace("null", "").trim()
+                if (sys.isNotEmpty() || dis.isNotEmpty()) "$sys/$dis" else ""
+            } catch (e: Exception) { "" }
+        }
+        if (s.contains("ул.") || s.contains(".202")) return ""
+        return s
+    }
+
+    // Очистка строки препаратов от сырых JSON-объектов вида {"id":123,"type":"..."}
+    private fun cleanMedicationsString(rawMeds: String): String {
+        var s = rawMeds.trim().replace("null", "")
+        if (s.isEmpty()) return ""
+        if (s.contains("{")) {
+            val regexType = Regex(""""(?:type|name|title)"\s*:\s*"([^"]+)"""")
+            s = s.replace(Regex("""\{[^{}]*\}""")) { matchResult ->
+                val m = regexType.find(matchResult.value)
+                m?.groupValues?.get(1) ?: ""
+            }
+        }
+        s = s.replace(Regex("""(?i)\bid\s*[:=]?\s*\d+\s*[,;]?"""), "").trim()
+        return s
+    }
+
     // МОДАЛЬНОЕ МЕНЮ ПО ЦЕНТРУ ЭКРАНА
     private fun showMainModalMenu() {
         val dialog = android.app.Dialog(this)
@@ -283,7 +314,6 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    // Окно выбора при нажатии на молнию ⚡
     private fun showAutofillPickerSheet(currentFio: String = "") {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -308,7 +338,6 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, 12)
         })
 
-        // Если текущий пациент уже есть в личном архиве — показываем быструю кнопку сверху
         val cleanFio = currentFio.trim()
         if (cleanFio.length >= 3) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -647,7 +676,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         val searchInput = EditText(this).apply {
-            hint = if (isBestOnly) "Поиск по диагнозу или МКБ (ОКС, I48, астма)..." else "Поиск сохраненных карт по фамилии..."
+            hint = if (isBestOnly) "Поиск по диагнозу или МКБ (СЛР, ОКС, I48, астма)..." else "Поиск сохраненных карт по фамилии..."
             setPadding(35, 26, 35, 26)
             background = GradientDrawable().apply {
                 setColor(Color.parseColor(if (isBestOnly) "#FFF8E1" else "#F0F4F4"))
@@ -956,8 +985,8 @@ class MainActivity : AppCompatActivity() {
                         })
                     }
 
-                    val bp = j.optString("bp").ifEmpty { j.optString("bpAdapted") }
-                    if (bp.isNotEmpty() && !bp.contains("ул.") && !bp.contains(".")) addB("❤️ $bp", "#E53935")
+                    val bp = cleanBpString(j.optString("bp")).ifEmpty { cleanBpString(j.optString("bpAdapted")) }
+                    if (bp.isNotEmpty()) addB("❤️ $bp", "#E53935")
                     if (j.optString("pulse").isNotEmpty()) addB("💓 ${j.optString("pulse")}", "#D81B60")
                     if (j.optString("saturation").isNotEmpty()) addB("🫁 ${j.optString("saturation")}%", "#00897B")
                     if (j.optString("glucose").isNotEmpty()) addB("🩸 ${j.optString("glucose")}", "#8E24AA")
@@ -1031,10 +1060,10 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("behavior").isNotEmpty()) b.append("• Поведение: ${j.optString("behavior")}\n")
             if (j.optString("glasgowScore").isNotEmpty()) b.append("• Глазго: ${j.optString("glasgowScore")} б\n")
 
-            val bpAd = j.optString("bpAdapted")
-            if (bpAd.isNotEmpty() && !bpAd.contains(".")) b.append("• Привычное АД: $bpAd\n")
-            val bp = j.optString("bp")
-            if (bp.isNotEmpty() && !bp.contains(".")) b.append("• АД на вызове: $bp\n")
+            val bpAd = cleanBpString(j.optString("bpAdapted"))
+            if (bpAd.isNotEmpty()) b.append("• Привычное АД: $bpAd\n")
+            val bp = cleanBpString(j.optString("bp"))
+            if (bp.isNotEmpty()) b.append("• АД на вызове: $bp\n")
 
             if (j.optString("pulse").isNotEmpty()) b.append("• Пульс: ${j.optString("pulse")} уд/мин\n")
             if (j.optString("rr").isNotEmpty()) b.append("• ЧДД: ${j.optString("rr")} в мин\n")
@@ -1069,7 +1098,7 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("allergy").isNotEmpty()) b.append("⚠️ Аллергия: ${j.optString("allergy")}\n")
 
             val medHelp = j.optString("medHelp")
-            val meds = j.optString("medications")
+            val meds = cleanMedicationsString(j.optString("medications"))
             val attack = j.optString("attack")
             val effect = j.optString("therapyEffect")
             val callResult = j.optString("callResult")
@@ -1086,6 +1115,38 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { "Ошибка" }
     }
 
+    // Извлекает человекочитаемое название из вложенных объектов сервера (без {"id":...})
+    private fun extractReadableName(obj: JSONObject, vararg keys: String): String {
+        for (k in keys) {
+            val nested = obj.optJSONObject(k)
+            if (nested != null) {
+                val t = nested.optString("type").ifEmpty { nested.optString("name") }.ifEmpty { nested.optString("title") }.replace("null", "").trim()
+                if (t.isNotEmpty() && !t.startsWith("{")) return t
+                val deep = nested.optJSONObject("name") ?: nested.optJSONObject("type") ?: nested.optJSONObject("medicine")
+                if (deep != null) {
+                    val dt = deep.optString("type").ifEmpty { deep.optString("name") }.replace("null", "").trim()
+                    if (dt.isNotEmpty() && !dt.startsWith("{")) return dt
+                }
+            } else {
+                val str = obj.optString(k).replace("null", "").trim()
+                if (str.isNotEmpty() && !str.startsWith("{") && !str.all { it.isDigit() }) {
+                    return str
+                }
+            }
+        }
+        val iter = obj.keys()
+        while (iter.hasNext()) {
+            val key = iter.next()
+            if (key.lowercase().contains("id") || key == "count" || key == "amount") continue
+            val sub = obj.optJSONObject(key)
+            if (sub != null) {
+                val st = sub.optString("type").ifEmpty { sub.optString("name") }.replace("null", "").trim()
+                if (st.isNotEmpty() && !st.startsWith("{")) return st
+            }
+        }
+        return ""
+    }
+
     private fun parseServerCardJson(jsonStr: String): Triple<String, String, Pair<Int, JSONObject>>? {
         return try {
             val raw = JSONObject(jsonStr)
@@ -1094,7 +1155,7 @@ class MainActivity : AppCompatActivity() {
             if (fio.isEmpty()) return null
 
             var bDate = patient.optString("birthDate").replace("null", "")
-            if (bDate.contains("T") && bDate.contains("-")) {
+            if (bDate.contains("-")) {
                 val p = bDate.substringBefore("T").split("-")
                 if (p.size == 3) bDate = "${p[2]}.${p[1]}.${p[0]} / 00:00"
             }
@@ -1104,8 +1165,8 @@ class MainActivity : AppCompatActivity() {
                 val list = mutableListOf<String>()
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i)
-                    val t = item?.optString("type") ?: item?.optString("name") ?: arr.optString(i)
-                    if (t.isNotEmpty() && t != "null") list.add(t)
+                    val t = if (item != null) extractReadableName(item, "type", "name", "title") else arr.optString(i)
+                    if (t.isNotEmpty() && t != "null" && !t.startsWith("{")) list.add(t)
                 }
                 return list.joinToString(", ")
             }
@@ -1115,16 +1176,13 @@ class MainActivity : AppCompatActivity() {
                 val list = mutableListOf<String>()
                 for (i in 0 until arr.length()) {
                     val m = arr.optJSONObject(i) ?: continue
-                    val medObj = m.optJSONObject("medication") ?: m.optJSONObject("medicine") ?: m
-                    val name = medObj.optString("type").ifEmpty { medObj.optString("name") }.ifEmpty { m.optString("name") }
-                    val count = m.optString("count").ifEmpty { m.optString("amount") }.ifEmpty { m.optString("quantity") }.replace("null", "")
-                    val unit = m.optJSONObject("unit")?.optString("type") ?: medObj.optJSONObject("unit")?.optString("type") ?: ""
-                    val way = m.optJSONObject("wayOfAdministration")?.optString("type")
-                        ?: m.optJSONObject("way")?.optString("type")
-                        ?: m.optString("wayOfAdministration").replace("null", "")
+                    val name = extractReadableName(m, "medication", "medicine", "drug", "name", "type")
+                    val count = m.optString("count").ifEmpty { m.optString("amount") }.ifEmpty { m.optString("quantity") }.replace("null", "").trim()
+                    val unit = extractReadableName(m, "unit")
+                    val way = extractReadableName(m, "wayOfAdministration", "way", "route")
 
-                    if (name.isNotEmpty() && name != "null") {
-                        val qtyStr = if (count.isNotEmpty()) " — $count $unit".trimEnd() else ""
+                    if (name.isNotEmpty()) {
+                        val qtyStr = if (count.isNotEmpty() && !count.startsWith("{")) " — $count $unit".trimEnd() else ""
                         val wayStr = if (way.isNotEmpty() && !way.contains("не определен")) " [$way]" else ""
                         list.add("$name$qtyStr$wayStr")
                     }
@@ -1136,12 +1194,14 @@ class MainActivity : AppCompatActivity() {
             val anamnesis = raw.optString("anamnesis").replace("null", "")
             val diag = raw.optString("diagnosis").replace("null", "")
             val medsStr = parseMedicationsArray()
+            val bpStr = cleanBpString(raw.optString("arterialPressure"))
+            val bpAdStr = cleanBpString(raw.optString("arterialPressureAdaptive"))
 
             var score = 0
             if (anamnesis.length > 10) score += 35
             if (complaints.isNotEmpty()) score += 25
             if (diag.isNotEmpty()) score += 25
-            if (medsStr.isNotEmpty() || raw.optString("arterialPressure").replace("null", "").isNotEmpty()) score += 15
+            if (medsStr.isNotEmpty() || bpStr.isNotEmpty()) score += 15
 
             val icdObj = raw.optJSONObject("icd")
             val mkbStr = if (icdObj != null) "[${icdObj.optString("code")}] ${icdObj.optString("type").ifEmpty { icdObj.optString("name") }}".trim() else ""
@@ -1164,8 +1224,8 @@ class MainActivity : AppCompatActivity() {
                 put("position", raw.optJSONObject("position")?.optString("type")?.uppercase() ?: "")
                 put("behavior", raw.optJSONObject("behavior")?.optString("type")?.uppercase() ?: "")
                 put("glasgowScore", raw.optString("comaScale").replace("null", ""))
-                put("bp", raw.optString("arterialPressure").replace("null", ""))
-                put("bpAdapted", raw.optString("arterialPressureAdaptive").replace("null", ""))
+                put("bp", bpStr)
+                put("bpAdapted", bpAdStr)
                 put("pulse", raw.optString("pulse").replace("null", ""))
                 put("rr", raw.optString("breathCount").replace("null", ""))
                 put("temp", raw.optString("skinTemp").replace("null", ""))

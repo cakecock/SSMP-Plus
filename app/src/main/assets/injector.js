@@ -1,10 +1,25 @@
 (function() {
     window.lastLoadedApiCard = window.lastLoadedApiCard || null;
     window.activeAutofillData = window.activeAutofillData || null;
+    window.b103ScreenCache = window.b103ScreenCache || {};
 
+    // ==========================================
+    // 1. ПЕРЕХВАТ ОТКРЫТИЯ И СОХРАНЕНИЯ КАРТЫ В API
+    // ==========================================
     function setupNetworkInterceptor() {
         const origFetch = window.fetch;
         window.fetch = async function(...args) {
+            try {
+                // Если сайт отправляет PUT/POST при сохранении карты — перехватываем свежие данные!
+                const opts = args[1] || {};
+                if (opts.body && typeof opts.body === 'string' && opts.body.includes('"patient"')) {
+                    const sentData = JSON.parse(opts.body);
+                    if (sentData && sentData.patient) {
+                        window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, sentData);
+                    }
+                }
+            } catch (e) {}
+
             const response = await origFetch.apply(this, args);
             try {
                 const url = typeof args[0] === 'string' ? args[0] : (args[0] ? args[0].url : '');
@@ -14,6 +29,7 @@
                         if (data && data.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== data.id) {
                                 window.activeAutofillData = null;
+                                window.b103ScreenCache = {};
                             }
                             window.lastLoadedApiCard = data;
                         }
@@ -29,7 +45,16 @@
             this._url = url;
             return origOpen.apply(this, arguments);
         };
-        XMLHttpRequest.prototype.send = function() {
+        XMLHttpRequest.prototype.send = function(body) {
+            try {
+                if (body && typeof body === 'string' && body.includes('"patient"')) {
+                    const sentData = JSON.parse(body);
+                    if (sentData && sentData.patient) {
+                        window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, sentData);
+                    }
+                }
+            } catch (e) {}
+
             this.addEventListener('load', function() {
                 try {
                     if (this._url && this._url.includes('/api/card/') && !this._url.includes('/short')) {
@@ -37,6 +62,7 @@
                         if (data && data.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== data.id) {
                                 window.activeAutofillData = null;
+                                window.b103ScreenCache = {};
                             }
                             window.lastLoadedApiCard = data;
                         }
@@ -48,13 +74,14 @@
     }
     setupNetworkInterceptor();
 
-    function findVisibleEditableMuiField(keywords) {
+    function findVisibleEditableMuiField(keywords, exactOnly = false) {
         const labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label'));
         for (let kw of keywords) {
+            const kwLower = kw.toLowerCase();
             const matchingLabels = labels.filter(l => {
                 if (!l.innerText) return false;
                 const t = l.innerText.trim().toLowerCase();
-                return t === kw.toLowerCase() || t.includes(kw.toLowerCase());
+                return exactOnly ? t === kwLower : (t === kwLower || t.includes(kwLower));
             });
             for (let target of matchingLabels) {
                 const control = target.closest('.MuiFormControl-root, .MuiGrid-item');
@@ -70,11 +97,62 @@
         return null;
     }
 
+    // Фоновый сбор значений, введенных на экране (ЭКГ до/после, диагноз, жалобы, препараты)
+    function scrapeVisibleScreenToCache() {
+        const cache = window.b103ScreenCache;
+        const ecgB = findVisibleEditableMuiField(["экг до оказания"])?.value?.trim();
+        if (ecgB) cache.electrocardiogramBefore = ecgB;
+        const ecgA = findVisibleEditableMuiField(["экг после оказания"])?.value?.trim();
+        if (ecgA) cache.electrocardiogramAfter = ecgA;
+        const diag = findVisibleEditableMuiField(["предварительный диагноз"])?.value?.trim();
+        if (diag) cache.diagnosis = diag;
+        const compl = findVisibleEditableMuiField(["жалобы"])?.value?.trim();
+        if (compl) cache.complaints = compl;
+        const anamn = findVisibleEditableMuiField(["анамнез заболевания"])?.value?.trim();
+        if (anamn) cache.anamnesis = anamn;
+        const locSt = findVisibleEditableMuiField(["локальный статус"])?.value?.trim();
+        if (locSt) cache.localStatus = locSt;
+
+        // Сбор карточек препаратов с экрана (если открыта вкладка Медпомощь)
+        const allNodes = Array.from(document.querySelectorAll('*'));
+        const qtyNodes = allNodes.filter(el => el.children.length === 0 && el.textContent && el.textContent.includes("Количество:"));
+        if (qtyNodes.length > 0) {
+            const medItems = [];
+            for (let qNode of qtyNodes) {
+                let card = qNode.parentElement;
+                while (card && card !== document.body) {
+                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+                    const qIdx = lines.findIndex(l => l.includes("Количество:"));
+                    if (qIdx > 0) {
+                        const drugName = lines[0];
+                        const qtyStr = lines[qIdx].replace(/Количество:\s*/i, '').trim();
+                        const routeLine = lines.find(l => l.includes("Путь введения:"));
+                        let routeStr = '';
+                        if (routeLine && !routeLine.includes("не определен")) {
+                            routeStr = ` [${routeLine.replace(/Путь введения:\s*/i, '').trim()}]`;
+                        }
+                        if (drugName && !drugName.includes("Лекарственные") && !drugName.includes("ДОБАВИТЬ")) {
+                            medItems.push(`${drugName} — ${qtyStr}${routeStr}`);
+                        }
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+            }
+            if (medItems.length > 0) {
+                cache._domMedications = Array.from(new Set(medItems)).join(";\n• ");
+            }
+        }
+    }
+
     function isInsideCard() {
         const text = document.body ? document.body.innerText : '';
         return (text.includes('О ВЫЗОВЕ') && text.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || text.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
 
+    // ==========================================
+    // 2. ПЛАВАЮЩИЕ КНОПКИ
+    // ==========================================
     let bar = document.getElementById('b103-toolbar');
     if (!bar) {
         bar = document.createElement('div');
@@ -114,9 +192,12 @@
 
         document.getElementById('btn-main-menu').onclick = () => window.AndroidBridge?.openMainMenu();
 
+        // При нажатии на 💾 объединяем серверную карту и всё, что введено на экране (включая ЭКГ и препараты)
         document.getElementById('btn-save-db').onclick = function() {
+            scrapeVisibleScreenToCache();
             if (window.lastLoadedApiCard && window.AndroidBridge) {
-                window.AndroidBridge.saveApiCardForced(JSON.stringify(window.lastLoadedApiCard));
+                const merged = Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache);
+                window.AndroidBridge.saveApiCardForced(JSON.stringify(merged));
             } else {
                 window.AndroidBridge?.notifyUser("Откройте или обновите карту для сохранения в архив");
             }
@@ -151,12 +232,16 @@
     let lastCardState = null;
     function updateVisibility() {
         const inCard = isInsideCard();
+        if (inCard) scrapeVisibleScreenToCache();
         if (inCard !== lastCardState) {
             lastCardState = inCard;
             setBtnAnimated(document.getElementById('btn-main-menu'), !inCard);
             setBtnAnimated(document.getElementById('btn-save-db'), inCard);
             setBtnAnimated(document.getElementById('btn-fill-db'), inCard);
-            if (!inCard) window.activeAutofillData = null;
+            if (!inCard) {
+                window.activeAutofillData = null;
+                window.b103ScreenCache = {};
+            }
         }
     }
 
@@ -186,6 +271,9 @@ window.setAndApplyAutofill = function(jsonStr) {
     }
 };
 
+// ==========================================
+// 3. ТОЧНЫЙ АВТОПИЛОТ MATERIAL-UI
+// ==========================================
 window.applyAutofill = async function(jsonStr) {
     const fillBtn = document.getElementById('btn-fill-db');
     if (fillBtn) fillBtn.innerText = "⏳";
@@ -193,7 +281,6 @@ window.applyAutofill = async function(jsonStr) {
     try {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
 
-        // Расшифровка АД, если оно сохранено как {"sys":130,"dis":80}
         function normalizeBp(bpVal) {
             if (!bpVal) return "";
             if (typeof bpVal === 'object') {
@@ -231,43 +318,41 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Железобетонная вставка даты и времени 00:00 в маску ввода (через execCommand + setter)
+        // Очистка старой маски даты (чтобы день и месяц 22.05 не прыгали в часы и минуты 22:05!) и вставка полной даты с 00:00
         async function setMaskedDateVal(input, val) {
             if (!input || !val || input.disabled) return;
             const str = String(val).trim();
             if (!str || input.value.trim() === str) return;
 
             try {
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
                 input.focus({ preventScroll: true });
-                await new Promise(r => setTimeout(r, 30));
 
-                // 1. Выделяем всё содержимое поля и вставляем через нативную команду браузера
+                // 1. Полностью стираем старое значение ("14.11.2026 / __:__"), чтобы курсор маски встал в позицию 0!
+                if (setter) setter.call(input, ""); else input.value = "";
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 25));
+
+                // 2. Устанавливаем полную строку "ДД.ММ.ГГГГ / 00:00" с позиции 0
+                if (setter) setter.call(input, str); else input.value = str;
                 if (input.setSelectionRange) {
-                    input.setSelectionRange(0, input.value.length);
+                    input.setSelectionRange(str.length, str.length);
                 }
-                document.execCommand('insertText', false, str);
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: str }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 25));
 
-                // 2. Если маска всё ещё оставила "__:__" в конце — добиваем цифры "0000" прямо в позицию времени
-                if (input.value.includes("_")) {
-                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                    if (setter) setter.call(input, str); else input.value = str;
-                    if (input.setSelectionRange) {
-                        input.setSelectionRange(str.length, str.length);
-                    }
-                    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: str }));
+                // 3. Если маска всё ещё требует посимвольного ввода цифр — вводим 12 цифр подряд с самого начала
+                if (input.value.includes("_") || !input.value.endsWith("00:00")) {
+                    const digitsOnly = str.replace(/\D/g, ''); // Например "220519830000"
+                    if (setter) setter.call(input, ""); else input.value = "";
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    if (input.setSelectionRange) input.setSelectionRange(0, 0);
+                    document.execCommand('insertText', false, digitsOnly);
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                 }
 
-                // 3. Если даже после этого в конце осталось "__:__", печатаем "0000" в конец маски
-                if (input.value.includes("__:__")) {
-                    const idx = input.value.indexOf("_");
-                    if (idx >= 0 && input.setSelectionRange) {
-                        input.setSelectionRange(idx, input.value.length);
-                        document.execCommand('insertText', false, "0000");
-                    }
-                }
-
-                await new Promise(r => setTimeout(r, 30));
+                await new Promise(r => setTimeout(r, 25));
                 input.blur();
             } catch (e) {
                 input.value = str;
@@ -346,30 +431,28 @@ window.applyAutofill = async function(jsonStr) {
                 }
             }
 
-            // Всегда ставим 00:00 (кроме новорожденного сегодня, у которого явно задано время родов)
             const finalDate = (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`;
             return { dateStr: finalDate, ageStr: calcAge };
         }
 
-        // Гарантированное закрытие открытого выпадающего меню Material-UI
+        // Закрытие всех открытых всплывающих меню Material-UI
         async function closeOpenMuiMenu() {
-            const listbox = document.querySelector('ul[role="listbox"], .MuiMenu-list, .MuiAutocomplete-listbox');
-            if (listbox) {
-                listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+            const popovers = Array.from(document.querySelectorAll('.MuiPopover-root, ul[role="listbox"], .MuiMenu-list'));
+            for (let pop of popovers) {
+                pop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
             }
             if (document.activeElement) {
                 document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
             }
-            const backdrops = Array.from(document.querySelectorAll('.MuiBackdrop-root, .MuiPopover-root > div[aria-hidden="true"], [role="presentation"] > div[aria-hidden="true"]'));
+            const backdrops = Array.from(document.querySelectorAll('.MuiBackdrop-root, .MuiPopover-root > div[aria-hidden="true"], [role="presentation"] > div:first-child'));
             for (let b of backdrops) {
                 b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 b.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
                 b.click();
             }
-            await new Promise(r => setTimeout(r, 40));
+            await new Promise(r => setTimeout(r, 45));
         }
 
-        // Выбор выпадающих списков ТОЛЬКО на видимой вкладке с гарантированным закрытием каждого меню
         async function selectAllMuiDropdowns(keywords, valueStr, exactOnly = false) {
             if (!valueStr) return;
             const valuesToSelect = String(valueStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -392,13 +475,13 @@ window.applyAutofill = async function(jsonStr) {
             }
 
             for (let control of controls) {
-                // Если в этом списке уже выбраны все нужные значения — не открываем его!
                 const currentText = (control.innerText || '').toLowerCase();
                 const allAlreadyThere = valuesToSelect.every(v => currentText.includes(v));
                 if (allAlreadyThere) continue;
 
                 const selectBtn = control.querySelector('.MuiSelect-root, [role="button"], .MuiAutocomplete-popupIndicator');
                 if (selectBtn && selectBtn.offsetParent !== null) {
+                    const isMulti = selectBtn.classList.contains('MuiSelect-multiple') || valuesToSelect.length > 1;
                     selectBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                     await new Promise(r => setTimeout(r, 90));
 
@@ -409,14 +492,14 @@ window.applyAutofill = async function(jsonStr) {
                                           || options.find(o => o.innerText && o.innerText.trim().toLowerCase().includes(val));
                             if (matchOpt) {
                                 const isAlreadySelected = matchOpt.classList.contains('Mui-selected') || matchOpt.getAttribute('aria-selected') === 'true';
-                                if (!isAlreadySelected) {
+                                // В одиночном списке кликаем всегда (это штатно закрывает меню!), а в мультиселекте — только если еще не выбрано
+                                if (!isMulti || !isAlreadySelected) {
                                     matchOpt.click();
                                     await new Promise(r => setTimeout(r, 40));
                                 }
                             }
                         }
                     }
-                    // Сразу же закрываем открытое меню перед переходом к следующему полю!
                     await closeOpenMuiMenu();
                 } else {
                     const textInp = control.querySelector('input[type="text"]:not([disabled])');
@@ -461,6 +544,7 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
+        // ИСПРАВЛЕНО: заполняет строго 2 окошка АД по бокам от знака "/", никогда не задевая Шкалу Глазго!
         function fillAllDualBPs(isAdapted, rawBp) {
             const bpStr = normalizeBp(rawBp);
             if (!bpStr || !bpStr.includes('/')) return;
@@ -468,12 +552,13 @@ window.applyAutofill = async function(jsonStr) {
             const slashes = Array.from(document.querySelectorAll('*')).filter(el => el.offsetParent !== null && el.children.length === 0 && el.textContent.trim() === '/');
             for (let slash of slashes) {
                 let parent = slash.parentElement;
-                for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
-                    const text = parent.innerText.toLowerCase();
-                    const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное"));
-                    if (isMatch) {
-                        const inputs = Array.from(parent.querySelectorAll('input:not([type="hidden"]):not([disabled])'));
-                        if (inputs.length >= 2) {
+                for (let i = 0; i < 3 && parent && parent !== document.body; i++) {
+                    const inputs = Array.from(parent.querySelectorAll('input:not([type="hidden"]):not([disabled])'));
+                    // Строго 2 поля ввода в одном контейнере строки АД!
+                    if (inputs.length === 2) {
+                        const text = (parent.innerText || parent.parentElement?.innerText || '').toLowerCase();
+                        const isMatch = isAdapted ? text.includes("адаптированное") : (text.includes("ад") && !text.includes("адаптированное"));
+                        if (isMatch) {
                             setReactVal(inputs[0], parts[0].trim());
                             setReactVal(inputs[1], parts[1].trim());
                             break;
@@ -484,26 +569,40 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // 1. ПАСПОРТНЫЕ ДАННЫЕ, ДАТА РОЖДЕНИЯ (00:00) И ВОЗРАСТ
+        // 1. ПАСПОРТНЫЕ ДАННЫЕ, ДАТА РОЖДЕНИЯ (00:00) И ВОЗРАСТ + ВОЗРАСТ (ЕД.)
         if (data.fio) setAllMuiInputs(["фио"], data.fio, true);
 
         const bDateInputs = findAllMuiInputs(["дата рождения"]);
         if (bDateInputs.length > 0) {
-            const currentScreenVal = bDateInputs[0].value || "";
-            // Берем дату из архива (если она не сегодняшняя ошибочная), иначе с сервера или с экрана
             const now = new Date();
             const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const todayDot = `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth() + 1).padStart(2, '0')}.${now.getFullYear()}`;
+            const callRegDateIso = (window.lastLoadedApiCard?.dateOfRegistration || "").split("T")[0];
 
-            let validArchDate = (data.birthDate && !data.birthDate.includes(todayIso) && !data.birthDate.includes(todayDot)) ? data.birthDate : "";
-            let validServDate = (window.lastLoadedApiCard?.patient?.birthDate && !window.lastLoadedApiCard.patient.birthDate.includes(todayIso)) ? window.lastLoadedApiCard.patient.birthDate : "";
+            // Берем настоящую дату рождения пациента с сервера (patient.birthDate) или из архива, отсекая дату создания вызова!
+            let servBDate = window.lastLoadedApiCard?.patient?.birthDate || "";
+            if (servBDate && (servBDate.startsWith(todayIso) || (callRegDateIso && servBDate.startsWith(callRegDateIso)))) {
+                servBDate = "";
+            }
+            let archBDate = data.birthDate || "";
+            if (archBDate && (archBDate.includes(todayIso) || archBDate.includes(todayDot))) {
+                archBDate = "";
+            }
 
-            const rawBDate = validArchDate || validServDate || currentScreenVal;
-            const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawBDate);
-            if (dateStr) await setMaskedDateVal(bDateInputs[0], dateStr);
-            const finalAge = data.age || ageStr;
-            if (finalAge) setAllMuiInputs(["возраст"], finalAge, true);
+            const rawBDate = servBDate || archBDate;
+            if (rawBDate) {
+                const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawBDate);
+                if (dateStr) await setMaskedDateVal(bDateInputs[0], dateStr);
+                const finalAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || ageStr;
+                if (finalAge) setAllMuiInputs(["возраст"], finalAge, true);
+            } else if (data.age) {
+                setAllMuiInputs(["возраст"], data.age, true);
+            }
         }
+
+        // Выбираем "Возраст (ед.)" (Лет / Месяцев / Дней)
+        const ageUnitToSelect = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || "Лет";
+        await selectAllMuiDropdowns(["возраст (ед.)"], ageUnitToSelect, true);
 
         if (data.address) setAllMuiInputs(["место жительства (пребывания)"], data.address);
 
@@ -560,7 +659,7 @@ window.applyAutofill = async function(jsonStr) {
         selectMuiYN(["запах алкоголя"], "НЕТ");
         selectMuiYN(["запах ацетона"], "НЕТ");
 
-        // 6. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI (с автоматическим закрытием!)
+        // 6. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
         await selectAllMuiDropdowns(["общее состояние"], data.generalState || "Удовлетворительное", true);
         await selectAllMuiDropdowns(["сознание"], data.consciousness || "Ясное", true);
         if (data.skin) await selectAllMuiDropdowns(["кожа"], data.skin, true);

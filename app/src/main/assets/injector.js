@@ -182,13 +182,12 @@ window.applyAutofill = async function(jsonStr) {
     const fillBtn = document.getElementById('btn-fill-db');
     if (fillBtn) fillBtn.innerText = "⏳";
 
-    // Запоминаем позицию прокрутки экрана и скрываем визуальное мелькание выпадающих меню!
-    const savedScrollY = window.scrollY;
+    // Скрываем мерцание открывающихся выпадающих списков
     let hideStyle = document.getElementById('b103-hide-menus');
     if (!hideStyle) {
         hideStyle = document.createElement('style');
         hideStyle.id = 'b103-hide-menus';
-        hideStyle.textContent = '.MuiPopover-root, .MuiModal-root { opacity: 0 !important; transition: none !important; }';
+        hideStyle.textContent = '.MuiPopover-root, .MuiModal-root { opacity: 0 !important; pointer-events: auto !important; }';
         document.head.appendChild(hideStyle);
     }
 
@@ -203,6 +202,7 @@ window.applyAutofill = async function(jsonStr) {
             return s;
         }
 
+        // Чистая вставка БЕЗ фокуса и БЕЗ дергания экрана
         function setVal(inp, val) {
             if (!inp || val === undefined || val === null || inp.disabled) return;
             const str = String(val).trim();
@@ -264,65 +264,76 @@ window.applyAutofill = async function(jsonStr) {
             return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
         }
 
-        // Умный выбор выпадающих списков: полностью очищает старые лишние галочки и ставит новые
+        // Надежный выбор выпадающих списков: для одиночных списков кликаем и НЕ нажимаем Escape!
         async function selDrop(kws, valStr, ex = false) {
             if (!valStr) return;
             const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
             const labels = Array.from(document.querySelectorAll('.MuiFormLabel-root, .MuiInputLabel-root, label'));
             const ctrls = [];
             for (let kw of kws) {
+                const kwLower = kw.toLowerCase();
                 for (let l of labels) {
-                    const t = (l.innerText || '').trim().toLowerCase();
-                    if (ex ? t === kw.toLowerCase() : t.includes(kw.toLowerCase())) {
+                    if (!l.innerText) continue;
+                    const t = l.innerText.trim().toLowerCase();
+                    if (ex ? t === kwLower : t.includes(kwLower)) {
                         const c = l.closest('.MuiFormControl-root, .MuiGrid-item');
                         if (c && c.offsetParent !== null && !ctrls.includes(c)) ctrls.push(c);
                     }
                 }
             }
+
             for (let c of ctrls) {
                 const btn = c.querySelector('.MuiSelect-root, [role="button"], .MuiAutocomplete-popupIndicator');
                 if (!btn || btn.offsetParent === null) continue;
 
-                const isSingle = !btn.classList.contains('MuiSelect-multiple') && vals.length === 1;
+                const isMulti = btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                 const curText = (btn.innerText || '').trim().toLowerCase();
-                // Если одиночный список уже равен нужному тексту — не открываем его лишний раз
-                if (isSingle && curText === vals[0]) continue;
+
+                // Одиночный список: если уже выбрано нужное значение — не трогаем!
+                if (!isMulti && curText === vals[0]) continue;
+                // Мультиселект: если все значения уже присутствуют — не трогаем!
+                if (isMulti && vals.every(v => curText.includes(v))) continue;
 
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 await new Promise(r => setTimeout(r, 85));
 
-                const opts = Array.from(document.querySelectorAll('li[role="option"], .MuiMenuItem-root, .MuiAutocomplete-option'));
-                if (opts.length > 0) {
-                    const wanted = new Set();
-                    for (let v of vals) {
-                        const exactMatch = opts.find(o => o.innerText?.trim().toLowerCase() === v);
-                        if (exactMatch) wanted.add(exactMatch);
-                        else {
-                            const partMatch = opts.find(o => o.innerText?.trim().toLowerCase().includes(v));
-                            if (partMatch) wanted.add(partMatch);
-                        }
-                    }
+                const popover = document.querySelector('.MuiPopover-root') || document;
+                const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root, .MuiAutocomplete-option'));
 
-                    if (!isSingle) {
-                        // В мультиселекте: снимаем СТАРЫЕ лишние галочки и ставим ТОЛЬКО нужные!
+                if (opts.length > 0) {
+                    if (!isMulti) {
+                        // ОДИНОЧНЫЙ СПИСОК (Состояние, Сознание, Возраст ед.):
+                        const matchOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === vals[0])
+                                      || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(vals[0]));
+                        if (matchOpt) {
+                            matchOpt.click(); // В одиночном списке клик сам закрывает меню и фиксирует выбор!
+                            await new Promise(r => setTimeout(r, 80));
+                        } else {
+                            // Если не найдено — закрываем Escape
+                            document.querySelector('ul[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                            await new Promise(r => setTimeout(r, 40));
+                        }
+                    } else {
+                        // МУЛЬТИСЕЛЕКТ (Тоны, Дыхание, Живот, Кожа):
+                        const wanted = new Set();
+                        for (let v of vals) {
+                            const m = opts.find(o => (o.innerText || '').trim().toLowerCase() === v)
+                                   || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(v));
+                            if (m) wanted.add(m);
+                        }
                         for (let o of opts) {
                             const shouldBe = wanted.has(o);
                             const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
                             if (shouldBe !== isSel) {
                                 o.click();
-                                await new Promise(r => setTimeout(r, 30));
+                                await new Promise(r => setTimeout(r, 35));
                             }
                         }
-                    } else if (wanted.size > 0) {
-                        Array.from(wanted)[0].click();
-                        await new Promise(r => setTimeout(r, 30));
+                        // Для мультиселекта закрываем Escape после установки всех галочек
+                        document.querySelector('ul[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                        await new Promise(r => setTimeout(r, 40));
                     }
-
-                    document.querySelectorAll('.MuiBackdrop-root, .MuiPopover-root > div[aria-hidden="true"]').forEach(b => b.click());
-                    document.querySelector('ul[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-                    await new Promise(r => setTimeout(r, 55));
                 }
-                window.scrollTo(0, savedScrollY);
             }
         }
 
@@ -374,6 +385,7 @@ window.applyAutofill = async function(jsonStr) {
             });
         }
 
+        // 1. ПАСПОРТНЫЕ ДАННЫЕ, ДАТА РОЖДЕНИЯ (00:00) И ВОЗРАСТ
         if (data.fio) setAll(["фио"], data.fio, true);
         const bDateInps = findAll(["дата рождения"]);
         if (bDateInps.length > 0) {
@@ -395,7 +407,7 @@ window.applyAutofill = async function(jsonStr) {
                 const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawB);
                 if (dateStr) setVal(bDateInps[0], dateStr);
                 const finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || ageStr;
-                if (finAge) setAll(["возраст"], finAge, true);
+                if (finAge) setAll(["возраст"], finalAge, true);
             } else if (data.age) {
                 setAll(["возраст"], data.age, true);
             }
@@ -403,10 +415,12 @@ window.applyAutofill = async function(jsonStr) {
         await selDrop(["возраст (ед.)"], data.ageUnit || window.lastLoadedApiCard?.ageType?.type || "Лет", true);
         if (data.address) setAll(["место жительства (пребывания)"], data.address);
 
+        // 2. ЖАЛОБЫ, АНАМНЕЗ, ДИАГНОЗ
         setAll(["жалобы"], data.complaints); setAll(["анамнез заболевания"], data.anamnesis);
         setAll(["перенесенные заболевания"], data.pastDiseases); setAll(["предварительный диагноз"], data.diagnosis);
         setAll(["локальный статус"], data.localStatus);
 
+        // 3. АД, ПУЛЬС, ЧДД, ТЕМПЕРАТУРА
         if (data.bpAdapted) fillBP(true, data.bpAdapted);
         if (data.bp) fillBP(false, data.bp);
         if (data.pulse) setAll(["комментарий (пульс", "пульс (в минуту)"], data.pulse);
@@ -415,12 +429,14 @@ window.applyAutofill = async function(jsonStr) {
         if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
         if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], data.glucose);
 
+        // 4. ЭКГ И НЕВРОЛОГИЯ
         setAll(["экг до оказания"], data.ecgBefore); setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
         setAll(["тонус мышц"], "Норма"); setAll(["патологические рефлексы"], "Нет");
         setAll(["менингиальные знаки"], "Нет"); setAll(["плегии, парезы"], "Нет");
         setAll(["язык"], data.tongue || "Влажный, не обложен"); setAll(["слизистые"], data.mucous || "Чистые");
 
+        // 5. КНОПКИ-ПЕРЕКЛЮЧАТЕЛИ
         if (data.gender) selGroupBtn(["пол"], data.gender, true);
         selGroupBtn(["положение"], data.position || "АКТИВНОЕ", true);
         selGroupBtn(["поведение"], data.behavior || "СПОКОЙНОЕ", true);
@@ -449,6 +465,7 @@ window.applyAutofill = async function(jsonStr) {
         selGroupBtn(["динамика состояния"], dyn, true);
         if (data.callResult) selGroupBtn(["результат выезда"], data.callResult, true);
 
+        // 6. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
         await selDrop(["общее состояние"], data.generalState || "Удовлетворительное", true);
         await selDrop(["сознание"], data.consciousness || "Ясное", true);
         if (data.skin) await selDrop(["кожа"], data.skin, true);
@@ -458,7 +475,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.abdomen) await selDrop(["живот"], data.abdomen, true);
     } catch (e) { console.error(e); } finally {
         document.getElementById('b103-hide-menus')?.remove();
-        window.scrollTo(0, savedScrollY);
         if (fillBtn) fillBtn.innerText = "⚡";
         setTimeout(() => { window.b103IsApplying = false; }, 200);
     }

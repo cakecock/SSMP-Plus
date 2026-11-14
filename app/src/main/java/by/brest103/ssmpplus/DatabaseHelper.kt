@@ -57,7 +57,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         }
     }
 
-    // Сохранение карты в личный архив (по нажатию кнопки 💾)
     fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String, isBuiltin: Boolean = false) {
         val db = writableDatabase
         val cleanFio = fio.trim().lowercase()
@@ -128,7 +127,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return if (bestPast != null && bestPast.first > latest.first) bestPast.second else latest.second
     }
 
-    // Поиск по личному архиву сохраненных пациентов
     fun searchPatientSummaries(query: String): List<PatientSummary> {
         val results = mutableListOf<PatientSummary>()
         val db = readableDatabase
@@ -193,7 +191,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return list
     }
 
-    // Экспорт всей базы архива в JSON-строку для сохранения в файл
     fun exportDatabaseToJson(): String {
         val db = readableDatabase
         val cursor = db.rawQuery("SELECT fio, birth_date, timestamp, score, json_data FROM cards WHERE is_builtin = 0", null)
@@ -212,7 +209,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return arr.toString()
     }
 
-    // Импорт базы из файла
     fun importDatabaseFromJson(jsonStr: String): Int {
         val arr = JSONArray(jsonStr)
         val db = writableDatabase
@@ -244,9 +240,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return count
     }
 
-    // =========================================================
-    // ВСТРОЕННАЯ БАЗА ЭТАЛОННЫХ ОБРАЗЦОВ СМП (25 ДИАГНОЗОВ)
-    // =========================================================
     fun searchBuiltInTemplates(query: String): List<BestCardSample> {
         val q = query.trim().lowercase()
         return builtInTemplates.filter {
@@ -280,7 +273,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         skin: String = "Теплая, Сухая, Нормальная",
         tongue: String = "Влажный, не обложен",
         mucous: String = "Чистые",
-        pupils: String = "МИОЗ",
+        pupils: String = "", // По умолчанию зрачки НЕ выбраны (пусто)!
         lightReaction: String = "ДА",
         speech: String = "СОХРАНЕНА",
         face: String = "СИММЕТРИЧНОЕ",
@@ -385,7 +378,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 5, "Отек легких / Острая левожелудочковая недостаточность", "[I50.1] Левожелудочковая недостаточность",
                 "ИБС: постинфарктный кардиосклероз. АГ 3 ст., риск 4. Острая левожелудочковая недостаточность, альвеолярный отек легких.",
                 "На выраженное удушье, клокочущее дыхание, кашель с отделением пенистой мокроты, невозможность лежать горизонтально.",
-                "Ухудшение состояния в течение последнего часа на фоне подъема АД до 200/110 мм рт. ст., когда нарасла одышка в покое, перешедшая в удушье. Принял положение ортопноэ.",
+                "Ухудшение состояния в течение последнего часа на фоне подъема АД до 200/110 мм рт. ст., когда наросла одышка в покое, перешедшая в удушье. Принял положение ортопноэ.",
                 "ИБС, ПИКС, АГ, ХСН", "Тяжелое", "Ясное", "ВЫНУЖДЕННОЕ", "ВОЗБУЖДЕННОЕ", "190/110", "130/80", "112", "28", "36,6", "86", "6,8",
                 "Ритмичные, Глухие", lungs = "Затрудненное, Влажные хрипы", skin = "Холодная, Влажная, Цианотичная",
                 ecgBefore = "Ритм синусовый, тахикардия ЧСС 112 в мин. Признаки перегрузки левых отделов сердца.",
@@ -413,7 +406,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 8, "Обморок / Синкопальное состояние", "[R55] Обморок [синкопе] и коллапс",
                 "Постсинкопальное состояние. Ортостатическая гипотензия.",
                 "На общую слабость, легкое головокружение. На момент осмотра острых жалоб не предъявляет.",
-                "Со слов окружающих, в душном помещении (или при резком вставании) почувствовал слабость, потемнение в глазах, кратковременно (до 1 мин) потерял сознание без судорог. Пришел в себя самостоятельно, головой не ударялся.",
+                "Со слов окружающих, в душном помещении почувствовал слабость, потемнение в глазах, кратковременно (до 1 мин) потерял сознание без судорог. Пришел в себя самостоятельно, головой не ударялся.",
                 "ВСД", "Удовлетворительное", "Ясное", "АКТИВНОЕ", "СПОКОЙНОЕ", "110/70", "120/80", "72", "16", "36,6", "99", "5,2"
             ),
             makeSample(
@@ -500,7 +493,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 "Ухудшение самочувствия со вчерашнего вечера, когда отметил черный жидкий стул и нарастающую слабость. Сегодня утром была однократная рвота темным содержимым.",
                 "Язвенная болезнь желудка", "Тяжелое", "Ясное", "ПАССИВНОЕ", "СПОКОЙНОЕ", "95/60", "120/80", "108", "20", "36,4", "96", "5,8",
                 skin = "Холодная, Влажная, Бледная", urination = "НЕ НАРУШЕНО",
-                localStatus = "При ректальном исследовании / осмотре — следы мелены.",
+                localStatus = "При осмотре — следы мелены.",
                 attack = "НЕ КУПИРОВАН", callResult = "ТРАНСПОРТИРОВАН В ОРГАНИЗАЦИЮ ЗДРАВООХРАНЕНИЯ"
             ),
             makeSample(
@@ -562,7 +555,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 "Жалоб нет ввиду биологической смерти пациента.",
                 "Со слов родственников, обнаружен без признаков жизни около 1 часа назад. В анамнезе хронические заболевания сердечно-сосудистой системы (ИБС, АГ, ХСН). Реанимационные мероприятия не проводились ввиду наличия достоверных признаков биологической смерти.",
                 "ИБС, АГ, ХСН", "Смерть", "Отсутствует", "ПАССИВНОЕ", "СПОКОЙНОЕ", "0/0", "130/80", "0", "0", "0", "0", "0",
-                heartSounds = "Отсутствуют", lungs = "Отсутствует", pupils = "МИДРИАЗ", lightReaction = "НЕТ", speech = "ОТСУТСТВУЕТ",
+                heartSounds = "Отсутствуют", lungs = "Отсутствует",
+                pupils = "МИДРИАЗ", // Только при констатации выбран МИДРИАЗ!
+                lightReaction = "НЕТ", speech = "ОТСУТСТВУЕТ",
                 localStatus = "Кожные покровы бледные, холодные на ощупь. Зрачки широкие, фотореакция отсутствует, симптом Белоглазова («кошачий глаз») положительный. Трупные пятна багрово-синюшного цвета по заднебоковой поверхности туловища. Признаков насильственной смерти при наружном осмотре не обнаружено.",
                 ecgBefore = "Изолиния (асистолия) во всех отведениях.",
                 ecgAfter = "Изолиния.",

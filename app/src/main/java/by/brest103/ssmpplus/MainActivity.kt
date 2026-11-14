@@ -191,8 +191,7 @@ class MainActivity : AppCompatActivity() {
     private fun showMainModalMenu() = showMenuDialog("Меню SSMP Plus") { d, card ->
         addDialogBtn(d, card, "⭐ ОБРАЗЦЫ КАРТ") { openSearchSheet(true) }
         addDialogBtn(d, card, "📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
-        addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10") { openMkbSheet() }
-        addDialogBtn(d, card, "🧮 КАЛЬКУЛЯТОРЫ И НОРМЫ", "#0277BD") { showToolsSubMenu() }
+        addDialogBtn(d, card, "🧰 ПОМОЩНИК СМП", "#0277BD") { showHelperSubMenu() }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2) }
         fun half(t: String, mr: Int, act: () -> Unit) = TextView(this).apply {
             text = t; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 1
@@ -205,7 +204,8 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
-    private fun showToolsSubMenu() = showMenuDialog("Калькуляторы и нормы") { d, card ->
+    private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
+        addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
         addDialogBtn(d, card, "👶 ПЕДИАТРИЯ: НОРМЫ И ДОЗЫ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
         addDialogBtn(d, card, "🧠 ШКАЛА ГЛАЗГО И ШОК-ИНДЕКС", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
     }

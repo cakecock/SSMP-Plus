@@ -209,7 +209,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // МОДАЛЬНОЕ МЕНЮ ПО ЦЕНТРУ ЭКРАНА (КАК НА СКРИНШОТАХ 1 И 2)
+    // МОДАЛЬНОЕ МЕНЮ ПО ЦЕНТРУ ЭКРАНА
     private fun showMainModalMenu() {
         val dialog = android.app.Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -270,7 +270,6 @@ class MainActivity : AppCompatActivity() {
             card.addView(btn)
         }
 
-        // Твой порядок кнопок:
         addMenuBtn("⭐ ОБРАЗЦЫ КАРТ") { openSearchSheet(true) }
         addMenuBtn("📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
         addMenuBtn("📖 СПРАВОЧНИК МКБ-10") { openMkbSheet() }
@@ -284,7 +283,8 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun showAutofillPickerSheet() {
+    // Окно выбора при нажатии на молнию ⚡
+    private fun showAutofillPickerSheet(currentFio: String = "") {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -308,13 +308,49 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, 12)
         })
 
+        // Если текущий пациент уже есть в личном архиве — показываем быструю кнопку сверху
+        val cleanFio = currentFio.trim()
+        if (cleanFio.length >= 3) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val matchedCard = dbHelper.getBestCardForPatient(cleanFio)
+                if (matchedCard != null) {
+                    withContext(Dispatchers.Main) {
+                        val quickBtn = TextView(this@MainActivity).apply {
+                            text = "👤 ЗАПОЛНИТЬ ИЗ АРХИВА: ${cleanFio.uppercase()}"
+                            textSize = 13.5f
+                            typeface = Typeface.DEFAULT_BOLD
+                            setTextColor(Color.WHITE)
+                            gravity = Gravity.CENTER
+                            setPadding(24, 22, 24, 22)
+                            background = GradientDrawable().apply {
+                                setColor(Color.parseColor("#2E7D32"))
+                                cornerRadius = 16f
+                            }
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply { bottomMargin = 14 }
+                            setOnClickListener {
+                                bottomSheet.dismiss()
+                                val safe = JSONObject.quote(matchedCard)
+                                webView.evaluateJavascript("setAndApplyAutofill($safe);", null)
+                                Toast.makeText(applicationContext, "⚡ Заполнено из архива: ${cleanFio.uppercase()}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        root.addView(quickBtn, 2)
+                    }
+                }
+            }
+        }
+
+        val totalTemplates = dbHelper.searchBuiltInTemplates("").size
         var showTemplates = true
         val tabsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, 14)
         }
         val tabTemplates = TextView(this).apply {
-            text = "⭐ Образцы СМП (25)"
+            text = "⭐ Образцы СМП ($totalTemplates)"
             textSize = 13f
             gravity = Gravity.CENTER
             setPadding(24, 16, 24, 16)
@@ -601,8 +637,9 @@ class MainActivity : AppCompatActivity() {
             background = GradientDrawable().apply { setColor(Color.parseColor("#B0BEC5")); cornerRadius = 4f }
         })
 
+        val totalTemplates = dbHelper.searchBuiltInTemplates("").size
         root.addView(TextView(this).apply {
-            text = if (isBestOnly) "⭐ Образцы карт СМП (25 шаблонов)" else "📂 Общий архив вызовов"
+            text = if (isBestOnly) "⭐ Образцы карт СМП ($totalTemplates шаблонов)" else "📂 Общий архив вызовов"
             textSize = 19f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(if (isBestOnly) "#E65100" else "#004D40"))
@@ -1181,12 +1218,11 @@ class MainActivity : AppCompatActivity() {
         fun openMkbDialog() = runOnUiThread { openMkbSheet() }
 
         @JavascriptInterface
-        fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet() }
+        fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet("") }
 
         @JavascriptInterface
         fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
 
-        // Ручное сохранение карты в "Общий архив вызовов" по нажатию кнопки 💾
         @JavascriptInterface
         fun saveApiCardForced(jsonStr: String) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -1214,23 +1250,8 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun requestAutofill(fio: String) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val cleanFio = fio.trim()
-                if (cleanFio.isEmpty()) {
-                    withContext(Dispatchers.Main) { showAutofillPickerSheet() }
-                    return@launch
-                }
-
-                val localCard = dbHelper.getBestCardForPatient(cleanFio)
-                withContext(Dispatchers.Main) {
-                    if (localCard != null) {
-                        val safe = JSONObject.quote(localCard)
-                        webView.evaluateJavascript("setAndApplyAutofill($safe);", null)
-                        Toast.makeText(applicationContext, "⚡ Заполнено из вашего архива!", Toast.LENGTH_SHORT).show()
-                    } else {
-                        showAutofillPickerSheet()
-                    }
-                }
+            runOnUiThread {
+                showAutofillPickerSheet(fio)
             }
         }
     }

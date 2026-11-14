@@ -188,6 +188,7 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    // ГЛАВНОЕ МЕНЮ
     private fun showMainModalMenu() = showMenuDialog("Меню SSMP Plus") { d, card ->
         addDialogBtn(d, card, "⭐ ОБРАЗЦЫ КАРТ") { openSearchSheet(true) }
         addDialogBtn(d, card, "📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
@@ -204,6 +205,7 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
+    // ПОДМЕНЮ: ПОМОЩНИК СМП
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
         addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
         addDialogBtn(d, card, "👶 ПЕДИАТРИЯ: НОРМЫ И ДОЗЫ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }

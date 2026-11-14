@@ -170,7 +170,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Шторка выбора карты для автозаполнения (с живым поиском по архиву!)
+    // Окно выбора карты для автозаполнения (открывается при пустом ФИО)
     private fun showAutofillPickerSheet() {
         val bottomSheet = BottomSheetDialog(this)
         val root = LinearLayout(this).apply {
@@ -250,7 +250,7 @@ class MainActivity : AppCompatActivity() {
                                 if (cardJson != null) {
                                     val safe = JSONObject.quote(cardJson)
                                     webView.evaluateJavascript("applyAutofill($safe);", null)
-                                    Toast.makeText(applicationContext, "⚡ Карта ${chosen.fio.uppercase()} заполнена!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(applicationContext, "⚡ Заполнено из карты: ${chosen.fio.uppercase()}", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }
@@ -310,7 +310,7 @@ class MainActivity : AppCompatActivity() {
             Pair("🚽 N Урология", "N"),
             Pair("🦴 M Костно-мышечн.", "M"),
             Pair("🎗️ C/D Онкология", "CD"),
-            Pair("👀 H ЛОР", "H"),
+            Pair("👂 H ЛОР", "H"),
             Pair("👶 P/Q Перинатал.", "PQ"),
             Pair("⚠️ V-Y Внешн. причины", "VY")
         )
@@ -579,11 +579,29 @@ class MainActivity : AppCompatActivity() {
                 }
                 header.addView(TextView(this@MainActivity).apply {
                     text = fio.uppercase()
-                    textSize = 17f
+                    textSize = 16.5f
                     typeface = Typeface.DEFAULT_BOLD
                     setTextColor(Color.parseColor("#004D40"))
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 })
+
+                // Кнопка "⚡ Вставить" прямо из окна просмотра архива
+                val fillFromThisBtn = TextView(this@MainActivity).apply {
+                    text = "⚡ Вставить"
+                    textSize = 12.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.WHITE)
+                    setPadding(24, 14, 24, 14)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#0288D1"))
+                        cornerRadius = 20f
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { rightMargin = 12 }
+                }
+                header.addView(fillFromThisBtn)
 
                 val deleteBtn = ImageButton(this@MainActivity).apply {
                     setImageResource(android.R.drawable.ic_menu_delete)
@@ -634,6 +652,14 @@ class MainActivity : AppCompatActivity() {
                 fun renderActiveCard() {
                     val itm = history[selectedIndex]
                     val j = try { JSONObject(itm.jsonData) } catch (e: Exception) { JSONObject() }
+
+                    // Нажатие на "⚡ Вставить" заливает именно этот выбранный вызов в открытую карту
+                    fillFromThisBtn.setOnClickListener {
+                        bottomSheet.dismiss()
+                        val safe = JSONObject.quote(itm.jsonData)
+                        webView.evaluateJavascript("applyAutofill($safe);", null)
+                        Toast.makeText(this@MainActivity, "⚡ Данные вставлены в карту!", Toast.LENGTH_SHORT).show()
+                    }
 
                     callChipsLayout.removeAllViews()
                     history.forEachIndexed { idx, card ->
@@ -791,13 +817,15 @@ class MainActivity : AppCompatActivity() {
             if (j.optString("pastDiseases").isNotEmpty()) b.append("\n🩹 Перенесенные: ${j.optString("pastDiseases")}\n")
             if (j.optString("allergy").isNotEmpty()) b.append("⚠️ Аллергия: ${j.optString("allergy")}\n")
 
+            val medHelp = j.optString("medHelp")
             val meds = j.optString("medications")
             val attack = j.optString("attack")
             val effect = j.optString("therapyEffect")
             val callResult = j.optString("callResult")
 
-            if (meds.isNotEmpty() || attack.isNotEmpty() || effect.isNotEmpty() || callResult.isNotEmpty()) {
+            if (medHelp.isNotEmpty() || meds.isNotEmpty() || attack.isNotEmpty() || effect.isNotEmpty() || callResult.isNotEmpty()) {
                 b.append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
+                if (medHelp.isNotEmpty()) b.append("• Помощь: $medHelp\n")
                 if (meds.isNotEmpty()) b.append("• Препараты:\n• $meds\n")
                 if (attack.isNotEmpty()) b.append("• Приступ: $attack\n")
                 if (effect.isNotEmpty()) b.append("• Эффект: $effect\n")
@@ -807,7 +835,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { "Ошибка" }
     }
 
-    // Универсальный парсер полного серверного JSON карты вызова
+    // Полный разбор всех серверных массивов (тоны, дыхание, перкуссия, живот, кожа, список ампул)
     private fun parseServerCardJson(jsonStr: String): Triple<String, String, Pair<Int, JSONObject>>? {
         return try {
             val raw = JSONObject(jsonStr)
@@ -826,24 +854,48 @@ class MainActivity : AppCompatActivity() {
                 val list = mutableListOf<String>()
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i)
-                    val t = item?.optString("type") ?: arr.optString(i)
-                    if (t.isNotEmpty()) list.add(t)
+                    val t = item?.optString("type") ?: item?.optString("name") ?: arr.optString(i)
+                    if (t.isNotEmpty() && t != "null") list.add(t)
                 }
                 return list.joinToString(", ")
+            }
+
+            // Детальный разбор массива введенных медикаментов (medications)
+            fun parseMedicationsArray(): String {
+                val arr = raw.optJSONArray("medications") ?: return ""
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val m = arr.optJSONObject(i) ?: continue
+                    val medObj = m.optJSONObject("medication") ?: m.optJSONObject("medicine") ?: m
+                    val name = medObj.optString("type").ifEmpty { medObj.optString("name") }.ifEmpty { m.optString("name") }
+                    val count = m.optString("count").ifEmpty { m.optString("amount") }.ifEmpty { m.optString("quantity") }.replace("null", "")
+                    val unit = m.optJSONObject("unit")?.optString("type") ?: medObj.optJSONObject("unit")?.optString("type") ?: ""
+                    val way = m.optJSONObject("wayOfAdministration")?.optString("type")
+                        ?: m.optJSONObject("way")?.optString("type")
+                        ?: m.optString("wayOfAdministration").replace("null", "")
+
+                    if (name.isNotEmpty() && name != "null") {
+                        val qtyStr = if (count.isNotEmpty()) " — $count $unit".trimEnd() else ""
+                        val wayStr = if (way.isNotEmpty() && !way.contains("не определен")) " [$way]" else ""
+                        list.add("$name$qtyStr$wayStr")
+                    }
+                }
+                return list.joinToString(";\n• ")
             }
 
             val complaints = raw.optString("complaints").replace("null", "")
             val anamnesis = raw.optString("anamnesis").replace("null", "")
             val diag = raw.optString("diagnosis").replace("null", "")
+            val medsStr = parseMedicationsArray()
 
             var score = 0
             if (anamnesis.length > 10) score += 35
             if (complaints.isNotEmpty()) score += 25
             if (diag.isNotEmpty()) score += 25
-            if (raw.optString("arterialPressure").replace("null", "").isNotEmpty()) score += 15
+            if (medsStr.isNotEmpty() || raw.optString("arterialPressure").replace("null", "").isNotEmpty()) score += 15
 
             val icdObj = raw.optJSONObject("icd")
-            val mkbStr = if (icdObj != null) "[${icdObj.optString("code")}] ${icdObj.optString("name")}".trim() else ""
+            val mkbStr = if (icdObj != null) "[${icdObj.optString("code")}] ${icdObj.optString("type").ifEmpty { icdObj.optString("name") }}".trim() else ""
 
             val card = JSONObject().apply {
                 put("fio", fio)
@@ -876,6 +928,8 @@ class MainActivity : AppCompatActivity() {
                 put("abdomen", joinArr("stomachs"))
                 put("skin", joinArr("skins"))
                 put("urination", joinArr("urinations").uppercase())
+                put("medHelp", joinArr("medicalAssistanceProvided"))
+                put("medications", medsStr)
                 put("pupils", raw.optJSONObject("pupils")?.optString("type")?.uppercase() ?: "")
                 put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")
                 put("speech", raw.optJSONObject("speech")?.optString("type")?.uppercase() ?: "")
@@ -949,7 +1003,6 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // 1. Сначала ищем в локальной базе телефона
                 val localCard = dbHelper.getBestCardForPatient(cleanFio)
                 withContext(Dispatchers.Main) {
                     if (localCard != null) {
@@ -957,10 +1010,8 @@ class MainActivity : AppCompatActivity() {
                         webView.evaluateJavascript("applyAutofill($safe);", null)
                         Toast.makeText(applicationContext, "⚡ Заполнено из локального архива!", Toast.LENGTH_SHORT).show()
                     } else {
-                        // 2. Если в телефоне нет — ищем прошлые вызовы пациента на сервере всех подстанций!
-                        val safeFio = JSONObject.quote(cleanFio)
-                        Toast.makeText(applicationContext, "🔍 Поиск прошлых карт $cleanFio на сервере...", Toast.LENGTH_SHORT).show()
-                        webView.evaluateJavascript("searchServerAndAutofill($safeFio);", null)
+                        // Если пациента нет в базе — открываем окно выбора любой карты/образца из архива
+                        showAutofillPickerSheet()
                     }
                 }
             }

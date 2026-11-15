@@ -188,7 +188,6 @@ window.setAndApplyAutofill = function(jsonStr) {
 window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
 
-    // Находим все контейнеры прокрутки и запоминаем текущую вкладку и координаты экрана
     const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
     const savedScrollContainers = Array.from(document.querySelectorAll('main, [class*="content"], [class*="scroll"], div'))
         .filter(el => el.scrollTop > 0)
@@ -485,7 +484,6 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Заполнение "Код по МКБ" (MuiAutocomplete) с удержанием позиции экрана (preventScroll: true)
         async function fillMkbAutocomplete(mkbStr) {
             if (!mkbStr) return;
             const cleanMkb = String(mkbStr).trim();
@@ -643,7 +641,7 @@ window.applyAutofill = async function(jsonStr) {
         if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
         if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], String(data.glucose).replace(',', '.'));
 
-        // 4. ЭКГ И НЕВРОЛОГИЯ (Синхронизировано с реальными значениями сайта)
+        // 4. ЭКГ И НЕВРОЛОГИЯ
         setAll(["экг до оказания"], data.ecgBefore);
         setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
@@ -698,7 +696,6 @@ window.applyAutofill = async function(jsonStr) {
     } catch (e) { console.error(e); } finally {
         await new Promise(r => setTimeout(r, 70));
         await closeAnyOpenMenu();
-        // Возвращаем исходную вкладку и прокрутку экрана, чтобы экран не прыгал на другую вкладку!
         if (activeTabBefore) {
             const curActive = Array.from(document.querySelectorAll('[role="tab"], button'))
                 .find(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
@@ -711,4 +708,37 @@ window.applyAutofill = async function(jsonStr) {
         if (fillBtn) fillBtn.innerText = "⚡";
         setTimeout(() => { window.b103IsApplying = false; }, 200);
     }
+};
+
+// ==========================================
+// ТОЧЕЧНАЯ ВСТАВКА ИЗ КОНСТРУКТОРОВ (ЭКГ, СЛР, ФРАЗЫ)
+// ==========================================
+window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
+    try {
+        const kwL = String(fieldKeyword).toLowerCase();
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        for (let l of labels) {
+            if (!l.innerText || l.offsetParent === null || l.children.length > 3) continue;
+            const t = l.innerText.trim().toLowerCase();
+            if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
+                const fc = l.closest('.MuiFormControl-root') || l.parentElement?.parentElement;
+                if (!fc) continue;
+                const inps = Array.from(fc.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
+                    .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
+                if (inps.length > 0) {
+                    const inp = inps[0];
+                    const cur = (inp.value || '').trim();
+                    const finalVal = (appendMode && cur) ? (cur + "\n" + textToInsert) : textToInsert;
+                    const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(inp, finalVal); else inp.value = finalVal;
+                    if (inp._valueTracker) inp._valueTracker.setValue('');
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+        }
+    } catch (e) {}
+    return false;
 };

@@ -205,11 +205,14 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
-    // ПОДМЕНЮ: ПОМОЩНИК СМП
+    // ПОДМЕНЮ: ПОМОЩНИК СМП (6 РАЗДЕЛОВ)
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
         addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
-        addDialogBtn(d, card, "👶 ПЕДИАТРИЯ: НОРМЫ И ДОЗЫ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
-        addDialogBtn(d, card, "🧠 ШКАЛА ГЛАЗГО И ШОК-ИНДЕКС", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
+        addDialogBtn(d, card, "👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
+        addDialogBtn(d, card, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
+        addDialogBtn(d, card, "📋 ШПАРГАЛКИ И РАСЧЕТЫ", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
+        addDialogBtn(d, card, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
+        addDialogBtn(d, card, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
     }
 
     private fun showAutofillPickerSheet(currentFio: String = "") {

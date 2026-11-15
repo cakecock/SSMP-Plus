@@ -169,8 +169,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMenuDialog(title: String, builders: (android.app.Dialog, LinearLayout) -> Unit) {
         val dialog = android.app.Dialog(this).apply { requestWindowFeature(Window.FEATURE_NO_TITLE); window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)) }
-        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(900, -2) }
-        val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 24) }
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(920, -2) }
+        val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 20) }
         hdr.addView(TextView(this).apply { text = title; textSize = 19.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#212121")); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         hdr.addView(TextView(this).apply { text = "✕"; textSize = 20f; setTextColor(Color.GRAY); setPadding(16, 4, 8, 4); setOnClickListener { dialog.dismiss() } })
         card.addView(hdr)
@@ -181,9 +181,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun addDialogBtn(dialog: android.app.Dialog, parent: LinearLayout, title: String, color: String = "#008577", onClick: () -> Unit) {
         parent.addView(TextView(this).apply {
-            text = title; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(24, 28, 24, 28); background = roundBg(color, 10f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 }
+            text = title; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(22, 24, 22, 24); background = roundBg(color, 10f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 14 }
             setOnClickListener { dialog.dismiss(); onClick() }
         })
     }
@@ -196,7 +196,7 @@ class MainActivity : AppCompatActivity() {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2) }
         fun half(t: String, mr: Int, act: () -> Unit) = TextView(this).apply {
             text = t; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 1
-            setPadding(12, 28, 12, 28); background = roundBg("#00695C", 10f)
+            setPadding(12, 26, 12, 26); background = roundBg("#00695C", 10f)
             layoutParams = LinearLayout.LayoutParams(0, -1, 1f).apply { rightMargin = mr }
             setOnClickListener { d.dismiss(); act() }
         }
@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
-   // ПОДМЕНЮ: ПОМОЩНИК СМП (ВСЕ 8 РАЗДЕЛОВ)
+    // ПОДМЕНЮ: ПОМОЩНИК СМП (ВСЕ 11 ИНСТРУМЕНТОВ С ПРОКРУТКОЙ)
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
         val scroll = NestedScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -217,21 +217,31 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(listLay)
         card.addView(scroll)
 
+        addDialogBtn(d, listLay, "📈 КОНСТРУКТОР ЭКГ (В КАРТУ)", "#00897B") { SmartAssistants.showEcgConstructorSheet(this, webView) }
+        addDialogBtn(d, listLay, "⏱️ ТАЙМЕР И ПРОТОКОЛ СЛР", "#D32F2F") { SmartAssistants.showCprTimerSheet(this, webView) }
+        addDialogBtn(d, listLay, "📝 ФРАЗЫ: ОТКАЗЫ И ПРИМЕЧАНИЯ", "#5D4037") { SmartAssistants.showQuickPhrasesSheet(this, webView) }
         addDialogBtn(d, listLay, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
         addDialogBtn(d, listLay, "👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
         addDialogBtn(d, listLay, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
-        addDialogBtn(d, listLay, "📋 ШПАРГАЛКИ И РАСЧЕТЫ", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
+        addDialogBtn(d, listLay, "📋 ШПАРГАЛКИ И РАСЧЕТЫ (O2 МПа)", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
         addDialogBtn(d, listLay, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
         addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ (130+)", "#C62828") { MedicalTools.showAntidotesSheet(this) }
         addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
         addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
-        addDialogBtn(d, listLay, "📈 КОНСТРУКТОР ЭКГ (В КАРТУ)", "#00897B") { SmartAssistants.showEcgConstructorSheet(this, webView) }
-        addDialogBtn(d, listLay, "⏱️ ТАЙМЕР И ПРОТОКОЛ СЛР", "#D32F2F") { SmartAssistants.showCprTimerSheet(this, webView) }
-        addDialogBtn(d, listLay, "📝 ФРАЗЫ: ОТКАЗЫ И ПРИМЕЧАНИЯ", "#5D4037") { SmartAssistants.showQuickPhrasesSheet(this, webView) }
     }
 
     private fun showAutofillPickerSheet(currentFio: String = "") {
-        val (bs, root) = createSheet("⚡ Выберите шаблон или карту:", "#0288D1")
+        val (bs, root) = createSheet("⚡ Автозаполнение и Помощник:", "#0288D1")
+
+        // Быстрый вызов Помощника СМП прямо из открытой карты!
+        root.addView(TextView(this).apply {
+            text = "🧰 ОТКРЫТЬ ПОМОЩНИК СМП / ЭКГ / СЛР / ДОЗЫ"
+            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(18, 18, 18, 18); background = roundBg("#00897B", 14f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+            setOnClickListener { bs.dismiss(); showHelperSubMenu() }
+        })
+
         val cleanFio = currentFio.trim()
         if (cleanFio.length >= 3) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -243,7 +253,7 @@ class MainActivity : AppCompatActivity() {
                             setPadding(20, 20, 20, 20); background = roundBg("#2E7D32", 16f)
                             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12 }
                             setOnClickListener { bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(card)});", null); toast("⚡ Заполнено!") }
-                        }, 2)
+                        }, 3)
                     }
                 }
             }
@@ -256,7 +266,11 @@ class MainActivity : AppCompatActivity() {
         val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
 
-        val qInp = EditText(this).apply { hint = "Поиск (СЛР, диагноз, фамилия)..."; setPadding(30, 22, 30, 22); background = roundBg("#F0F8FF", 18f, "#BBDEFB"); setTextColor(Color.BLACK) }
+        val qInp = EditText(this).apply {
+            hint = "Поиск (СЛР, диагноз, фамилия)..."
+            setPadding(30, 22, 30, 22)
+            MedicalTools.styleEditText(this, "#F0F8FF", "#90CAF9", 18f)
+        }
         root.addView(qInp)
         val lv = makeListView(root)
 
@@ -298,7 +312,11 @@ class MainActivity : AppCompatActivity() {
         var selCat = "ALL"
         val chipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 12); addView(chipsLay) })
-        val qInp = EditText(this).apply { hint = "Поиск (I48, инфаркт)..."; setPadding(30, 22, 30, 22); background = roundBg("#E0F2F1", 18f); setTextColor(Color.BLACK) }
+        val qInp = EditText(this).apply {
+            hint = "Поиск (I48, инфаркт, пневмония)..."
+            setPadding(30, 22, 30, 22)
+            MedicalTools.styleEditText(this, "#E0F2F1", "#80CBC4", 18f)
+        }
         root.addView(qInp)
         val lv = makeListView(root)
 
@@ -339,7 +357,8 @@ class MainActivity : AppCompatActivity() {
         val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($total шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
         val qInp = EditText(this).apply {
             hint = if (isBest) "Поиск по диагнозу или СЛР..." else "Поиск по фамилии..."
-            setPadding(30, 22, 30, 22); background = roundBg(if (isBest) "#FFF8E1" else "#F0F4F4", 18f, if (isBest) "#FFE082" else null); setTextColor(Color.BLACK)
+            setPadding(30, 22, 30, 22)
+            MedicalTools.styleEditText(this, if (isBest) "#FFF8E1" else "#F0F4F4", if (isBest) "#FFE082" else "#B0BEC5", 18f)
         }
         root.addView(qInp)
         val lv = makeListView(root)
@@ -413,7 +432,13 @@ class MainActivity : AppCompatActivity() {
                 val itm = history[selIdx]
                 val j = try { JSONObject(itm.jsonData) } catch (_: Exception) { JSONObject() }
                 toTpl.setOnClickListener {
-                    val inp = EditText(this@MainActivity).apply { setText(j.optString("diagnosis").ifEmpty { j.optString("callReason") }.take(45)); setPadding(30, 20, 30, 20) }
+                    val inp = EditText(this@MainActivity).apply {
+                        setText(j.optString("diagnosis").ifEmpty { j.optString("callReason") }.take(45))
+                        hint = "Название шаблона..."
+                        setPadding(30, 20, 30, 20)
+                        setTextColor(Color.BLACK)
+                        setHintTextColor(Color.parseColor("#546E7A"))
+                    }
                     AlertDialog.Builder(this@MainActivity).setTitle("Сохранить в свои шаблоны").setMessage("ФИО и адрес будут удалены.").setView(inp).setPositiveButton("Сохранить") { _, _ ->
                         val t = inp.text.toString().trim()
                         if (t.isNotEmpty()) lifecycleScope.launch(Dispatchers.IO) { dbHelper.saveCustomTemplate(t, itm.jsonData); withContext(Dispatchers.Main) { toast("📌 Шаблон «$t» сохранен!") } }

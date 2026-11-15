@@ -123,15 +123,6 @@
         return (t.includes('О ВЫЗОВЕ') && t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
     }
 
-    // Проверка: открыта ли сейчас вкладка "ЗАКЛЮЧЕНИЕ"
-    function isConclusionTabActive() {
-        const activeTabs = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"], button.Mui-selected'));
-        for (let tab of activeTabs) {
-            if ((tab.innerText || '').toUpperCase().includes('ЗАКЛЮЧЕНИЕ')) return true;
-        }
-        return false;
-    }
-
     function ensureToolbar() {
         if (!document.body || document.getElementById('b103-toolbar')) return;
         const bar = document.createElement('div');
@@ -223,30 +214,63 @@ window.applyAutofill = async function(jsonStr) {
     if (!hideStyle) {
         hideStyle = document.createElement('style');
         hideStyle.id = 'b103-hide-menus';
-        hideStyle.textContent = '.MuiPopover-root, .MuiModal-root { opacity: 0 !important; pointer-events: auto !important; }';
+        hideStyle.textContent = '.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper { opacity: 0 !important; pointer-events: auto !important; transition: none !important; }';
         document.head.appendChild(hideStyle);
     }
 
-    // Надежная функция принудительного закрытия любых открытых меню Material-UI
-    async function closeAnyOpenMenu() {
-        const popovers = Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root, [role="presentation"]')).filter(el => el.offsetParent !== null);
-        if (popovers.length === 0) return;
+    // Возвращает только реально открытые в данный момент меню (игнорируя скрытые)
+    function getActivePopovers() {
+        return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper'))
+            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true');
+    }
 
-        for (let pop of popovers) {
-            const list = pop.querySelector('[role="listbox"], ul, .MuiMenu-list') || pop;
-            list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
-            const backdrop = pop.querySelector('.MuiBackdrop-root') || pop.firstElementChild;
-            if (backdrop) {
-                backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-                backdrop.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
-                backdrop.click();
+    // Бронебойное закрытие любых открытых списков Material-UI с циклом проверки
+    async function closeAnyOpenMenu() {
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const popovers = getActivePopovers();
+            const expandedBtns = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+            if (popovers.length === 0 && expandedBtns.length === 0) break;
+
+            // 1. Бьем клавишей Escape прямо в активный элемент и в каждый открытый список
+            const escInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+            if (document.activeElement) {
+                document.activeElement.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                document.activeElement.dispatchEvent(new KeyboardEvent('keyup', escInit));
             }
+
+            for (let pop of popovers) {
+                const list = pop.querySelector('[role="listbox"], [role="menu"], ul, .MuiMenu-list') || pop;
+                list.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                list.dispatchEvent(new KeyboardEvent('keyup', escInit));
+
+                // 2. Кликаем по прозрачной подложке MuiBackdrop-root
+                const backdrop = pop.querySelector('.MuiBackdrop-root') || (pop.firstElementChild && pop.firstElementChild.classList.contains('MuiBackdrop-root') ? pop.firstElementChild : null);
+                if (backdrop) {
+                    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    backdrop.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    backdrop.click();
+                }
+            }
+
+            // 3. Если есть кнопки с aria-expanded="true" (например Autocomplete), закрываем их и снимаем фокус
+            for (let b of expandedBtns) {
+                b.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                if (attempt >= 2) {
+                    b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+                    b.click();
+                }
+            }
+
+            // 4. Снимаем фокус с активного элемента и кликаем в body
+            if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) {
+                document.activeElement.blur();
+            }
+            document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+            document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+            document.body.click();
+
+            await new Promise(r => setTimeout(r, 65));
         }
-        if (document.activeElement && document.activeElement !== document.body) {
-            document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
-        }
-        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
-        await new Promise(r => setTimeout(r, 55));
     }
 
     try {
@@ -283,23 +307,19 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText || l.offsetParent === null) continue;
-                    // Пропускаем крупные контейнеры, у которых много дочерних элементов
-                    if (l.children.length > 2) continue;
+                    if (!l.innerText || elHasTooManyChildren(l) || l.offsetParent === null) continue;
 
                     const t = l.innerText.trim().toLowerCase();
                     const isMatch = exact ? t === kwL : (t === kwL || t.includes(kwL));
                     if (isMatch && t.length < kwL.length + 25) {
                         let foundInp = null;
 
-                        // 1. Сначала ищем строго внутри собственного .MuiFormControl-root
                         const fc = l.closest('.MuiFormControl-root');
                         if (fc) {
                             const inps = Array.from(fc.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])')).filter(el => el.offsetParent !== null);
                             if (inps.length === 1) foundInp = inps[0];
                         }
 
-                        // 2. Если поле не обернуто в MuiFormControl-root, поднимаемся аккуратно вверх, но только пока внутри ровно 1 инпут!
                         if (!foundInp) {
                             let p = l.parentElement;
                             for (let i = 0; i < 3 && p && p !== document.body; i++) {
@@ -308,14 +328,13 @@ window.applyAutofill = async function(jsonStr) {
                                     foundInp = inps[0];
                                     break;
                                 } else if (inps.length > 1) {
-                                    break; // Останавливаемся, чтобы не захватить чужой инпут из общей сетки!
+                                    break;
                                 }
                                 p = p.parentElement;
                             }
                         }
 
                         if (foundInp && !res.includes(foundInp)) {
-                            // Жесткий предохранитель: если ищем НЕ "фио", проверяем, не принадлежит ли инпут полю ФИО
                             if (!searchingFio) {
                                 const inpHolderText = ((foundInp.closest('.MuiFormControl-root') || foundInp.parentElement)?.innerText || '').trim().toLowerCase();
                                 if (inpHolderText === 'фио' || inpHolderText.startsWith('фио\n')) continue;
@@ -326,6 +345,10 @@ window.applyAutofill = async function(jsonStr) {
                 }
             }
             return res;
+        }
+
+        function elHasTooManyChildren(el) {
+            return el.children && el.children.length > 2;
         }
 
         const setAll = (kws, val, ex = false) => { if (val) findInputs(kws, ex).forEach(i => setVal(i, val)); };
@@ -361,7 +384,7 @@ window.applyAutofill = async function(jsonStr) {
             return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
         }
 
-        // Выпадающие списки Material-UI с гарантированным закрытием мультиселектов
+        // Выпадающие списки Material-UI с выбором последнего активного поповера и гарантированным закрытием
         async function selectDropdown(keywords, valStr, forceMulti = false) {
             if (!valStr) return;
             const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -391,18 +414,19 @@ window.applyAutofill = async function(jsonStr) {
                 if (!isMulti && curText === vals[0]) continue;
                 if (isMulti && vals.every(v => curText.includes(v))) continue;
 
-                // Перед открытием нового списка убеждаемся, что предыдущий закрыт
+                // Перед открытием убеждаемся, что предыдущие меню полностью закрыты
                 await closeAnyOpenMenu();
 
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 btn.click();
-                await new Promise(r => setTimeout(r, 95));
+                await new Promise(r => setTimeout(r, 110));
 
-                const popover = document.querySelector('.MuiPopover-root:not([aria-hidden="true"])') || document.querySelector('.MuiPopover-root') || document;
+                // ВАЖНО: берем самый ПОСЛЕДНИЙ (свежий) открытый поповер, а не старый уходящий в анимацию!
+                const activePops = getActivePopovers();
+                const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
                 const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root, .MuiAutocomplete-option'));
 
                 if (opts.length > 0) {
-                    // Дополнительная проверка: если внутри пунктов есть чекбоксы — это 100% мультиселект!
                     const hasCheckboxes = opts.some(o => !!o.querySelector('input[type="checkbox"], .MuiCheckbox-root'));
                     const treatAsMulti = isMulti || hasCheckboxes;
 
@@ -414,7 +438,9 @@ window.applyAutofill = async function(jsonStr) {
                         });
                         if (match) {
                             match.click();
-                            await new Promise(r => setTimeout(r, 85));
+                            await new Promise(r => setTimeout(r, 90));
+                            // Если вдруг одиночный список не закрылся сам — аккуратно закрываем через backdrop
+                            if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                         } else {
                             await closeAnyOpenMenu();
                         }
@@ -433,10 +459,10 @@ window.applyAutofill = async function(jsonStr) {
                             const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
                             if (shouldBe !== isSel) {
                                 o.click();
-                                await new Promise(r => setTimeout(r, 35));
+                                await new Promise(r => setTimeout(r, 40));
                             }
                         }
-                        // Принудительно закрываем мультиселект!
+                        await new Promise(r => setTimeout(r, 40));
                         await closeAnyOpenMenu();
                     }
                 } else {
@@ -598,20 +624,19 @@ window.applyAutofill = async function(jsonStr) {
         clickYesNoInRow(["перистальтика"], data.peristalsis || "ДА");
 
         // 6. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
-        // Одиночные списки (forceMulti = false)
         await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
         await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
 
-        // Мультиселекты (forceMulti = true — гарантирует принудительное закрытие даже при 1 значении!)
         if (data.skin) await selectDropdown(["кожа"], data.skin, true);
         if (data.heartSounds) await selectDropdown(["тоны сердца"], data.heartSounds, true);
         if (data.lungs) await selectDropdown(["дыхание"], data.lungs, true);
         if (data.percussion) await selectDropdown(["перкуссия легких"], data.percussion, true);
         if (data.abdomen) await selectDropdown(["живот"], data.abdomen, true);
 
-        // Контрольная зачистка любых оставшихся открытых меню в самом конце
         await closeAnyOpenMenu();
     } catch (e) { console.error(e); } finally {
+        // Финальная пауза для завершения анимаций React и контрольная зачистка всех меню
+        await new Promise(r => setTimeout(r, 80));
         await closeAnyOpenMenu();
         document.getElementById('b103-hide-menus')?.remove();
         if (fillBtn) fillBtn.innerText = "⚡";

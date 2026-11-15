@@ -6,7 +6,7 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. Современный глубокий градиентный фон -->
+    <!-- 1. Глубокий изумрудно-бирюзовый градиентный фон -->
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
@@ -15,65 +15,26 @@
                 android:endX="108"
                 android:endY="108"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#00897B" />
-                <item android:offset="0.5" android:color="#00695C" />
-                <item android:offset="1.0" android:color="#003D33" />
+                <item android:offset="0.0" android:color="#009688" />
+                <item android:offset="0.5" android:color="#00796B" />
+                <item android:offset="1.0" android:color="#004D40" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 2. Мягкое объемное свечение в центре (без щитка!) -->
+    <!-- 2. Деликатное внутреннее свечение по центру для глубины -->
     <path
-        android:fillColor="#18FFFFFF"
-        android:pathData="M54,54m-36,0a36,36 0,1 1,72 0a36,36 0,1 1,-72 0" />
-    <path
-        android:fillColor="#12FFFFFF"
-        android:pathData="M54,54m-28,0a28,28 0,1 1,56 0a28,28 0,1 1,-56 0" />
+        android:fillColor="#14FFFFFF"
+        android:pathData="M54,54m-34,0a34,34 0,1 1,68 0a34,34 0,1 1,-68 0" />
 
-    <!-- 3. Мягкая тень под основным медицинским крестом -->
+    <!-- 3. Мягкая тень под медицинским крестом (придает легкий 3D-объем) -->
     <path
-        android:fillColor="#38000000"
-        android:pathData="M46,27 L62,27 A4,4 0 0,1 66,31 L66,43 L78,43 A4,4 0 0,1 82,47 L82,63 A4,4 0 0,1 78,67 L66,67 L66,79 A4,4 0 0,1 62,83 L46,83 A4,4 0 0,1 42,79 L42,67 L30,67 A4,4 0 0,1 26,63 L26,47 A4,4 0 0,1 30,43 L42,43 L42,31 A4,4 0 0,1 46,27 Z" />
+        android:fillColor="#30000000"
+        android:pathData="M47,29 L61,29 A4,4 0 0,1 65,33 L65,45 L77,45 A4,4 0 0,1 81,49 L81,63 A4,4 0 0,1 77,67 L65,67 L65,79 A4,4 0 0,1 61,83 L47,83 A4,4 0 0,1 43,79 L43,67 L31,67 A4,4 0 0,1 27,63 L27,49 A4,4 0 0,1 31,45 L43,45 L43,33 A4,4 0 0,1 47,29 Z" />
 
-    <!-- 4. Главный белоснежный медицинский крест со скругленными углами -->
+    <!-- 4. Чистый минималистичный белоснежный крест со скругленными углами -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M46,25 L62,25 A4,4 0 0,1 66,29 L66,41 L78,41 A4,4 0 0,1 82,45 L82,61 A4,4 0 0,1 78,65 L66,65 L66,77 A4,4 0 0,1 62,81 L46,81 A4,4 0 0,1 42,77 L42,65 L30,65 A4,4 0 0,1 26,61 L26,45 A4,4 0 0,1 30,41 L42,41 L42,29 A4,4 0 0,1 46,25 Z" />
-
-    <!-- 5. Динамичная линия ЭКГ (пульс СМП) внутри креста -->
-    <path
-        android:pathData="M31,53 L43,53 L47,44 L52,63 L57,38 L61,57 L64,53 L77,53"
-        android:strokeWidth="3.2"
-        android:strokeColor="#00897B"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-    <!-- 6. Контрастный бейдж «PLUS» в правом нижнем углу -->
-    <!-- Темно-изумрудная обводка-кольцо (отделяет бейдж от белого креста) -->
-    <path
-        android:fillColor="#004D40"
-        android:pathData="M73,73m-13,0a13,13 0,1 1,26 0a13,13 0,1 1,-26 0" />
-
-    <!-- Яркий золотисто-лаймовый круг акцента -->
-    <path android:pathData="M73,73m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="63"
-                android:startY="63"
-                android:endX="83"
-                android:endY="83"
-                android:type="linear">
-                <item android:offset="0.0" android:color="#FFEE58" />
-                <item android:offset="1.0" android:color="#FDD835" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- Символ «+» внутри золотого круга -->
-    <path
-        android:pathData="M73,67.5 L73,78.5 M67.5,73 L78.5,73"
-        android:strokeWidth="3.0"
-        android:strokeColor="#004D40"
-        android:strokeLineCap="round" />
+        android:pathData="M47,27 L61,27 A4,4 0 0,1 65,31 L65,43 L77,43 A4,4 0 0,1 81,47 L81,61 A4,4 0 0,1 77,65 L65,65 L65,77 A4,4 0 0,1 61,81 L47,81 A4,4 0 0,1 43,77 L43,65 L31,65 A4,4 0 0,1 27,61 L27,47 A4,4 0 0,1 31,43 L43,43 L43,31 A4,4 0 0,1 47,27 Z" />
 
 </vector>

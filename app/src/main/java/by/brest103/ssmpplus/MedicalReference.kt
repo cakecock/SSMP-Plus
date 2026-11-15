@@ -222,6 +222,7 @@ object MedicalReference {
             setPadding(30, 20, 30, 20)
             background = MedicalTools.roundBg("#ECEFF1", 18f, "#CFD8DC")
             setTextColor(Color.BLACK)
+            setHintTextColor(Color.parseColor("#546E7A"))
         }
         root.addView(searchInp)
 
@@ -471,6 +472,7 @@ object MedicalReference {
             setPadding(30, 20, 30, 20)
             background = MedicalTools.roundBg("#E0F2F1", 18f, "#80CBC4")
             setTextColor(Color.BLACK)
+            setHintTextColor(Color.parseColor("#546E7A"))
         }
         root.addView(searchInp)
 

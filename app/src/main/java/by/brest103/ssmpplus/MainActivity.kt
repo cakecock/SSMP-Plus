@@ -205,14 +205,26 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
-    // ПОДМЕНЮ: ПОМОЩНИК СМП (6 РАЗДЕЛОВ)
+   // ПОДМЕНЮ: ПОМОЩНИК СМП (ВСЕ 8 РАЗДЕЛОВ)
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
-        addDialogBtn(d, card, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
-        addDialogBtn(d, card, "👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
-        addDialogBtn(d, card, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
-        addDialogBtn(d, card, "📋 ШПАРГАЛКИ И РАСЧЕТЫ", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
-        addDialogBtn(d, card, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
-        addDialogBtn(d, card, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
+        val scroll = NestedScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val listLay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        scroll.addView(listLay)
+        card.addView(scroll)
+
+        addDialogBtn(d, listLay, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
+        addDialogBtn(d, listLay, "👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
+        addDialogBtn(d, listLay, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
+        addDialogBtn(d, listLay, "📋 ШПАРГАЛКИ И РАСЧЕТЫ", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
+        addDialogBtn(d, listLay, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
+        addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ (130+)", "#C62828") { MedicalTools.showAntidotesSheet(this) }
+        addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
+        addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
     }
 
     private fun showAutofillPickerSheet(currentFio: String = "") {

@@ -64,7 +64,6 @@ jobs:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     raw_bytes = resp.read()
 
-                # Пробуем раскодировать UTF-8 или CP1251
                 text = None
                 for enc in ['utf-8', 'utf-8-sig', 'cp1251']:
                     try:
@@ -83,13 +82,11 @@ jobs:
                         code = row[0].strip().upper()
                         name = row[1].strip()
                         
-                        # Если формат с id на первой позиции
                         if not (code and code[0].isalpha() and any(ch.isdigit() for ch in code)):
                             if len(row) >= 3:
                                 code = row[1].strip().upper()
                                 name = row[2].strip()
 
-                        # Строгая валидация: первая буква A-Z + наличие цифры (отсекает служебные слова)
                         if len(code) >= 3 and code[0] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' and any(ch.isdigit() for ch in code) and len(name) > 2:
                             if code not in ['CODE', 'NAME', 'VERSION', 'ID']:
                                 data.append({'c': code, 'n': name})
@@ -122,6 +119,19 @@ jobs:
       run: |
         cp app/build/outputs/apk/release/*.apk SSMP-Plus-v1.0.${{ github.run_number }}.apk
 
+    # Автоматическая очистка всех старых релизов и тегов (чтобы не копились десятки сборок)
+    - name: Cleanup Old Releases and Tags
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        echo "Cleaning up old releases..."
+        gh release list --limit 200 --json tagName --jq '.[].tagName' | while read -r old_tag; do
+          if [ -n "$old_tag" ]; then
+            echo "Deleting old release and tag: $old_tag"
+            gh release delete "$old_tag" --cleanup-tag --yes || true
+          fi
+        done
+
     - name: Publish Android APK and iOS Extension to GitHub Releases
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,14 +141,16 @@ jobs:
             SSMP-Plus-v1.0.${{ github.run_number }}.apk \
             ios/SSMP-Plus-iOS.user.js \
             --title "SSMP Plus v1.0.${{ github.run_number }} (Android + iOS)" \
-            --notes "### Обновление SSMP Plus v1.0.${{ github.run_number }}
+            --notes "### 🚑 Обновление SSMP Plus v1.0.${{ github.run_number }}
             - 📱 **Android:** Скачайте и установите \`SSMP-Plus-v1.0.${{ github.run_number }}.apk\`
-            - 🍏 **iOS (iPhone / Safari):** Установите бесплатное приложение **Stay** или **Userscripts** из App Store и импортируйте файл \`SSMP-Plus-iOS.user.js\`
-            - ⭐ **Встроенная база образцов СМП (25 шаблонов)**, полная база МКБ-10 (12 500+ кодов), Импорт и Экспорт архива."
+            - 🍏 **iOS (iPhone / Safari):** Установите бесплатное расширение **Stay** или **Userscripts** из App Store и импортируйте файл \`SSMP-Plus-iOS.user.js\`
+            - ⚡ **Точный автопилот СМП:** бесшовное заполнение карт без прыжков экрана и с защитой вкладки «Заключение»
+            - ⭐ **63 эталонных клинических шаблона СМП** + сохранение личных шаблонов и оффлайн-архив пациентов (Импорт/Экспорт JSON)
+            - 🧰 **Помощник СМП (11 модулей):** Конструктор ЭКГ, Таймер-логгер СЛР, Быстрые фразы и отказы, МКБ-10 (12 500+ кодов), Педиатрия (Пост. №118: нормы, дозы, ЭТТ, ИВЛ), 10 клинических шкал, Калькуляторы (% растворы, Допамин, O2 в МПа), Акушерство и Апгар, Токсикология (130+ ядов и антидотов), Справочник препаратов СМП и правил оформления карт, Приказы МЗ РБ + чек-листы ТЛТ и ЧКВ."
         else
           gh release create v1.0.${{ github.run_number }} \
             SSMP-Plus-v1.0.${{ github.run_number }}.apk \
             --title "SSMP Plus v1.0.${{ github.run_number }}" \
-            --notes "### Обновление SSMP Plus v1.0.${{ github.run_number }}
-            - Полная база МКБ-10 (12 500+ кодов), 25 эталонных образцов СМП, Импорт и Экспорт архива."
+            --notes "### 🚑 Обновление SSMP Plus v1.0.${{ github.run_number }}
+            - Полная база МКБ-10 (12 500+ кодов), 63 эталонных образца СМП, 11 модулей Помощника СМП, Импорт и Экспорт архива."
         fi

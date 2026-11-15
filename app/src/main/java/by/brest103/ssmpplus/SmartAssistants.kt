@@ -96,6 +96,7 @@ object SmartAssistants {
         val hrInp = EditText(context).apply {
             setText("78"); inputType = InputType.TYPE_CLASS_TEXT; setPadding(24, 12, 24, 12)
             background = MedicalTools.roundBg("#F0F4F4", 12f, "#B0BEC5"); setTextColor(Color.BLACK)
+            setHintTextColor(Color.parseColor("#546E7A"))
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             addTextChangedListener(object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) { hrVal = s.toString().trim(); updatePreview() }

@@ -30,6 +30,18 @@ object MedicalTools {
         strokeHex?.let { setStroke(2, Color.parseColor(it)) }
     }
 
+    // Единое контрастное оформление EditText (защита от слияния текста при темной теме смартфона)
+    fun styleEditText(
+        et: EditText,
+        bgHex: String = "#F5F7F8",
+        strokeHex: String = "#B0BEC5",
+        corner: Float = 14f
+    ) {
+        et.setTextColor(Color.parseColor("#111111"))
+        et.setHintTextColor(Color.parseColor("#546E7A"))
+        et.background = roundBg(bgHex, corner, strokeHex)
+    }
+
     fun copyToClipboard(context: Context, label: String, text: String) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText(label, text))
@@ -121,6 +133,42 @@ object MedicalTools {
         dialog.show()
     }
 
+    // Вспомогательная колонка с четкой подписью над полем ввода
+    private fun makeLabeledInput(
+        context: Context,
+        labelText: String,
+        hintText: String,
+        defaultVal: String = "",
+        bgHex: String = "#FFF3E0",
+        strokeHex: String = "#FFB74D",
+        rightMarginPx: Int = 0,
+        isDecimal: Boolean = true
+    ): Pair<LinearLayout, EditText> {
+        val col = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = rightMarginPx
+            }
+        }
+        col.addView(TextView(context).apply {
+            text = labelText
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#37474F"))
+            setPadding(6, 0, 0, 4)
+        })
+        val inp = EditText(context).apply {
+            hint = hintText
+            if (defaultVal.isNotEmpty()) setText(defaultVal)
+            inputType = if (isDecimal) (InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL) else InputType.TYPE_CLASS_NUMBER
+            setPadding(22, 16, 22, 16)
+            textSize = 14.5f
+            styleEditText(this, bgHex, strokeHex, 12f)
+        }
+        col.addView(inp)
+        return col to inp
+    }
+
     // =========================================================
     // 1. ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ТРУБКИ, ИВЛ, СЛР (Пост. №118)
     // =========================================================
@@ -151,8 +199,10 @@ object MedicalTools {
         val weightRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 12) }
         weightRow.addView(TextView(context).apply { text = "⚖️ Вес ребенка (кг): "; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#263238")) })
         val weightInput = EditText(context).apply {
-            setText("10.0"); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setPadding(30, 18, 30, 18); background = roundBg("#E1F5FE", 16f, "#81D4FA"); setTextColor(Color.BLACK)
+            setText("10.0"); hint = "Введите вес в кг"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setPadding(30, 18, 30, 18)
+            styleEditText(this, "#E1F5FE", "#29B6F6", 16f)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         weightRow.addView(weightInput); root.addView(weightRow)
@@ -349,9 +399,9 @@ object MedicalTools {
                 1 -> {
                     content.addView(TextView(context).apply { text = "❤️ Шок-индекс Альговера (ЧСС / САД), кровопотеря и объем инфузии"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#C62828")); setPadding(0, 6, 0, 12) })
                     val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
-                    val hrInp = EditText(context).apply { hint = "Пульс (ЧСС)"; inputType = InputType.TYPE_CLASS_NUMBER; setPadding(24, 18, 24, 18); background = roundBg("#FFEBEE", 14f, "#FFCDD2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 10 } }
-                    val sbpInp = EditText(context).apply { hint = "САД (верхнее АД)"; inputType = InputType.TYPE_CLASS_NUMBER; setPadding(24, 18, 24, 18); background = roundBg("#FFEBEE", 14f, "#FFCDD2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-                    row.addView(hrInp); row.addView(sbpInp); content.addView(row)
+                    val (hrCol, hrInp) = makeLabeledInput(context, "💓 Пульс (ЧСС, уд/мин):", "Напр. 110", "", "#FFEBEE", "#EF9A9A", 12, false)
+                    val (sbpCol, sbpInp) = makeLabeledInput(context, "🩸 САД (верхнее АД):", "Напр. 90", "", "#FFEBEE", "#EF9A9A", 0, false)
+                    row.addView(hrCol); row.addView(sbpCol); content.addView(row)
                     val shockRes = TextView(context).apply { textSize = 14.5f; setTextColor(Color.parseColor("#263238")); setLineSpacing(6f, 1.18f); setPadding(22, 18, 22, 18); background = roundBg("#FFF8E1", 14f, "#FFE082") }
                     content.addView(shockRes)
 
@@ -440,7 +490,7 @@ object MedicalTools {
     }
 
     // =========================================================
-    // 3. ШПАРГАЛКИ И КАЛЬКУЛЯТОРЫ СМП
+    // 3. ШПАРГАЛКИ И 3 ОТДЕЛЬНЫХ КАЛЬКУЛЯТОРА (% РАСТВОР, ДОПАМИН, КИСЛОРОД В МПа)
     // =========================================================
     private val cheatSheets = listOf(
         GuideCard("📍 Локализация инфаркта миокарда (ИМ)", "По отведениям ЭКГ + реципрокные изменения",
@@ -478,47 +528,143 @@ object MedicalTools {
         val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 4, 0, 24) }
         scrollView.addView(container); root.addView(scrollView)
 
+        // ---------------------------------------------------------
+        // БЛОК 1. РАСЧЕТ ВЕЩЕСТВА В МГ ИЗ % РАСТВОРА
+        // ---------------------------------------------------------
         container.addView(TextView(context).apply { text = "🧮 1. Расчет вещества в мг из % раствора"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); setPadding(0, 4, 0, 8) })
-        val pctRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 6) }
-        val pctInp = EditText(context).apply { hint = "Раствор % (напр. 25)"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 12f, "#FFE0B2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-        val mlInp = EditText(context).apply { hint = "Объем мл (напр. 10)"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 12f, "#FFE0B2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-        pctRow.addView(pctInp); pctRow.addView(mlInp); container.addView(pctRow)
-        val pctOut = TextView(context).apply { text = "Правило: 1% = 10 мг/мл (0.1% = 1 мг/мл, 25% = 250 мг/мл)"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#37474F")); setPadding(8, 4, 8, 16) }
+        val pctRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 8) }
+        val (pctCol, pctInp) = makeLabeledInput(context, "Концентрация (%):", "Напр. 25", "", "#FFF3E0", "#FFB74D", 10)
+        val (mlCol, mlInp) = makeLabeledInput(context, "Объем ампулы (мл):", "Напр. 10", "", "#FFF3E0", "#FFB74D", 0)
+        pctRow.addView(pctCol); pctRow.addView(mlCol); container.addView(pctRow)
+        val pctOut = TextView(context).apply {
+            text = "💡 Правило: 1% = 10 мг/мл (0.1% = 1 мг/мл, 2.4% = 24 мг/мл, 25% = 250 мг/мл)"
+            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#263238"))
+            setPadding(18, 12, 18, 12); background = roundBg("#FFF8E1", 12f, "#FFE082")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 }
+        }
         container.addView(pctOut)
 
         val pctWatcher = object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
                 val p = pctInp.text.toString().replace(",", ".").toDoubleOrNull()
                 val m = mlInp.text.toString().replace(",", ".").toDoubleOrNull() ?: 1.0
-                if (p != null) pctOut.text = String.format(Locale.US, "💉 В 1 мл = %.1f мг | В %.1f мл = %.1f мг вещества", p * 10.0, m, p * 10.0 * m).replace(".0 ", " ")
+                if (p != null) {
+                    pctOut.text = String.format(Locale.US, "💉 В 1 мл содержится %.1f мг\n📦 В %.1f мл раствора = %.1f мг вещества", p * 10.0, m, p * 10.0 * m).replace(".0 ", " ")
+                } else {
+                    pctOut.text = "💡 Правило: 1% = 10 мг/мл (0.1% = 1 мг/мл, 2.4% = 24 мг/мл, 25% = 250 мг/мл)"
+                }
             }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         }
         pctInp.addTextChangedListener(pctWatcher); mlInp.addTextChangedListener(pctWatcher)
 
-        container.addView(TextView(context).apply { text = "🧮 2. Калькулятор Допамина и запаса O2 в баллоне"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); setPadding(0, 8, 0, 8) })
-        val dopRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 6) }
-        val dopWeight = EditText(context).apply { hint = "Вес (кг)"; setText("70"); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 12f, "#FFE0B2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-        val dopDose = EditText(context).apply { hint = "мкг/кг/мин"; setText("5"); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 12f, "#FFE0B2"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-        val o2Atm = EditText(context).apply { hint = "O2 атм (2л)"; setText("150"); inputType = InputType.TYPE_CLASS_NUMBER; setPadding(20, 14, 20, 14); background = roundBg("#E1F5FE", 12f, "#81D4FA"); setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-        dopRow.addView(dopWeight); dopRow.addView(dopDose); dopRow.addView(o2Atm); container.addView(dopRow)
+        // ---------------------------------------------------------
+        // БЛОК 2. КАЛЬКУЛЯТОР ИНФУЗИИ ДОПАМИНА
+        // ---------------------------------------------------------
+        container.addView(TextView(context).apply { text = "💧 2. Калькулятор инфузии Допамина (200 мг = 5 мл 4%)"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#C62828")); setPadding(0, 4, 0, 8) })
+        val dopRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 8) }
+        val (dopWCol, dopWeight) = makeLabeledInput(context, "⚖️ Вес пациента (кг):", "Напр. 70", "70", "#FFEBEE", "#EF9A9A", 10)
+        val (dopDCol, dopDose) = makeLabeledInput(context, "💉 Доза (мкг/кг/мин):", "Напр. 5", "5", "#FFEBEE", "#EF9A9A", 0)
+        dopRow.addView(dopWCol); dopRow.addView(dopDCol); container.addView(dopRow)
 
-        val dopOut = TextView(context).apply { textSize = 13.5f; setTextColor(Color.parseColor("#263238")); setLineSpacing(4f, 1.15f); setPadding(18, 12, 18, 16); background = roundBg("#FFF8E1", 12f); layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 } }
+        val dopOut = TextView(context).apply {
+            textSize = 13.5f; setTextColor(Color.parseColor("#263238")); setLineSpacing(5f, 1.15f)
+            setPadding(18, 14, 18, 14); background = roundBg("#FFF8F8", 12f, "#FFCDD2")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 16 }
+        }
         container.addView(dopOut)
 
-        fun calcDopAndO2() {
+        fun calcDopamine() {
             val w = dopWeight.text.toString().replace(",", ".").toDoubleOrNull() ?: 70.0
             val d = dopDose.text.toString().replace(",", ".").toDoubleOrNull() ?: 5.0
-            val atm = o2Atm.text.toString().toDoubleOrNull() ?: 150.0
-            val mcgMin = w * d; val o2Liters = atm * 2.0
+            val mcgMin = w * d
+            val effect = when {
+                d <= 3.0 -> "Почечная доза (диуретический эффект)"
+                d <= 10.0 -> "Кардиотоническая доза (бета1 — рост сердечного выброса и САД)"
+                else -> "Вазопрессорная доза (альфа1 — сужение сосудов и подъем АД)"
+            }
             dopOut.text = String.format(Locale.US,
-                "💧 Допамин (%.0f мкг/мин):\n• Капельница (200 мг на 200 мл NaCl): %.0f кап/мин | (на 400 мл): %.0f кап/мин\n• Дозатор (200 мг в 20 мл): %.2f мл/час\n🫁 Баллон 2 л (%.0f атм = %.0f л O2): при 5 л/мин на %.0f мин, при 10 л/мин — на %.0f мин",
-                mcgMin, mcgMin / 50.0, mcgMin / 25.0, (mcgMin * 60.0) / 10000.0, atm, o2Liters, o2Liters / 5.0, o2Liters / 10.0)
+                "⚡ Скорость введения: %.0f мкг/мин (%s)\n" +
+                "• Капельница (200 мг на 200 мл NaCl): %.0f капель/мин\n" +
+                "• Капельница (200 мг на 400 мл NaCl): %.0f капель/мин\n" +
+                "• Шприцевой дозатор (200 мг в 20 мл): %.2f мл/час",
+                mcgMin, effect, mcgMin / 50.0, mcgMin / 25.0, (mcgMin * 60.0) / 10000.0
+            )
         }
-        val dWatcher = object : TextWatcher { override fun afterTextChanged(s: Editable?) = calcDopAndO2(); override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}; override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} }
-        dopWeight.addTextChangedListener(dWatcher); dopDose.addTextChangedListener(dWatcher); o2Atm.addTextChangedListener(dWatcher); calcDopAndO2()
+        val dWatcher = object : TextWatcher { override fun afterTextChanged(s: Editable?) = calcDopamine(); override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}; override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} }
+        dopWeight.addTextChangedListener(dWatcher); dopDose.addTextChangedListener(dWatcher); calcDopamine()
 
+        // ---------------------------------------------------------
+        // БЛОК 3. РАСЧЕТ ЗАПАСА КИСЛОРОДА В БАЛЛОНЕ (В МПа: 1 л, 2 л, 10 л)
+        // ---------------------------------------------------------
+        container.addView(TextView(context).apply { text = "🫁 3. Расчет запаса кислорода в баллоне (в МПа)"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#0277BD")); setPadding(0, 4, 0, 8) })
+
+        var cylinderVolLiters = 2.0 // По умолчанию 2 л
+        val cylSwitchRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 10) }
+        container.addView(cylSwitchRow)
+
+        val o2InputsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 8) }
+        val (mpaCol, mpaInp) = makeLabeledInput(context, "⏱️ Давление манометра (МПа):", "Напр. 15", "15", "#E1F5FE", "#4FC3F7", 10)
+        val (flowCol, flowInp) = makeLabeledInput(context, "💨 Поток O2 (л/мин):", "Напр. 6", "6", "#E1F5FE", "#4FC3F7", 0)
+        o2InputsRow.addView(mpaCol); o2InputsRow.addView(flowCol); container.addView(o2InputsRow)
+
+        val o2Out = TextView(context).apply {
+            textSize = 13.5f; setTextColor(Color.parseColor("#263238")); setLineSpacing(5f, 1.15f)
+            setPadding(18, 14, 18, 14); background = roundBg("#E1F5FE", 12f, "#81D4FA")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
+        }
+        container.addView(o2Out)
+
+        fun fmtTime(minutes: Double): String {
+            val totalMin = minutes.toInt()
+            return if (totalMin < 60) "$totalMin мин" else "${totalMin / 60} ч ${totalMin % 60} мин ($totalMin мин)"
+        }
+
+        fun calcOxygen() {
+            val mpa = mpaInp.text.toString().replace(",", ".").toDoubleOrNull() ?: 0.0
+            val flow = flowInp.text.toString().replace(",", ".").toDoubleOrNull() ?: 6.0
+            // 1 МПа ≈ 10 атм (кгс/см²). Остаточное давление редуктора ~ 1 МПа (10 атм), полезный объем газа = МПа * 10 * V_баллона
+            val atm = mpa * 10.0
+            val totalGasLiters = atm * cylinderVolLiters
+            val usableGasLiters = ((mpa - 1.0).coerceAtLeast(0.0) * 10.0) * cylinderVolLiters
+            val timeForFlow = if (flow > 0) totalGasLiters / flow else 0.0
+            val usableTime = if (flow > 0) usableGasLiters / flow else 0.0
+
+            o2Out.text = String.format(Locale.US,
+                "🛢️ Баллон %.0f л при %.1f МПа (%.0f атм):\n" +
+                "• Полный объем O2: %.0f л (полезный до 1 МПа: %.0f л)\n" +
+                "• При потоке %.1f л/мин хватит на: %s (до 1 МПа — %s)\n" +
+                "• Шпаргалка времени: 4 л/мин → %s | 10 л/мин → %s | 15 л/мин → %s",
+                cylinderVolLiters, mpa, atm, totalGasLiters, usableGasLiters,
+                flow, fmtTime(timeForFlow), fmtTime(usableTime),
+                fmtTime(totalGasLiters / 4.0), fmtTime(totalGasLiters / 10.0), fmtTime(totalGasLiters / 15.0)
+            ).replace(".0 ", " ")
+        }
+
+        fun drawCylBtns() {
+            cylSwitchRow.removeAllViews()
+            listOf(1.0 to "🛢️ Баллон 1 л", 2.0 to "🛢️ Баллон 2 л", 10.0 to "🛢️ Баллон 10 л").forEach { (vol, title) ->
+                val sel = cylinderVolLiters == vol
+                cylSwitchRow.addView(TextView(context).apply {
+                    text = title; textSize = 12.5f; gravity = Gravity.CENTER
+                    typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    setTextColor(if (sel) Color.WHITE else Color.parseColor("#01579B"))
+                    setPadding(14, 14, 14, 14)
+                    background = roundBg(if (sel) "#0277BD" else "#E1F5FE", 12f)
+                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = if (vol < 10.0) 8 else 0 }
+                    setOnClickListener { cylinderVolLiters = vol; drawCylBtns(); calcOxygen() }
+                })
+            }
+        }
+
+        val o2Watcher = object : TextWatcher { override fun afterTextChanged(s: Editable?) = calcOxygen(); override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}; override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} }
+        mpaInp.addTextChangedListener(o2Watcher); flowInp.addTextChangedListener(o2Watcher)
+        drawCylBtns(); calcOxygen()
+
+        // ---------------------------------------------------------
+        // СПИСОК КАРТОЧЕК-ШПАРГАЛОК
+        // ---------------------------------------------------------
         container.addView(TextView(context).apply { text = "📚 Справочные шпаргалки (нажмите для открытия):"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); setPadding(0, 4, 0, 10) })
         cheatSheets.forEach { item ->
             container.addView(LinearLayout(context).apply {
@@ -814,7 +960,8 @@ object MedicalTools {
                     val lay = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; layoutParams = FrameLayout.LayoutParams(-1, -1) }
                     val searchInp = EditText(context).apply {
                         hint = "Поиск из ${antidotesList.size} ядов (фос, сибазон, крысид, уксус)..."
-                        setPadding(30, 20, 30, 20); background = roundBg("#FFEBEE", 18f, "#FFCDD2"); setTextColor(Color.BLACK)
+                        setPadding(30, 20, 30, 20)
+                        styleEditText(this, "#FFEBEE", "#EF9A9A", 18f)
                     }
                     lay.addView(searchInp)
                     val listView = ListView(context).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isNestedScrollingEnabled = true; divider = null; dividerHeight = 12; setPadding(0, 12, 0, 0) }

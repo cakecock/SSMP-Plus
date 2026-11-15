@@ -481,7 +481,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             append("\n🩺 ОБЪЕКТИВНО:\n")
-            add("• Состояние", "generalState"); add("• Сознание", "consciousness"); add("• Положение", "position")
+            add("• Состояние", "generalState"); add("• Сознание", "consciousness")
+            add("• Положение", "position", if (j.optString("positionDescription").isNotEmpty()) " (${j.optString("positionDescription")})" else "")
             add("• Поведение", "behavior"); add("• Глазго", "glasgowScore", " б")
             val bpAd = cleanBpString(j.optString("bpAdapted")); if (bpAd.isNotEmpty()) append("• Привычное АД: $bpAd\n")
             val bp = cleanBpString(j.optString("bp")); if (bp.isNotEmpty()) append("• АД на вызове: $bp\n")
@@ -489,8 +490,11 @@ class MainActivity : AppCompatActivity() {
             add("• Сахар", "glucose", " ммоль/л"); add("• Температура", "temp", "°C")
             add("• Тоны сердца", "heartSounds"); add("• Дыхание", "lungs"); add("• Перкуссия", "percussion")
             add("• Живот", "abdomen"); add("• Кожа", "skin"); add("• Высыпания", "rash")
-            add("• Отеки", "edema"); add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
+            add("• Отеки", "edema", if (j.optString("edemaDescription").isNotEmpty()) " (${j.optString("edemaDescription")})" else "")
+            add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
             add("• Речь", "speech"); add("• Лицо", "face"); add("• Походка", "gait"); add("• Нистагм", "nystagmus")
+            add("• Тонус мышц", "muscleTone"); add("• Пат. рефлексы", "pathologicalReflexes")
+            add("• Менингеальные", "meningealSymptoms"); add("• Плегии/парезы", "plegia")
             add("• Язык", "tongue"); add("• Слизистые", "mucous"); add("• Перистальтика", "peristalsis")
             add("• Печень", "liver"); add("• Брюшина", "peritoneal"); add("• Мочеиспускание", "urination"); add("• Стул", "stool")
             add("• Запах алкоголя", "alcohol"); add("• Запах ацетона", "acetone"); add("• Локально", "localStatus")
@@ -524,7 +528,7 @@ class MainActivity : AppCompatActivity() {
         val it = obj.keys()
         while (it.hasNext()) {
             val k = it.next(); val kl = k.lowercase()
-            if (kl.contains("unit") || kl.contains("way") || kl.contains("route") || kl.contains("id") || kl in listOf("count", "amount", "quantity")) continue
+            if (kl.contains("unit") || kl.contains("way") || kl.contains("route") || kl.contains("id") || kl in listOf("count", "amount", "quantity", "number")) continue
             obj.optJSONObject(k)?.let { sub ->
                 val st = sub.optString("type").ifEmpty { sub.optString("name") }.ifEmpty { sub.optString("title") }.replace("null", "").trim()
                 if (st.isNotEmpty() && !st.startsWith("{")) return st
@@ -555,10 +559,12 @@ class MainActivity : AppCompatActivity() {
                 val arr = raw.optJSONArray("medications") ?: return ""
                 return (0 until arr.length()).mapNotNull { i ->
                     val m = arr.optJSONObject(i) ?: return@mapNotNull null
-                    val name = extractName(m, "medication", "medicine", "drug", "nomenclature", "preparation", "med", "name", "title")
-                    val cnt = listOf("count", "amount", "quantity", "dose", "value").firstNotNullOfOrNull { k -> m.optString(k).replace("null", "").trim().takeIf { it.isNotEmpty() && !it.startsWith("{") } } ?: ""
-                    val unit = (m.optJSONObject("unit") ?: m.optJSONObject("measurement"))?.let { it.optString("type").ifEmpty { it.optString("name") }.replace("null", "").trim() } ?: ""
-                    val way = (m.optJSONObject("wayOfAdministration") ?: m.optJSONObject("way") ?: m.optJSONObject("route"))?.let { it.optString("type").ifEmpty { it.optString("name") }.replace("null", "").trim() } ?: ""
+                    val medObj = m.optJSONObject("medication")
+                    val name = medObj?.optString("name")?.replace("null", "")?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: extractName(m, "medication", "medicine", "drug", "nomenclature", "preparation", "med", "name", "title")
+                    val cnt = listOf("number", "count", "amount", "quantity", "dose", "value").firstNotNullOfOrNull { k -> m.optString(k).replace("null", "").trim().takeIf { it.isNotEmpty() && !it.startsWith("{") } } ?: ""
+                    val unit = (medObj?.optJSONObject("type") ?: medObj?.optJSONObject("unitsType") ?: m.optJSONObject("unit") ?: m.optJSONObject("measurement"))?.let { it.optString("name").ifEmpty { it.optString("type") }.replace("null", "").trim() } ?: ""
+                    val way = (m.optJSONObject("routeDict") ?: m.optJSONObject("wayOfAdministration") ?: m.optJSONObject("way") ?: m.optJSONObject("route"))?.let { it.optString("display").ifEmpty { it.optString("type") }.ifEmpty { it.optString("name") }.replace("null", "").trim() } ?: ""
                     if (name.isEmpty()) null else "$name${listOf(cnt, unit).filter { it.isNotEmpty() }.joinToString(" ").let { if (it.isNotEmpty()) " — $it" else "" }}${if (way.isNotEmpty() && !way.contains("не определен")) " [$way]" else ""}"
                 }.joinToString(";\n• ")
             }
@@ -572,6 +578,12 @@ class MainActivity : AppCompatActivity() {
             var score = 0; if (anamnesis.length > 10) score += 35; if (complaints.isNotEmpty()) score += 25; if (diag.isNotEmpty()) score += 25; if (meds.isNotEmpty() || bp.isNotEmpty()) score += 15
             val icd = raw.optJSONObject("icd")
 
+            val liverVal = when {
+                raw.optJSONObject("liver") != null -> raw.optJSONObject("liver")?.optString("type")?.uppercase() ?: "НЕ УВЕЛИЧЕНА"
+                raw.has("liver") && !raw.isNull("liver") -> if (raw.optBoolean("liver", false)) "УВЕЛИЧЕНА" else "НЕ УВЕЛИЧЕНА"
+                else -> "НЕ УВЕЛИЧЕНА"
+            }
+
             val card = JSONObject().apply {
                 put("fio", fio); put("birthDate", bDate); put("age", raw.optString("age").replace("null", "")); put("ageUnit", ageUnit)
                 put("address", p.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", ""))
@@ -583,6 +595,7 @@ class MainActivity : AppCompatActivity() {
                 put("generalState", raw.optJSONObject("generalState")?.optString("type") ?: "")
                 put("consciousness", raw.optJSONObject("consciousness")?.optString("type") ?: "")
                 put("position", raw.optJSONObject("position")?.optString("type")?.uppercase() ?: "")
+                put("positionDescription", raw.optString("positionDescription").replace("null", ""))
                 put("behavior", raw.optJSONObject("behavior")?.optString("type")?.uppercase() ?: "")
                 put("glasgowScore", raw.optString("comaScale").replace("null", ""))
                 put("bp", bp); put("bpAdapted", bpAd)
@@ -593,8 +606,10 @@ class MainActivity : AppCompatActivity() {
                 put("abdomen", jArr("stomachs")); put("skin", jArr("skins")); put("urination", jArr("urinations").uppercase())
                 put("stool", raw.optJSONObject("defecatio")?.optString("type")?.uppercase() ?: "")
                 put("edema", if (raw.optBoolean("peripheralEdema", false)) "ДА" else "НЕТ")
+                put("edemaDescription", raw.optString("peripheralEdemaDescription").replace("null", ""))
                 put("rash", if (raw.optBoolean("skinRashes", false)) "ДА" else "НЕТ")
                 put("ascites", if (raw.optBoolean("ascites", false)) "ДА" else "НЕТ")
+                put("peritoneal", if (raw.optBoolean("stomachSymptoms", false)) "ДА" else "НЕТ")
                 put("medHelp", jArr("medicalAssistanceProvided")); put("medications", meds)
                 put("pupils", raw.optJSONObject("pupils")?.optString("type")?.uppercase() ?: "")
                 put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")
@@ -602,14 +617,18 @@ class MainActivity : AppCompatActivity() {
                 put("gait", raw.optJSONObject("gait")?.optString("type")?.uppercase() ?: "")
                 put("face", raw.optJSONObject("face")?.optString("type")?.uppercase() ?: "")
                 put("nystagmus", raw.optJSONObject("nystagmus")?.optString("type")?.uppercase() ?: "")
+                put("muscleTone", raw.optString("muscleTone").replace("null", ""))
+                put("pathologicalReflexes", raw.optString("pathologicalReflexes").replace("null", ""))
+                put("meningealSymptoms", raw.optString("meningealSymptoms").replace("null", ""))
+                put("plegia", raw.optString("plegia").replace("null", ""))
                 put("tongue", raw.optString("tongue").replace("null", "")); put("mucous", raw.optString("mucosa").replace("null", ""))
-                put("liver", raw.optJSONObject("liver")?.optString("type")?.uppercase() ?: "")
+                put("liver", liverVal)
                 put("peristalsis", if (raw.optBoolean("peristalsis", true)) "ДА" else "НЕТ")
                 put("localStatus", raw.optString("localStatus").replace("null", ""))
                 put("ecgBefore", raw.optString("electrocardiogramBefore").replace("null", ""))
                 put("ecgAfter", raw.optString("electrocardiogramAfter").replace("null", ""))
                 put("diagnosis", diag); put("mkb", if (icd != null) "[${icd.optString("code")}] ${icd.optString("type").ifEmpty { icd.optString("name") }}".trim() else "")
-                put("attack", raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: "")
+                put("attack", if (raw.has("postAttack") && !raw.isNull("postAttack")) (if (raw.optBoolean("postAttack", true)) "КУПИРОВАН" else "НЕ КУПИРОВАН") else (raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: ""))
                 put("therapyEffect", raw.optJSONObject("result")?.optString("type")?.uppercase() ?: "")
                 put("callResult", raw.optJSONObject("resultDeparture")?.optString("type")?.uppercase() ?: "")
             }

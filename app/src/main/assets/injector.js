@@ -59,7 +59,6 @@
         };
     }
 
-    // Фильтр настоящих инпутов (отсекает скрытый второй textarea MuiInputBase-inputMultiline с высотой/тенью)
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
             .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
@@ -171,21 +170,6 @@
         if (!inCard) { window.activeAutofillData = null; window.b103ScreenCache = {}; }
     }
 
-    if (!window.b103ClickHooked) {
-        window.b103ClickHooked = true;
-        document.addEventListener('click', function(e) {
-            if (!e.isTrusted || window.b103IsApplying || !window.activeAutofillData) return;
-            const tab = e.target && e.target.closest ? e.target.closest('button, [role="tab"]') : null;
-            if (!tab) return;
-            const rect = tab.getBoundingClientRect();
-            if (rect.top < 0 || rect.top > 130) return;
-            const t = (tab.innerText || '').toUpperCase();
-            if (t.includes('УТОЧНЕННЫЕ') || t.includes('ОБЪЕКТИВНЫЕ') || t.includes('МЕДИЦИНСКАЯ')) {
-                setTimeout(() => window.applyAutofill(window.activeAutofillData), 180);
-            }
-        }, true);
-    }
-
     ensureToolbar();
     updateVisibility();
     if (!window.b103VisTimer) window.b103VisTimer = setInterval(updateVisibility, 300);
@@ -199,15 +183,30 @@ window.setAndApplyAutofill = function(jsonStr) {
 };
 
 // ==========================================
-// ТОЧНЫЙ АВТОПИЛОТ (БЕЗ ДЕРГАНИЯ ЭКРАНА И БЕЗ ЗАКЛЮЧЕНИЯ)
+// ТОЧНЫЙ АВТОПИЛОТ С ФИКСАЦИЕЙ ЭКРАНА И ВКЛАДКИ
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
 
-    // Если активна вкладка "ЗАКЛЮЧЕНИЕ", автозаполнение не запускаем
-    const activeTabs = Array.from(document.querySelectorAll('[role="tab"], button')).filter(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
-    if (activeTabs.some(t => (t.innerText || '').toUpperCase().includes('ЗАКЛЮЧЕНИЕ'))) {
+    // Находим все контейнеры прокрутки и запоминаем текущую вкладку и координаты экрана
+    const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
+    const savedScrollContainers = Array.from(document.querySelectorAll('main, [class*="content"], [class*="scroll"], div'))
+        .filter(el => el.scrollTop > 0)
+        .map(el => ({ el, top: el.scrollTop }));
+
+    const activeTabBefore = Array.from(document.querySelectorAll('[role="tab"], button'))
+        .find(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
+
+    if (activeTabBefore && (activeTabBefore.innerText || '').toUpperCase().includes('ЗАКЛЮЧЕНИЕ')) {
         return;
+    }
+
+    function restoreScreenPosition() {
+        window.scrollTo(0, savedScrollWinY);
+        document.documentElement.scrollTop = savedScrollWinY;
+        for (let item of savedScrollContainers) {
+            item.el.scrollTop = item.top;
+        }
     }
 
     window.b103IsApplying = true;
@@ -267,21 +266,20 @@ window.applyAutofill = async function(jsonStr) {
             document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
             document.body.click();
 
-            await new Promise(r => setTimeout(r, 60));
+            restoreScreenPosition();
+            await new Promise(r => setTimeout(r, 55));
         }
     }
 
     try {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
 
-        // Определяем DOM-границу начала раздела "ЗАКЛЮЧЕНИЕ" (так как все 5 вкладок рендерятся на странице одновременно!)
         const conclusionAnchor = Array.from(document.querySelectorAll('p, span, div, label')).find(el => {
             if (!el.innerText || el.children.length > 2) return false;
             const t = el.innerText.trim();
             return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
         });
 
-        // Возвращает true, если элемент находится внутри раздела "ЗАКЛЮЧЕНИЕ" (или "О ВЫЗОВЕ" для ФИО/возраста)
         function isInConclusion(el) {
             if (!el || !conclusionAnchor) return false;
             return Boolean(conclusionAnchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -309,13 +307,11 @@ window.applyAutofill = async function(jsonStr) {
             } catch (e) { inp.value = str; }
         }
 
-        // Возвращает только рабочие инпуты (отсекает второй скрытый textarea в Material-UI)
         function getRealInputs(container) {
             return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
                 .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
         }
 
-        // Поиск инпутов строго вне вкладки "Заключение" с поддержкой двойных TEXTAREA
         function findInputs(keywords, exact = false) {
             const res = [];
             const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
@@ -354,7 +350,6 @@ window.applyAutofill = async function(jsonStr) {
                         if (foundInp && !res.includes(foundInp)) {
                             const holderText = ((foundInp.closest('.MuiFormControl-root') || foundInp.parentElement)?.innerText || '').trim().toLowerCase();
                             if (!searchingFio && (holderText === 'фио' || holderText.startsWith('фио\n') || holderText.includes('фио пациента'))) continue;
-                            // Дополнительная защита для ФИО: не трогать поле "ФИО" во вкладке Заключение (рядом с полем "Должность")
                             if (searchingFio) {
                                 const rowTxt = (foundInp.closest('.MuiGrid-container') || foundInp.parentElement?.parentElement?.parentElement)?.innerText || '';
                                 if (rowTxt.includes('Должность') || rowTxt.includes('передачи мед.работнику')) continue;
@@ -400,7 +395,6 @@ window.applyAutofill = async function(jsonStr) {
             return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
         }
 
-        // Выпадающие списки Material-UI (игнорирует списки внутри вкладки "Заключение")
         async function selectDropdown(keywords, valStr, forceMulti = false) {
             if (!valStr) return;
             const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -440,7 +434,8 @@ window.applyAutofill = async function(jsonStr) {
 
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 btn.click();
-                await new Promise(r => setTimeout(r, 110));
+                restoreScreenPosition();
+                await new Promise(r => setTimeout(r, 105));
 
                 const activePops = getActivePopovers();
                 const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
@@ -457,7 +452,8 @@ window.applyAutofill = async function(jsonStr) {
                         });
                         if (match) {
                             match.click();
-                            await new Promise(r => setTimeout(r, 90));
+                            restoreScreenPosition();
+                            await new Promise(r => setTimeout(r, 85));
                             if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                         } else {
                             await closeAnyOpenMenu();
@@ -476,10 +472,11 @@ window.applyAutofill = async function(jsonStr) {
                             const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
                             if (shouldBe !== isSel) {
                                 o.click();
-                                await new Promise(r => setTimeout(r, 40));
+                                restoreScreenPosition();
+                                await new Promise(r => setTimeout(r, 35));
                             }
                         }
-                        await new Promise(r => setTimeout(r, 40));
+                        await new Promise(r => setTimeout(r, 35));
                         await closeAnyOpenMenu();
                     }
                 } else {
@@ -488,13 +485,12 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Специальная функция для заполнения "Код по МКБ" (MuiAutocomplete)
+        // Заполнение "Код по МКБ" (MuiAutocomplete) с удержанием позиции экрана (preventScroll: true)
         async function fillMkbAutocomplete(mkbStr) {
             if (!mkbStr) return;
             const cleanMkb = String(mkbStr).trim();
             if (!cleanMkb) return;
 
-            // Извлекаем код (например "I26" из "[I26] Легочная эмболия" или "I10")
             const codeMatch = cleanMkb.match(/\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?/i);
             const searchCode = codeMatch ? codeMatch[1].toUpperCase() : cleanMkb;
 
@@ -502,19 +498,19 @@ window.applyAutofill = async function(jsonStr) {
             if (mkbInputs.length === 0) return;
             const inp = mkbInputs[0];
 
-            // Если уже заполнен тем же кодом — не трогаем
             if (inp.value && inp.value.toUpperCase().includes(searchCode)) return;
 
             await closeAnyOpenMenu();
 
-            // Открываем Autocomplete и вводим поисковый код
             const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.parentElement;
             const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator, button') : null;
 
-            inp.focus();
+            try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            restoreScreenPosition();
             setVal(inp, searchCode);
             if (popupBtn) popupBtn.click();
-            await new Promise(r => setTimeout(r, 220));
+            restoreScreenPosition();
+            await new Promise(r => setTimeout(r, 210));
 
             const popper = document.querySelector('.MuiAutocomplete-popper, .MuiPopover-root');
             if (popper) {
@@ -526,14 +522,14 @@ window.applyAutofill = async function(jsonStr) {
 
                 if (targetOpt) {
                     targetOpt.click();
-                    await new Promise(r => setTimeout(r, 80));
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 75));
                 }
             }
             if (inp.blur) inp.blur();
             await closeAnyOpenMenu();
         }
 
-        // Клик по кнопке внутри конкретной строки (по ключевому слову строки: "Пол", "Зрачки", "Нистагм", "Аллергия" и т.д.)
         function clickButtonInRow(rowKeywords, buttonChoices) {
             if (!buttonChoices) return;
             const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices])
@@ -571,24 +567,6 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        function clickUniqueButton(targetText) {
-            if (!targetText) return;
-            const targetUp = targetText.trim().toUpperCase();
-            const btns = Array.from(document.querySelectorAll('button, div[role="button"]')).filter(b => !isInConclusion(b));
-            const btn = btns.find(b => {
-                if (b.offsetParent === null || b.disabled) return false;
-                const bt = (b.innerText || '').trim().toUpperCase();
-                return bt === targetUp || (targetUp.includes("СИММЕТР") && targetUp.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ"));
-            });
-            if (btn) {
-                const s = window.getComputedStyle(btn);
-                const isWhite = s.color.includes('255, 255, 255');
-                const isColored = !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
-                const isAlreadyOn = (isWhite && isColored) || btn.className.includes('MuiButton-contained');
-                if (!isAlreadyOn) btn.click();
-            }
-        }
-
         function fillBP(isAd, raw) {
             const str = normBp(raw); if (!str.includes('/')) return;
             const p = str.split('/');
@@ -610,7 +588,6 @@ window.applyAutofill = async function(jsonStr) {
         // 1. ПАСПОРТНЫЕ ДАННЫЕ, ПОЛ, ДАТА РОЖДЕНИЯ, ВОЗРАСТ, АПО
         if (data.fio) setAll(["фио"], data.fio, true);
 
-        // Пол: понимает "МУЖЧИНА", "МУЖСКОЙ", "М" / "ЖЕНЩИНА", "ЖЕНСКИЙ", "Ж" и кликает во вкладке Уточненные сведения
         if (data.gender) {
             const gUp = String(data.gender).trim().toUpperCase();
             const gTarget = (gUp.startsWith("М") || gUp === "TRUE") ? ["МУЖЧИНА", "МУЖСКОЙ"] : (gUp.startsWith("Ж") || gUp === "FALSE") ? ["ЖЕНЩИНА", "ЖЕНСКИЙ"] : [gUp];
@@ -662,23 +639,25 @@ window.applyAutofill = async function(jsonStr) {
         if (data.bp) fillBP(false, data.bp);
         if (data.pulse) setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse);
         if (data.rr) setAll(["частота дыхания (в минуту)"], data.rr);
-        if (data.temp) setAll(["температура тела (°c)"], data.temp);
+        if (data.temp) setAll(["температура тела (°c)"], String(data.temp).replace(',', '.'));
         if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
-        if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], data.glucose);
+        if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], String(data.glucose).replace(',', '.'));
 
-        // 4. ЭКГ И НЕВРОЛОГИЯ
+        // 4. ЭКГ И НЕВРОЛОГИЯ (Синхронизировано с реальными значениями сайта)
         setAll(["экг до оказания"], data.ecgBefore);
         setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
-        setAll(["тонус мышц"], "Норма");
-        setAll(["патологические рефлексы"], "Нет");
-        setAll(["менингиальные знаки"], "Нет");
-        setAll(["плегии, парезы"], "Нет");
-        setAll(["язык"], data.tongue || "Влажный, не обложен");
-        setAll(["слизистые"], data.mucous || "Чистые");
+        setAll(["тонус мышц"], data.muscleTone || "Нормальный");
+        setAll(["патологические рефлексы"], data.pathologicalReflexes || "Отрицательные");
+        setAll(["менингиальные знаки"], data.meningealSymptoms || "Отрицательные");
+        setAll(["плегии, парезы"], data.plegia || "Нет");
+        setAll(["язык"], data.tongue || "Чистые");
+        setAll(["слизистые"], data.mucous || "Бледно-розовые");
 
-        // 5. КНОПКИ СОСТОЯНИЯ И НЕВРОЛОГИИ (Строго вне вкладки "Заключение")
+        // 5. КНОПКИ СОСТОЯНИЯ И НЕВРОЛОГИИ + ДОП. КОММЕНТАРИИ
         clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
+        if (data.positionDescription) setAll(["комментарий (вынужденное)"], data.positionDescription);
+
         clickButtonInRow(["поведение"], data.behavior || "СПОКОЙНОЕ");
         if (data.pupils) clickButtonInRow(["зрачки"], [data.pupils, data.pupils.replace("АНИЗОКОРИЯ", "АНИЗОКАРИЯ")]);
         clickButtonInRow(["речь"], data.speech || "СОХРАНЕНА");
@@ -689,13 +668,15 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["мочеиспускание"], data.urination || "НЕ НАРУШЕНО");
         clickButtonInRow(["стул"], data.stool || "НЕ НАРУШЕН");
 
-        // 6. КНОПКИ "ДА / НЕТ" (Включая устное согласие во вкладке Медицинская помощь)
+        // 6. КНОПКИ "ДА / НЕТ"
         clickButtonInRow(["аллергия"], data.allergy || "НЕТ");
         clickButtonInRow(["реакция на свет"], data.lightReaction || "ДА");
         clickButtonInRow(["высыпания"], data.rash || "НЕТ");
         clickButtonInRow(["пульс, ударов в минуту"], data.pulseExists || (data.pulse === "0" ? "НЕТ" : "ДА"));
         clickButtonInRow(["асцит"], data.ascites || "НЕТ");
         clickButtonInRow(["периферические отеки"], data.edema || "НЕТ");
+        if (data.edemaDescription) setAll(["комментарий (периферические отеки)"], data.edemaDescription);
+
         clickButtonInRow(["запах алкоголя"], data.alcohol || "НЕТ");
         clickButtonInRow(["запах ацетона"], data.acetone || "НЕТ");
         clickButtonInRow(["симптомы раздражения брюшины"], data.peritoneal || "НЕТ");
@@ -713,9 +694,19 @@ window.applyAutofill = async function(jsonStr) {
         if (data.abdomen) await selectDropdown(["живот"], data.abdomen, true);
 
         await closeAnyOpenMenu();
+        restoreScreenPosition();
     } catch (e) { console.error(e); } finally {
-        await new Promise(r => setTimeout(r, 80));
+        await new Promise(r => setTimeout(r, 70));
         await closeAnyOpenMenu();
+        // Возвращаем исходную вкладку и прокрутку экрана, чтобы экран не прыгал на другую вкладку!
+        if (activeTabBefore) {
+            const curActive = Array.from(document.querySelectorAll('[role="tab"], button'))
+                .find(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
+            if (curActive !== activeTabBefore) activeTabBefore.click();
+        }
+        restoreScreenPosition();
+        setTimeout(restoreScreenPosition, 50);
+
         document.getElementById('b103-hide-menus')?.remove();
         if (fillBtn) fillBtn.innerText = "⚡";
         setTimeout(() => { window.b103IsApplying = false; }, 200);

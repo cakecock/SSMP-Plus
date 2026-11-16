@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var dbHelper: DatabaseHelper
     private var backPressedTime: Long = 0
+
     @Volatile
     private var fullMkbList: List<MkbCodeItem> = emptyList()
 
@@ -88,13 +89,13 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            // Безопасность: отключаем доступ к локальной файловой системе устройства
+            // Безопасность: отключаем доступ к файловой системе устройства
             allowFileAccess = false
             allowContentAccess = false
             loadWithOverviewMode = true
             useWideViewPort = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            // Безопасность: запрещаем смешанный незащищенный HTTP-контент
+            // Безопасность: запрет смешанного HTTP-контента
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
@@ -130,13 +131,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                // Безопасность: изоляция навигации внутри домена СМП
-                val url = r?.url ?: return false
+                // Безопасность: перехват только главного фрейма (игнорируем iframe и фоновые ресурсы)
+                if (r?.isForMainFrame != true) return false
+
+                val url = r.url ?: return false
                 val host = url.host?.lowercase() ?: ""
                 return if (host == targetHost || host.endsWith(".103brest.by")) {
                     false
                 } else {
-                    // Запрещаем переход на сторонние сайты внутри доверенного WebView с AndroidBridge
                     try {
                         val intent = Intent(Intent.ACTION_VIEW, url)
                         startActivity(intent)

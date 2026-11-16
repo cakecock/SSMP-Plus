@@ -4,14 +4,27 @@
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
 
-    // Глобальная проверка границы вкладки "ЗАКЛЮЧЕНИЕ" (для защиты от случайной перезаписи)
-    function isInConclusion(el) {
-        if (!el) return false;
-        const anchor = Array.from(document.querySelectorAll('p, span, div, label')).find(e => {
+    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (вычисляется 1 раз, а не в цикле!)
+    let cachedAnchor = null;
+    let anchorTime = 0;
+    function getConclusionAnchor() {
+        const now = Date.now();
+        if (cachedAnchor && (now - anchorTime < 3000) && cachedAnchor.isConnected) {
+            return cachedAnchor;
+        }
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, h6, .MuiTypography-root'));
+        cachedAnchor = labels.find(e => {
             if (!e.innerText || e.children.length > 2) return false;
             const t = e.innerText.trim();
             return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
-        });
+        }) || null;
+        anchorTime = now;
+        return cachedAnchor;
+    }
+
+    function isInConclusion(el) {
+        if (!el) return false;
+        const anchor = getConclusionAnchor();
         if (!anchor) return false;
         return Boolean(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
     }
@@ -72,28 +85,30 @@
         };
     }
 
+    // Быстрый фильтр рабочих инпутов
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
     }
 
+    // Легкий поиск инпутов по ключевым словам для сбора кэша при сохранении
     function findInputByKw(keywords, exact = false) {
-        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
+                if (!el.innerText || el.offsetParent === null) return false;
                 const t = el.innerText.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
             if (target) {
                 const fc = target.closest('.MuiFormControl-root');
-                if (fc && !isInConclusion(fc)) {
+                if (fc) {
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) return inps[0];
                 }
                 let p = target.parentElement;
-                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                for (let i = 0; i < 3 && p && p !== document.body; i++) {
                     const inps = getRealInputs(p);
                     if (inps.length === 1) return inps[0];
                     p = p.parentElement;
@@ -103,6 +118,7 @@
         return null;
     }
 
+    // Сбор кэша вызывается ТОЛЬКО по клику на кнопку "💾 Сохранить", а не каждые 300 мс!
     function scrapeCache() {
         const c = window.b103ScreenCache;
         const g = (k) => findInputByKw([k])?.value?.trim();
@@ -168,10 +184,10 @@
         };
     }
 
+    // Легкая проверка видимости кнопок (НИКАКИХ ТЯЖЕЛЫХ DOM-ОПЕРАЦИЙ В ТАЙМЕРЕ!)
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
-        if (inCard) scrapeCache();
         const m = document.getElementById('btn-main-menu');
         const s = document.getElementById('btn-save-db');
         const f = document.getElementById('btn-fill-db');
@@ -185,7 +201,7 @@
 
     ensureToolbar();
     updateVisibility();
-    if (!window.b103VisTimer) window.b103VisTimer = setInterval(updateVisibility, 300);
+    if (!window.b103VisTimer) window.b103VisTimer = setInterval(updateVisibility, 400);
 })();
 
 window.setAndApplyAutofill = function(jsonStr) {
@@ -196,7 +212,7 @@ window.setAndApplyAutofill = function(jsonStr) {
 };
 
 // ==========================================
-// ТОЧНЫЙ АВТОПИЛОТ С ФИКСАЦИЕЙ ЭКРАНА И ВКЛАДКИ
+// ТОЧНЫЙ И БЫСТРЫЙ АВТОПИЛОТ
 // ==========================================
 window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
@@ -309,10 +325,16 @@ window.applyAutofill = async function(jsonStr) {
             } catch (e) { inp.value = str; }
         }
 
+        function getRealInputsAutofill(container) {
+            return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
+                .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+        }
+
+        // Быстрый поиск по лейблам
         function findInputs(keywords, exact = false) {
             const res = [];
             const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
-            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
 
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
@@ -326,14 +348,14 @@ window.applyAutofill = async function(jsonStr) {
 
                         const fc = l.closest('.MuiFormControl-root');
                         if (fc && !isInConclusion(fc)) {
-                            const inps = getRealInputs(fc);
+                            const inps = getRealInputsAutofill(fc);
                             if (inps.length === 1) foundInp = inps[0];
                         }
 
                         if (!foundInp) {
                             let p = l.parentElement;
                             for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
-                                const inps = getRealInputs(p);
+                                const inps = getRealInputsAutofill(p);
                                 if (inps.length === 1) {
                                     foundInp = inps[0];
                                     break;
@@ -397,7 +419,7 @@ window.applyAutofill = async function(jsonStr) {
             const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
             if (vals.length === 0) return;
 
-            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
             const ctrls = [];
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
@@ -532,7 +554,7 @@ window.applyAutofill = async function(jsonStr) {
                 .map(c => String(c).trim().toUpperCase()).filter(Boolean);
             if (choices.length === 0) return;
 
-            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
             for (let kw of rowKeywords) {
                 const kwL = kw.toLowerCase();
                 const targets = labels.filter(el => {
@@ -569,7 +591,7 @@ window.applyAutofill = async function(jsonStr) {
             Array.from(document.querySelectorAll('*')).filter(e => e.offsetParent !== null && e.children.length === 0 && e.textContent.trim() === '/' && !isInConclusion(e)).forEach(sl => {
                 let pr = sl.parentElement;
                 for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
-                    const inps = getRealInputs(pr);
+                    const inps = getRealInputsAutofill(pr);
                     if (inps.length === 2) {
                         const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
                         if (isAd ? tx.includes("адаптированное") : (tx.includes("ад") && !tx.includes("адаптированное"))) {
@@ -581,7 +603,6 @@ window.applyAutofill = async function(jsonStr) {
             });
         }
 
-        // 1. ПАСПОРТНЫЕ ДАННЫЕ, ПОЛ, ДАТА РОЖДЕНИЯ, ВОЗРАСТ, АПО
         if (data.fio) setAll(["фио"], data.fio, true);
 
         if (data.gender) {
@@ -622,7 +643,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.address) setAll(["место жительства (пребывания)"], data.address);
         if (data.apo) await selectDropdown(["территориальная апо", "апо по месту жительства"], data.apo, false);
 
-        // 2. ЖАЛОБЫ, АНАМНЕЗ, ПЕРЕНЕСЕННЫЕ ЗАБОЛЕВАНИЯ, ПРЕДВАРИТЕЛЬНЫЙ ДИАГНОЗ, КОД ПО МКБ
         setAll(["жалобы"], data.complaints);
         setAll(["анамнез заболевания"], data.anamnesis);
         setAll(["перенесенные заболевания"], data.pastDiseases);
@@ -630,7 +650,6 @@ window.applyAutofill = async function(jsonStr) {
         setAll(["локальный статус"], data.localStatus);
         if (data.mkb) await fillMkbAutocomplete(data.mkb);
 
-        // 3. АД, ПУЛЬС, ЧДД, ТЕМПЕРАТУРА
         if (data.bpAdapted) fillBP(true, data.bpAdapted);
         if (data.bp) fillBP(false, data.bp);
         if (data.pulse) setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse);
@@ -639,7 +658,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
         if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], String(data.glucose).replace(',', '.'));
 
-        // 4. ЭКГ И НЕВРОЛОГИЯ
         setAll(["экг до оказания"], data.ecgBefore);
         setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
@@ -650,7 +668,6 @@ window.applyAutofill = async function(jsonStr) {
         setAll(["язык"], data.tongue || "Чистые");
         setAll(["слизистые"], data.mucous || "Бледно-розовые");
 
-        // 5. КНОПКИ СОСТОЯНИЯ И НЕВРОЛОГИИ + ДОП. КОММЕНТАРИИ
         clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
         if (data.positionDescription) setAll(["комментарий (вынужденное)"], data.positionDescription);
 
@@ -664,7 +681,6 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["мочеиспускание"], data.urination || "НЕ НАРУШЕНО");
         clickButtonInRow(["стул"], data.stool || "НЕ НАРУШЕН");
 
-        // 6. КНОПКИ "ДА / НЕТ"
         clickButtonInRow(["аллергия"], data.allergy || "НЕТ");
         clickButtonInRow(["реакция на свет"], data.lightReaction || "ДА");
         clickButtonInRow(["высыпания"], data.rash || "НЕТ");
@@ -679,7 +695,6 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["перистальтика"], data.peristalsis || "ДА");
         clickButtonInRow(["получено устное согласие на простое медицинское вмешательство", "получено устное согласие"], "ДА");
 
-        // 7. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
         await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
         await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
 
@@ -709,16 +724,15 @@ window.applyAutofill = async function(jsonStr) {
 };
 
 // ==========================================
-// ТОЧЕЧНАЯ ВСТАВКА ИЗ КОНСТРУКТОРОВ (ЭКГ, СЛР, ФРАЗЫ) С ЖЕСТКОЙ ЗАЩИТОЙ ВКЛАДКИ ЗАКЛЮЧЕНИЕ
+// БЫСТРАЯ ТОЧЕЧНАЯ ВСТАВКА В ПОЛЯ КАРТЫ (С ЗАЩИТОЙ ВКЛАДКИ ЗАКЛЮЧЕНИЕ)
 // ==========================================
 window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
     try {
         const kwL = String(fieldKeyword).toLowerCase();
         const isInConclusion = window.b103IsInConclusion;
-        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
         
         for (let l of labels) {
-            // Защита: полностью игнорируем любые надписи внутри вкладки Заключение
             if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
             
             const t = l.innerText.trim().toLowerCase();

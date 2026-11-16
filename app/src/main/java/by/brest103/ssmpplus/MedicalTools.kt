@@ -30,7 +30,6 @@ object MedicalTools {
         strokeHex?.let { setStroke(2, Color.parseColor(it)) }
     }
 
-    // Единое контрастное оформление EditText (защита от слияния текста при темной теме смартфона)
     fun styleEditText(
         et: EditText,
         bgHex: String = "#F5F7F8",
@@ -133,7 +132,6 @@ object MedicalTools {
         dialog.show()
     }
 
-    // Вспомогательная колонка с четкой подписью над полем ввода
     private fun makeLabeledInput(
         context: Context,
         labelText: String,
@@ -232,7 +230,8 @@ object MedicalTools {
 
                 sb.append("💉 ЭКСТРЕННЫЕ ДОЗИРОВКИ НА ${fmt(w)} КГ (Пост. МЗ РБ №118):\n")
                 sb.append("• Адреналин 0,18% (СЛР в/в, в/к): ${fmt(min(1.0, w * 0.01))} мл (в разведении 1 мл + 9 мл NaCl = ${fmt(min(10.0, w * 0.1))} мл)\n")
-                sb.append("• Адреналин 0,18% (Анафилаксия в/м): ${fmt(min(0.5, w * 0.01))} мл в переднебоковую поверхность бедра\n")
+                // Пункт 13 ревью: строгий лимит 0,3 мл у детей при анафилаксии по Пост. №118
+                sb.append("• Адреналин 0,18% (Анафилаксия в/м): ${fmt(min(0.3, w * 0.01))} мл в переднебоковую поверхность бедра (макс. 0.3 мл)\n")
                 sb.append("• Амиодарон 5% (СЛР ФЖ/ЖТ в/в): ${fmt(min(6.0, w * 0.1))} мл (${fmt(min(300.0, w * 5.0))} мг из расчета 5 мг/кг)\n")
                 sb.append("• Атропин 0,1% (брадикардия): ${fmt(min(0.5, (w * 0.02).coerceAtLeast(0.1)))} мл (0.02 мг/кг, мин. 0.1 мг)\n")
                 sb.append("• Преднизолон (30 мг/мл): ${fmt(min(90.0, w * 2.0))} мг = ${fmt(min(3.0, w * 2.0 / 30.0))} мл (2 мг/кг)\n")
@@ -290,7 +289,12 @@ object MedicalTools {
         val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 4, 0, 24) }
         scrollView.addView(content); root.addView(scrollView)
 
-        fun buildChecklistScale(title: String, items: List<Pair<String, Double>>, interpreter: (Double) -> String) {
+        fun buildChecklistScale(
+            title: String,
+            items: List<Pair<String, Double>>,
+            mutuallyExclusivePairs: List<Pair<Int, Int>> = emptyList(),
+            interpreter: (Double) -> String
+        ) {
             content.addView(TextView(context).apply { text = title; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#4527A0")); setPadding(0, 8, 0, 10) })
             val banner = TextView(context).apply {
                 textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
@@ -299,6 +303,8 @@ object MedicalTools {
             }
             content.addView(banner)
             val selected = BooleanArray(items.size)
+            val rowViews = mutableListOf<TextView>()
+
             fun updateScore() {
                 var sum = 0.0
                 for (i in items.indices) if (selected[i]) sum += items[i].second
@@ -307,22 +313,46 @@ object MedicalTools {
                 banner.text = "Сумма: $sumStr б. — $interp\n📋 Нажмите, чтобы скопировать"
                 banner.setOnClickListener { copyToClipboard(context, title, "$title: $sumStr б. ($interp)") }
             }
+
+            fun updateRowStyle(idx: Int) {
+                val on = selected[idx]
+                val (label, pts) = items[idx]
+                val ptsStr = if (pts % 1.0 == 0.0) "+${pts.toInt()}" else "+$pts"
+                val tv = rowViews[idx]
+                tv.text = "${if (on) "☑️" else "☐"}  $label ($ptsStr б.)"
+                tv.typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                tv.setTextColor(if (on) Color.WHITE else Color.parseColor("#263238"))
+                tv.background = roundBg(if (on) "#7E57C2" else "#F3E5F5", 12f)
+            }
+
             items.forEachIndexed { idx, (label, pts) ->
                 val ptsStr = if (pts % 1.0 == 0.0) "+${pts.toInt()}" else "+$pts"
-                content.addView(TextView(context).apply {
+                val tv = TextView(context).apply {
                     text = "☐  $label ($ptsStr б.)"; textSize = 13.5f; setTextColor(Color.parseColor("#263238"))
                     setPadding(24, 18, 24, 18); background = roundBg("#F3E5F5", 12f)
                     layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
                     setOnClickListener {
                         selected[idx] = !selected[idx]
-                        val on = selected[idx]
-                        text = "${if (on) "☑️" else "☐"}  $label ($ptsStr б.)"
-                        typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                        setTextColor(if (on) Color.WHITE else Color.parseColor("#263238"))
-                        background = roundBg(if (on) "#7E57C2" else "#F3E5F5", 12f)
+
+                        // Пункт 12 ревью: авто-снятие взаимоисключающих пунктов (например, ЧСС 75-94 и ЧСС >= 95)
+                        if (selected[idx]) {
+                            for (pair in mutuallyExclusivePairs) {
+                                if (pair.first == idx && selected[pair.second]) {
+                                    selected[pair.second] = false
+                                    updateRowStyle(pair.second)
+                                } else if (pair.second == idx && selected[pair.first]) {
+                                    selected[pair.first] = false
+                                    updateRowStyle(pair.first)
+                                }
+                            }
+                        }
+
+                        updateRowStyle(idx)
                         updateScore()
                     }
-                })
+                }
+                rowViews.add(tv)
+                content.addView(tv)
             }
             updateScore()
         }
@@ -436,12 +466,29 @@ object MedicalTools {
                         "Тахикардия (ЧСС > 100 в минуту)" to 1.5, "Иммобилизация (>3 дней) или операция за 4 недели" to 1.5,
                         "ТГВ или ТЭЛА в анамнезе" to 1.5, "Кровохарканье" to 1.0, "Онкологическое заболевание" to 1.0
                     )) { sum -> if (sum <= 1.0) "Низкий риск ТЭЛА (<2%)" else if (sum <= 6.0) "Умеренный риск ТЭЛА (20–30%)" else "Высокий риск ТЭЛА (>60%)" }
+
                     content.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(-1, 20) })
-                    buildChecklistScale("🇨🇭 Женевская шкала — вероятность ТЭЛА:", listOf(
-                        "Возраст старше 65 лет" to 1.0, "ТГВ или ТЭЛА в анамнезе" to 3.0, "Операция или перелом за 1 месяц" to 2.0,
-                        "Активная онкология" to 2.0, "Односторонняя боль в нижней конечности" to 3.0, "Кровохарканье" to 2.0,
-                        "ЧСС 75–94 в мин" to 3.0, "ЧСС >= 95 в мин (еще +2 б.)" to 2.0, "Боль при пальпации вен и односторонний отек" to 4.0
-                    )) { sum -> if (sum <= 3.0) "Низкая вероятность ТЭЛА" else if (sum <= 10.0) "Средняя вероятность ТЭЛА" else "Высокая вероятность ТЭЛА" }
+
+                    // Пункт 12 ревью: исправление ловушки Женевской шкалы (+3 б. при 75-94 и +5 б. при >=95 взаимно исключают друг друга)
+                    buildChecklistScale(
+                        title = "🇨🇭 Женевская шкала (пересмотренная) — ТЭЛА:",
+                        items = listOf(
+                            "Возраст старше 65 лет" to 1.0,
+                            "ТГВ или ТЭЛА в анамнезе" to 3.0,
+                            "Операция или перелом конечности за 1 месяц" to 2.0,
+                            "Активная онкология" to 2.0,
+                            "Односторонняя боль в нижней конечности" to 3.0,
+                            "Кровохарканье" to 2.0,
+                            "ЧСС 75–94 в минуту" to 3.0, // индекс 6
+                            "ЧСС >= 95 в минуту" to 5.0, // индекс 7 (полные 5 баллов!)
+                            "Боль при пальпации вен и односторонний отек" to 4.0
+                        ),
+                        mutuallyExclusivePairs = listOf(6 to 7)
+                    ) { sum ->
+                        if (sum <= 3.0) "Низкая вероятность ТЭЛА (<10%)"
+                        else if (sum <= 10.0) "Средняя вероятность ТЭЛА (30%)"
+                        else "Высокая вероятность ТЭЛА (>65%)"
+                    }
                 }
                 4 -> {
                     buildChecklistScale("🤢 Шкала Альварадо (MANTRELS) — острый аппендицит:", listOf(
@@ -528,9 +575,7 @@ object MedicalTools {
         val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 4, 0, 24) }
         scrollView.addView(container); root.addView(scrollView)
 
-        // ---------------------------------------------------------
         // БЛОК 1. РАСЧЕТ ВЕЩЕСТВА В МГ ИЗ % РАСТВОРА
-        // ---------------------------------------------------------
         container.addView(TextView(context).apply { text = "🧮 1. Расчет вещества в мг из % раствора"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); setPadding(0, 4, 0, 8) })
         val pctRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 8) }
         val (pctCol, pctInp) = makeLabeledInput(context, "Концентрация (%):", "Напр. 25", "", "#FFF3E0", "#FFB74D", 10)
@@ -559,9 +604,7 @@ object MedicalTools {
         }
         pctInp.addTextChangedListener(pctWatcher); mlInp.addTextChangedListener(pctWatcher)
 
-        // ---------------------------------------------------------
         // БЛОК 2. КАЛЬКУЛЯТОР ИНФУЗИИ ДОПАМИНА
-        // ---------------------------------------------------------
         container.addView(TextView(context).apply { text = "💧 2. Калькулятор инфузии Допамина (200 мг = 5 мл 4%)"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#C62828")); setPadding(0, 4, 0, 8) })
         val dopRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 8) }
         val (dopWCol, dopWeight) = makeLabeledInput(context, "⚖️ Вес пациента (кг):", "Напр. 70", "70", "#FFEBEE", "#EF9A9A", 10)
@@ -595,12 +638,10 @@ object MedicalTools {
         val dWatcher = object : TextWatcher { override fun afterTextChanged(s: Editable?) = calcDopamine(); override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}; override fun onTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} }
         dopWeight.addTextChangedListener(dWatcher); dopDose.addTextChangedListener(dWatcher); calcDopamine()
 
-        // ---------------------------------------------------------
-        // БЛОК 3. РАСЧЕТ ЗАПАСА КИСЛОРОДА В БАЛЛОНЕ (В МПа: 1 л, 2 л, 10 л)
-        // ---------------------------------------------------------
+        // БЛОК 3. РАСЧЕТ ЗАПАСА КИСЛОРОДА В БАЛЛОНЕ (В МПа)
         container.addView(TextView(context).apply { text = "🫁 3. Расчет запаса кислорода в баллоне (в МПа)"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#0277BD")); setPadding(0, 4, 0, 8) })
 
-        var cylinderVolLiters = 2.0 // По умолчанию 2 л
+        var cylinderVolLiters = 2.0
         val cylSwitchRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 10) }
         container.addView(cylSwitchRow)
 
@@ -624,7 +665,6 @@ object MedicalTools {
         fun calcOxygen() {
             val mpa = mpaInp.text.toString().replace(",", ".").toDoubleOrNull() ?: 0.0
             val flow = flowInp.text.toString().replace(",", ".").toDoubleOrNull() ?: 6.0
-            // 1 МПа ≈ 10 атм (кгс/см²). Остаточное давление редуктора ~ 1 МПа (10 атм), полезный объем газа = МПа * 10 * V_баллона
             val atm = mpa * 10.0
             val totalGasLiters = atm * cylinderVolLiters
             val usableGasLiters = ((mpa - 1.0).coerceAtLeast(0.0) * 10.0) * cylinderVolLiters
@@ -662,9 +702,6 @@ object MedicalTools {
         mpaInp.addTextChangedListener(o2Watcher); flowInp.addTextChangedListener(o2Watcher)
         drawCylBtns(); calcOxygen()
 
-        // ---------------------------------------------------------
-        // СПИСОК КАРТОЧЕК-ШПАРГАЛОК
-        // ---------------------------------------------------------
         container.addView(TextView(context).apply { text = "📚 Справочные шпаргалки (нажмите для открытия):"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); setPadding(0, 4, 0, 10) })
         cheatSheets.forEach { item ->
             container.addView(LinearLayout(context).apply {
@@ -853,7 +890,7 @@ object MedicalTools {
         "Нитроглицерин" to "Горизонтальное положение с поднятыми ногами, NaCl 0.9%, Мезатон/Норадреналин, при метгемоглобинемии — Метиленовый синий.",
         "Нитропентон" to "Мезатон, Норадреналин, Раствор метиленового синего.",
         "Нитросорбид" to "Мезатон, Норадреналин, Раствор метиленового синего.",
-        "Окись углерода (Угарный газ)" to "100% кислород (ингаляция 10–15 л/мин или ИВЛ, ГБО), Ацизол 6% 1 мл в/м, Аскорбиновая кислота, Глюкоза.",
+        "Окись углерода (Угарный газ)" to "100% кислород (ингаляция 10–15 л/мин, ИВЛ, ГБО), Ацизол 6% 1 мл в/м, Аскорбиновая кислота, Глюкоза.",
         "Омнопон" to "Налоксон, Налмефен, Налтрексон.",
         "Опий" to "Налоксон, Налмефен, Налтрексон.",
         "Папаверин / Дротаверин (Но-шпа)" to "Кальция хлорид / Кальция глюконат 10% 10–20 мл в/в медленно, Атропин при АВ-блокаде, инфузия NaCl 0.9%, Мезатон/Норадреналин.",
@@ -960,8 +997,7 @@ object MedicalTools {
                     val lay = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; layoutParams = FrameLayout.LayoutParams(-1, -1) }
                     val searchInp = EditText(context).apply {
                         hint = "Поиск из ${antidotesList.size} ядов (фос, сибазон, крысид, уксус)..."
-                        setPadding(30, 20, 30, 20)
-                        styleEditText(this, "#FFEBEE", "#EF9A9A", 18f)
+                        setPadding(30, 20, 30, 20); styleEditText(this, "#FFEBEE", "#EF9A9A", 18f)
                     }
                     lay.addView(searchInp)
                     val listView = ListView(context).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isNestedScrollingEnabled = true; divider = null; dividerHeight = 12; setPadding(0, 12, 0, 0) }

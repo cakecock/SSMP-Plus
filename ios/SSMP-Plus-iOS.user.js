@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.3.0
-// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, надежный архив, шаблоны, ЭКГ-конструктор, пороговый СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
+// @version      3.4.0
+// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, надежный архив, шаблоны, ЭКГ-конструктор, пороговый СЛР-таймер на performance.now(), O2 в МПа, педиатрия по Пост. №118.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-idle
@@ -196,7 +196,6 @@
         }
         const jArr = (k) => Array.isArray(raw[k]) ? raw[k].map(x => (x && (x.type || x.name || x.title)) || '').filter(Boolean).join(", ") : "";
         
-        // Исправление потери данных: сначала проверяем DOM-медикаменты, затем массив API
         let meds = raw._domMedications || "";
         if (!meds && Array.isArray(raw.medications)) {
             meds = raw.medications.map(m => {
@@ -248,7 +247,7 @@
             ecgBefore: raw.electrocardiogramBefore || "", ecgAfter: raw.electrocardiogramAfter || "",
             diagnosis: raw.diagnosis || "",
             mkb: icd ? `[${icd.code}] ${icd.name || icd.type || ""}`.trim() : "",
-            attack: typeof raw.postAttack === 'boolean' ? (raw.postAttack ? "КУПИРОВАН" : "НЕ КУПИРОВАН") : "",
+            attack: typeof raw.postAttack === 'boolean' ? (raw.postAttack ? "КУПИРОВАН" : "НЕ КУПИРОВАН") : (raw.postAttack?.type?.toUpperCase() || ""),
             therapyEffect: raw.result?.type?.toUpperCase() || "",
             callResult: raw.resultDeparture?.type?.toUpperCase() || ""
         };
@@ -315,6 +314,7 @@
         tpl(18, "ОНМК / Геморрагический инсульт", "[I61.9] Внутримозговое кровоизлияние неуточненное", "ОНМК по геморрагическому типу. Левосторонняя гемиплегия. Кома 1 ст.", "Контакт невозможен ввиду комы.", "На фоне высокого АД внезапно возникла резкая головная боль, рвота, утратил сознание.", { generalState: "Тяжелое", consciousness: "Кома", position: "ПАССИВНОЕ", glasgowScore: "7", bp: "220/120", pulse: "58", rr: "22", saturation: "91", pupils: "АНИЗОКАРИЯ", lightReaction: "НЕТ", speech: "ОТСУТСТВУЕТ", face: "АСИММЕТРИЧНОЕ", gait: "НЕ ОЦЕНИВАЛАСЬ", meningealSymptoms: "Ригидность затылочных мышц", plegia: "Левосторонняя гемиплегия" }),
         tpl(21, "Эпилепсия (после судорожного припадка)", "[G40.9] Эпилепсия неуточненная", "Эпилепсия. Состояние после генерализованного тонико-клонического припадка.", "На общую слабость, головную боль, сонливость.", "15 минут назад развился приступ судорог до 2 минут с прикусом языка.", { generalState: "Средней степени тяжести", bp: "130/80", pulse: "86", tongue: "Следы прикуса" }),
         tpl(25, "Дорсалгия / Люмбоишиалгия", "[M54.5] Боль внизу спины", "Остеохондроз ПОП. Острая люмбоишиалгия с выраженным болевым синдромом.", "На острую стреляющую боль в пояснице с иррадиацией в ногу.", "Боль возникла после подъема тяжести.", { position: "ВЫНУЖДЕННОЕ", positionDescription: "Щадящее из-за боли в спине", localStatus: "Болезненность паравертебральных точек L4-S1, дефанс мышц спины. С-м Ласега + 45°." }),
+        tpl(26, "Межреберная невралгия (торакалгия)", "[G58.0] Межреберная невропатия", "Остеохондроз ГОП. Вертеброгенная торакалгия (межреберная невралгия).", "На колющую боль в левой половине грудной клетки, усиливающуюся при вдохе и поворотах.", "Боль после неловкого движения и переохлаждения. На ЭКГ без острой патологии.", { bp: "125/80", pulse: "74", localStatus: "Болезненность при пальпации по ходу V-VI межреберья слева." }),
         tpl(27, "Приступ бронхиальной астмы", "[J45.9] Астма неуточненная", "Бронхиальная астма, приступный период. ДН 1-2 ст.", "На экспираторное удушье, свистящее дыхание, сухой кашель.", "Страдает БА. Ухудшение 2 часа назад, ингалятор без эффекта.", { generalState: "Средней степени тяжести", position: "ВЫНУЖДЕННОЕ", positionDescription: "Сидя с упором на руки", bp: "130/80", pulse: "98", rr: "24", saturation: "93", lungs: "Затрудненное, Хрипы сухие", percussion: "Коробочный звук справа, Коробочный звук слева" }),
         tpl(30, "Внебольничная пневмония", "[J18.9] Пневмония неуточненная", "Внебольничная правосторонняя нижнедолевая пневмония, средней тяжести. ДН 1 ст.", "На температуру 38.8°C, озноб, кашель с мокротой, боль в груди справа при вдохе, одышку.", "Болеет 4-й день, жаропонижающие с кратковременным эффектом.", { generalState: "Средней степени тяжести", bp: "120/75", pulse: "96", rr: "22", temp: "38.6", saturation: "94", lungs: "Ослабленное, Хрипы влажные, Хрипы справа", percussion: "Притупление звука справа" }),
         tpl(31, "ОРВИ / Гипертермический синдром", "[J06.9] Острая инфекция верхних дыхательных путей неуточненная", "ОРИ, ринофарингит. Гипертермический синдром.", "На температуру 39.0°C, озноб, ломоту в теле, боль в горле, насморк.", "Болеет 2-е сутки.", { generalState: "Средней степени тяжести", bp: "120/80", pulse: "92", rr: "18", temp: "38.9", skin: "Теплая, Сухая, Гиперемия", mucous: "Гиперемированы" }),
@@ -367,7 +367,6 @@
         return null;
     }
 
-    // Сбор кэша (одиночный вызов без дублей)
     function scrapeCache() {
         const c = window.b103ScreenCache;
         const setValIfFound = (kw, fieldName) => {
@@ -406,7 +405,6 @@
         }
     }
 
-    // Точечная вставка с гарантированной защитой вкладки Заключение
     window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
         try {
             const kwL = String(fieldKeyword).toLowerCase();
@@ -692,7 +690,6 @@
                 }
             }
 
-            // Точный поиск строк давления строго по тексту "АД (мм" без сканирования '*'
             function fillBP(isAd, raw) {
                 const str = cleanBp(raw); if (!str.includes('/')) return;
                 const p = str.split('/');
@@ -784,7 +781,6 @@
 
             await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
             await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
-
             if (data.skin) await selectDropdown(["кожа"], data.skin, true);
             if (data.heartSounds) await selectDropdown(["тоны сердца"], data.heartSounds, true);
             if (data.lungs) await selectDropdown(["дыхание"], data.lungs, true);
@@ -852,7 +848,6 @@
         renderContentFn(sheet.querySelector('#b103-sheet-body'), doClose);
     }
 
-    // ОКОШКО АВТОЗАПОЛНЕНИЯ (С ЗАЩИТОЙ JSON.parse)
     function openAutofillSheet() {
         openIosSheet('⚡ Автозаполнение и Помощник', '#0288D1', (body, close) => {
             body.innerHTML = `
@@ -933,7 +928,6 @@
         });
     }
 
-    // ПОДМЕНЮ ПОМОЩНИКА СМП
     function openHelperMenuSheet() {
         openIosSheet('🧰 Помощник СМП (iOS)', '#0277BD', (body) => {
             const tools = [
@@ -985,7 +979,7 @@
         });
     }
 
-    // СЛР на iOS: пороговые напоминания без пропуска секунд
+    // СЛР на iOS: исправлен порядок while перед вычислением флага (пункт 3 ревью)
     window.b103CprState = window.b103CprState || {
         isRunning: false,
         startPerf: 0,
@@ -1033,12 +1027,12 @@
                 const m = Math.floor(sTotal / 60);
                 const s = sTotal % 60;
 
-                // Пороговые напоминания (никогда не пропустят сигнал при троттлинге таймера)
+                // Сначала while двигает порог, затем вычисляется флаг (синхронизировано с Android)
+                while (sTotal >= st.nextRhythmSec + 12) st.nextRhythmSec += 120;
+                while (sTotal >= st.nextAdrSec + 12) st.nextAdrSec += 180;
+
                 const isRhythmAlert = sTotal >= st.nextRhythmSec && sTotal < st.nextRhythmSec + 12;
                 const isAdrAlert = sTotal >= st.nextAdrSec && sTotal < st.nextAdrSec + 12;
-
-                if (sTotal >= st.nextRhythmSec + 12) st.nextRhythmSec += 120;
-                if (sTotal >= st.nextAdrSec + 12) st.nextAdrSec += 180;
 
                 let hint = "НМС 100–120/мин, 30:2";
                 if (sTotal >= 1800) hint = "⚠️ Прошло 30 мин СЛР! Оценить констатацию смерти";
@@ -1124,32 +1118,50 @@
         });
     }
 
+    // ПЕДИАТРИЯ 100% СИНХРОНИЗИРОВАНА С ПОСТ. № 118 И ANDROID (Пункты 1 и 2 ревью)
     function openPediatricsIos() {
-        openIosSheet('👶 Педиатрия: Дозы и ИВЛ (Пост. №118)', '#0277BD', (body) => {
+        openIosSheet('👶 Педиатрия: Дозы, СЛР, ИВЛ (Пост. №118)', '#0277BD', (body) => {
             body.innerHTML = `
                 <div style="font-size:13px;font-weight:700;color:#37474F;margin-bottom:4px;">⚖️ Вес ребенка (кг):</div>
-                <input id="ios-ped-w" type="number" value="10" style="width:100%;box-sizing:border-box;padding:12px;border-radius:12px;border:1.5px solid #29B6F6;background:#E1F5FE;color:#111;font-size:15px;font-weight:700;margin-bottom:12px;">
-                <div id="ios-ped-out" style="font-size:13.8px;line-height:1.5;color:#263238;white-space:pre-line;background:#F5F7F8;padding:14px;border-radius:12px;"></div>
+                <input id="ios-ped-w" type="number" value="10" style="width:100%;box-sizing:border-box;padding:12px;border-radius:12px;border:1.5px solid #29B6F6;background:#E1F5FE;color:#111;font-size:15px;font-weight:700;margin-bottom:10px;">
+                <label style="display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:#01579B;margin-bottom:12px;cursor:pointer;">
+                    <input id="ios-ped-u1" type="checkbox" style="width:18px;height:18px;"> Возраст до 1 года (грудной ребенок)
+                </label>
+                <div id="ios-ped-out" style="font-size:13.5px;line-height:1.5;color:#263238;white-space:pre-line;background:#F5F7F8;padding:14px;border-radius:12px;"></div>
             `;
             const wInp = body.querySelector('#ios-ped-w');
+            const u1Chk = body.querySelector('#ios-ped-u1');
             const out = body.querySelector('#ios-ped-out');
             function calc() {
                 const w = parseFloat(wInp.value) || 10;
+                const isUnder1 = u1Chk.checked;
                 const f = (n) => Number(n.toFixed(2));
+                const cprRatio = isUnder1 ? "5:1 (до 1 года: 5 компрессий : 1 вдох)" : "15:2 (2 спасателя) / 30:2 (1 спасатель)";
+                const depthCm = isUnder1 ? "4 см (<1 года)" : (w <= 35 ? "5 см (1–10 лет)" : "5–6 см (>10 лет)");
+                const berodual = w < 22 ? "10 капель + 2–3 мл NaCl 0.9% (<6 лет, с осторожностью у грудничков)" : "20 капель + 2–3 мл NaCl 0.9% (6–12 лет и старше)";
+
                 out.innerText =
-                    `🫁 ИВЛ И ДЕФИБРИЛЛЯЦИЯ НА ${w} КГ:\n` +
+                    `🫁 ИВЛ И ДЕФИБРИЛЛЯЦИЯ НА ${w} КГ (Пост. №118):\n` +
                     `• Дыхательный объем ИВЛ (6–8 мл/кг): ${Math.round(w*6)} – ${Math.round(w*8)} мл\n` +
-                    `• Разряд дефибрилляции: 1-й = ${Math.round(w*2)} Дж (2 Дж/кг), далее ${Math.round(w*4)} Дж\n\n` +
+                    `• Дефибрилляция (п. 22.3): 1-й и 2-й разряды = ${Math.round(w*4)} Дж (4 Дж/кг), 3-й = ${Math.round(w*6)} Дж (6 Дж/кг), до ${Math.round(w*8)} Дж\n` +
+                    `• СЛР (п. 20.3): старт с 5 вдохов, далее ${cprRatio}, глубина ${depthCm}\n\n` +
                     `💉 ЭКСТРЕННЫЕ ДОЗЫ НА ${w} КГ (Пост. №118):\n` +
-                    `• Адреналин 0,18% (СЛР / Анафилаксия): ${f(Math.min(0.3, w*0.01))} мл (макс. 0.3 мл детям!)\n` +
+                    `• Адреналин 0,18% (СЛР в/в, в/к): ${f(Math.min(1.0, w*0.01))} мл (разведение 1:10 = ${f(Math.min(10.0, w*0.1))} мл)\n` +
+                    `• Адреналин 0,18% (Анафилаксия в/м): ${f(Math.min(0.3, w*0.01))} мл в бедро (макс. 0.3 мл!)\n` +
+                    `• Амиодарон 5% (СЛР ФЖ/ЖТ): ${f(Math.min(6.0, w*0.1))} мл (${f(Math.min(300, w*5))} мг; <3 лет — off-label)\n` +
+                    `• Натрия гидрокарбонат 4%: ${f(w*2)} мл (1 ммоль/кг = 2 мл/кг)\n` +
+                    `• Кальция хлорид 10%: ${f(Math.min(10, w*0.2))} мл (0.2 мл/кг) или Кальция глюконат 10%: ${f(Math.min(20, w*0.6))}–${f(Math.min(20, w*0.8))} мл\n` +
                     `• Преднизолон (30 мг/мл): ${f(Math.min(90, w*2))} мг = ${f(Math.min(3, w*2/30))} мл\n` +
                     `• Дексаметазон (4 мг/мл): ${f(Math.min(16, w*0.4))} мг = ${f(Math.min(4, w*0.1))} мл\n` +
-                    `• Диазепам 0,5% (судороги): ${f(Math.min(2, w*0.05))} мл\n` +
-                    `• Анальгин 50%: ${f(Math.min(2, w*0.02))} мл | Димедрол 1%: ${f(Math.min(1, w*0.02))} мл\n` +
+                    `• Диазепам 0,5% (судороги): ${f(Math.min(2, w*0.05))}–${f(Math.min(2, w*0.06))} мл\n` +
+                    `• Магния сульфат 25%: ${f(Math.min(8, w*0.1))}–${f(Math.min(10, w*0.2))} мл (25–50 мг/кг)\n` +
+                    `• Метамизол (Анальгин 50%): ${f(Math.min(2, w*0.02))} мл (10 мг/кг)\n` +
+                    `• Супрастин 2%: ${f(Math.min(1, w*0.02))}–${f(Math.min(1, w*0.03))} мл | Димедрол 1%: ${f(Math.min(2, w*0.05))}–${f(Math.min(2, w*0.1))} мл\n` +
                     `• Болюс NaCl 0,9% при шоке: ${Math.round(w*20)} мл (20 мл/кг)\n` +
-                    `• Парацетамол: ${Math.round(Math.min(500, w*15))} мг | Ибупрофен: ${Math.round(Math.min(400, w*10))} мг`;
+                    `• Парацетамол: ${Math.round(Math.min(500, w*15))} мг | Ибупрофен: ${Math.round(Math.min(400, w*10))} мг\n` +
+                    `• Беродуал (небулайзер): ${berodual}`;
             }
-            wInp.oninput = calc; calc();
+            wInp.oninput = calc; u1Chk.onchange = calc; calc();
         });
     }
 
@@ -1240,7 +1252,7 @@
         });
     }
 
-    // ГЛАВНОЕ МЕНЮ НА iOS (БЫСТРЫЙ ИМПОРТ O(N) ЧЕРЕЗ SET)
+    // ГЛАВНОЕ МЕНЮ НА iOS (ДЕДУПЛИКАЦИЯ С ПРЕФИКСОМ tpl_/card_ КАК В ANDROID)
     function openMainMenuIos() {
         openIosSheet('Меню SSMP Plus (iOS)', '#008577', (body, close) => {
             body.innerHTML = `
@@ -1276,25 +1288,31 @@
                         if (!Array.isArray(parsed)) throw new Error('Not array');
 
                         const cur = loadDb();
-                        const existingSignatures = new Set(cur.map(c => `${(c.fio || '').toLowerCase()}_${c.timestamp || 0}`));
+                        const getSig = (isB, f, ts) => isB === 2
+                            ? `tpl_${String(f || '').trim().toLowerCase()}`
+                            : `card_${String(f || '').trim().toLowerCase()}_${ts || 0}`;
+
+                        const existingSignatures = new Set(cur.map(c => getSig(c.is_builtin, c.fio, c.timestamp)));
                         let importedCount = 0;
 
                         parsed.forEach(item => {
                             if (!item || typeof item !== 'object') return;
+                            const isB = item.is_builtin === 2 ? 2 : 0;
                             const f = (item.fio || '').trim();
                             const jd = (item.json_data || '').trim();
+                            const ts = item.timestamp || Date.now();
                             if (!f || !jd) return;
 
-                            const sig = `${f.toLowerCase()}_${item.timestamp || 0}`;
+                            const sig = getSig(isB, f, ts);
                             if (!existingSignatures.has(sig)) {
                                 existingSignatures.add(sig);
                                 cur.unshift({
-                                    fio: f,
+                                    fio: isB === 2 ? f : f.toLowerCase(),
                                     birth_date: item.birth_date || '',
-                                    timestamp: item.timestamp || Date.now(),
+                                    timestamp: ts,
                                     score: typeof item.score === 'number' ? item.score : 80,
                                     json_data: jd,
-                                    is_builtin: item.is_builtin === 2 ? 2 : 0
+                                    is_builtin: isB
                                 });
                                 importedCount++;
                             }

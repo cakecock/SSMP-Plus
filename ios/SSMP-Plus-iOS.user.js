@@ -349,6 +349,7 @@
 
         const card = {
             fio, birthDate: bDate, age: cleanS(raw.age), ageUnit,
+            citizenship: cleanS(p.countryOfRegistration?.type),
             address: cleanS(p.placeOfRegistration || raw.address),
             apo: cleanS(p.territorialMedicalFacility?.type),
             callReason: cleanS(raw.reasonToCall?.type),
@@ -591,6 +592,12 @@
         setValIfFound('жалобы', 'complaints');
         setValIfFound('анамнез заболевания', 'anamnesis');
         setValIfFound('локальный статус', 'localStatus');
+
+        const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent.trim().toLowerCase() === 'зрачки' && !isInConclusion(e));
+        if (pupLbl && pupLbl.parentElement) {
+            const actPup = Array.from(pupLbl.parentElement.querySelectorAll('button')).find(b => b.className.includes('MuiButton-contained'));
+            c.pupils = actPup ? { type: (actPup.innerText || actPup.textContent || '').trim().toUpperCase() } : null;
+        }
 
         const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
             .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes('Количество:'));
@@ -960,6 +967,57 @@
                 await closeAnyOpenMenu();
             }
 
+            async function fillSimpleAutocomplete(keywords, targetVal, skipIfFilled = false) {
+                if (!targetVal) return;
+                const inps = findInputs(keywords);
+                if (!inps.length) return;
+                const inp = inps[0];
+                const cur = (inp.value || '').trim();
+                if (skipIfFilled && cur) return;
+                if (cur.toLowerCase() === targetVal.trim().toLowerCase()) return;
+
+                await closeAnyOpenMenu();
+                const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+                const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
+                try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+                restoreScreenPosition();
+                setVal(inp, targetVal);
+                await new Promise(r => setTimeout(r, 120));
+                if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                    popupBtn.click();
+                    restoreScreenPosition();
+                }
+
+                const valL = targetVal.trim().toLowerCase();
+                let targetOpt = null;
+                for (let w = 0; w < 10; w++) {
+                    const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                    const popper = poppers[poppers.length - 1];
+                    if (popper) {
+                        const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                            .filter(o => {
+                                const tx = (o.innerText || '').trim().toLowerCase();
+                                return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                            });
+                        if (opts.length > 0) {
+                            targetOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === valL)
+                                || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(valL))
+                                || opts[0];
+                            if (targetOpt) break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (targetOpt) {
+                    targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    targetOpt.click();
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (inp.blur) inp.blur();
+                await closeAnyOpenMenu();
+            }
+
             function clickButtonInRow(rowKeywords, buttonChoices) {
                 if (!buttonChoices) return;
                 const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices]).map(c => String(c).trim().toUpperCase()).filter(Boolean);
@@ -1052,6 +1110,8 @@
             const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || (initAgeM ? initAgeM[2] : '') || unitGuess || 'Лет';
             await selectDropdown(['возраст (ед.)'], unitVal, false);
             if (finAge) setAll(['возраст'], finAge, true);
+            const ctzVal = data.citizenship || window.lastLoadedApiCard?.patient?.countryOfRegistration?.type || 'Беларусь';
+            await fillSimpleAutocomplete(['гражданство'], ctzVal, !data.citizenship);
             if (data.address) setAll(['место жительства (пребывания)'], data.address);
             if (data.apo) await selectDropdown(['территориальная апо', 'апо по месту жительства'], data.apo, false);
 
@@ -1083,7 +1143,16 @@
             clickButtonInRow(['положение'], data.position || 'АКТИВНОЕ');
             if (data.positionDescription) setAll(['комментарий (вынужденное)'], data.positionDescription);
             clickButtonInRow(['поведение'], data.behavior || 'СПОКОЙНОЕ');
-            if (data.pupils) clickButtonInRow(['зрачки'], [data.pupils, data.pupils.replace('АНИЗОКОРИЯ', 'АНИЗОКАРИЯ')]);
+            if (data.pupils) {
+                clickButtonInRow(['зрачки'], [data.pupils, data.pupils.replace('АНИЗОКОРИЯ', 'АНИЗОКАРИЯ')]);
+            } else {
+                const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent.trim().toLowerCase() === 'зрачки' && e.offsetParent !== null && !isInConclusion(e));
+                if (pupLbl && pupLbl.parentElement) {
+                    Array.from(pupLbl.parentElement.querySelectorAll('button'))
+                        .filter(b => b.className.includes('MuiButton-contained') && !b.disabled)
+                        .forEach(b => b.click());
+                }
+            }
             clickButtonInRow(['речь'], data.speech || 'СОХРАНЕНА');
             clickButtonInRow(['лицо'], data.face || 'СИММЕТРИЧНОЕ');
             clickButtonInRow(['походка'], data.gait || 'СВОБОДНАЯ');

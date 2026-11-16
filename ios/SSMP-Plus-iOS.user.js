@@ -675,9 +675,18 @@
             document.head.appendChild(hideStyle);
         }
 
+        function isElemVisible(el) {
+            if (!el || !el.isConnected) return false;
+            if (el.getAttribute('aria-hidden') === 'true') return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }
+
         function getActivePopovers() {
             return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper'))
-                .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true');
+                .filter(isElemVisible);
         }
 
         async function closeAnyOpenMenu() {
@@ -775,9 +784,9 @@
             const setAll = (kws, val, ex = false) => { if (val) findInputs(kws, ex).forEach(i => setVal(i, val)); };
 
             function formatBirthDateAndCalcAge(rawDateStr) {
-                if (!rawDateStr) return { dateStr: '', ageStr: '' };
+                if (!rawDateStr) return { dateStr: '', ageStr: '', ageUnitGuess: '' };
                 const clean = String(rawDateStr).trim();
-                if (clean.startsWith('__')) return { dateStr: '', ageStr: '' };
+                if (clean.startsWith('__')) return { dateStr: '', ageStr: '', ageUnitGuess: '' };
                 let datePart = '', timePart = '00:00';
                 if (clean.includes('-')) {
                     const p = clean.split('T'), d = p[0].split('-');
@@ -787,27 +796,49 @@
                     const p = clean.split('/'); datePart = p[0].trim();
                     if (p[1] && /^\d{2}:\d{2}/.test(p[1].trim())) timePart = p[1].trim().substring(0, 5);
                 }
-                if (!datePart || datePart.includes('_')) return { dateStr: '', ageStr: '' };
+                if (!datePart || datePart.includes('_')) return { dateStr: '', ageStr: '', ageUnitGuess: '' };
 
                 const now = new Date();
                 const todayStr = `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth() + 1).padStart(2, '0')}.${now.getFullYear()}`;
-                let calcAge = '';
+                let calcAge = '', ageUnitGuess = '';
                 const dp = datePart.split('.');
                 if (dp.length === 3) {
-                    const by = parseInt(dp[2], 10);
-                    if (by > 1900 && by < now.getFullYear()) {
-                        let a = now.getFullYear() - by;
-                        if ((now.getMonth() + 1) < parseInt(dp[1], 10) || ((now.getMonth() + 1) === parseInt(dp[1], 10) && now.getDate() < parseInt(dp[0], 10))) a--;
-                        if (a >= 0) calcAge = String(a);
+                    const bd = parseInt(dp[0], 10), bm = parseInt(dp[1], 10), by = parseInt(dp[2], 10);
+                    const bObj = new Date(by, bm - 1, bd);
+                    if (by > 1900 && bObj <= now) {
+                        let yrs = now.getFullYear() - by;
+                        if ((now.getMonth() + 1) < bm || ((now.getMonth() + 1) === bm && now.getDate() < bd)) yrs--;
+                        if (yrs >= 1) {
+                            calcAge = String(yrs); ageUnitGuess = 'Лет';
+                        } else {
+                            let mos = (now.getFullYear() - by) * 12 + ((now.getMonth() + 1) - bm);
+                            if (now.getDate() < bd) mos--;
+                            if (mos >= 1) {
+                                calcAge = String(mos); ageUnitGuess = 'Месяцев';
+                            } else {
+                                const days = Math.floor((now - bObj) / 86400000);
+                                calcAge = String(Math.max(1, days)); ageUnitGuess = 'Дней';
+                            }
+                        }
                     }
                 }
-                return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
+                return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge, ageUnitGuess };
             }
 
             async function selectDropdown(keywords, valStr, forceMulti = false) {
                 if (!valStr) return;
                 const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
                 if (!vals.length) return;
+
+                const matchVal = (ot, v) => {
+                    if (!ot || ot === 'не выбрано') return false;
+                    if (ot === v || ot.includes(v) || v.includes(ot)) return true;
+                    if (v.startsWith('месяц') && ot.startsWith('месяц')) return true;
+                    if ((v === 'лет' || v.startsWith('год')) && (ot === 'лет' || ot.startsWith('год'))) return true;
+                    if ((v.startsWith('дн') || v === 'день') && (ot.startsWith('дн') || ot === 'день')) return true;
+                    if (v.startsWith('час') && ot.startsWith('час')) return true;
+                    return false;
+                };
 
                 const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
                 const ctrls = [];
@@ -817,12 +848,13 @@
                         if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
                         const t = l.innerText.trim().toLowerCase();
                         if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
-                            let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
+                            let p = l.closest('.MuiFormControl-root') || l.parentElement;
                             for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
-                                if (p.querySelector('.MuiSelect-root, [role="button"]')) {
+                                const selBtns = p.querySelectorAll('.MuiSelect-root, [role="button"]');
+                                if (selBtns.length === 1) {
                                     if (!ctrls.includes(p)) ctrls.push(p);
                                     break;
-                                }
+                                } else if (selBtns.length > 1) break;
                                 p = p.parentElement;
                             }
                         }
@@ -834,40 +866,42 @@
                     if (!btn || btn.offsetParent === null || btn.classList.contains('Mui-disabled') || isInConclusion(btn)) continue;
                     const isMulti = forceMulti || btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                     const curText = (btn.innerText || '').trim().toLowerCase();
-                    if (!isMulti && curText === vals[0]) continue;
+                    if (!isMulti && matchVal(curText, vals[0])) continue;
                     if (isMulti && vals.every(v => curText.includes(v))) continue;
 
                     await closeAnyOpenMenu();
-                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-                    btn.click();
+                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                     restoreScreenPosition();
-                    await new Promise(r => setTimeout(r, 95));
+                    await new Promise(r => setTimeout(r, 60));
+                    if (getActivePopovers().length === 0) {
+                        btn.click();
+                        restoreScreenPosition();
+                    }
+                    let activePops = [];
+                    for (let w = 0; w < 6; w++) {
+                        activePops = getActivePopovers();
+                        if (activePops.length > 0 && activePops[activePops.length - 1].querySelector('li[role="option"], .MuiMenuItem-root')) break;
+                        await new Promise(r => setTimeout(r, 55));
+                    }
 
-                    const activePops = getActivePopovers();
-                    const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
-                    const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root'));
+                    const popover = activePops.length > 0 ? activePops[activePops.length - 1] : null;
+                    const opts = popover ? Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root')) : [];
                     if (opts.length > 0) {
                         const hasCheckboxes = opts.some(o => !!o.querySelector('input[type="checkbox"], .MuiCheckbox-root'));
                         if (!(isMulti || hasCheckboxes)) {
-                            const match = opts.find(o => {
-                                const ot = (o.innerText || '').trim().toLowerCase();
-                                return ot !== 'не выбрано' && (ot === vals[0] || ot.includes(vals[0]) || vals[0].includes(ot));
-                            });
+                            const match = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), vals[0]));
                             if (match) { match.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 80)); }
                             if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                         } else {
                             const wanted = new Set();
                             for (const v of vals) {
-                                const m = opts.find(o => {
-                                    const ot = (o.innerText || '').trim().toLowerCase();
-                                    return ot !== 'не выбрано' && (ot === v || ot.includes(v));
-                                });
+                                const m = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), v));
                                 if (m) wanted.add(m);
                             }
                             for (const o of opts) {
                                 const shouldBe = wanted.has(o);
                                 const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
-                                if (shouldBe !== isSel) { o.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 30)); }
+                                if (shouldBe !== isSel) { o.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 35)); }
                             }
                             await closeAnyOpenMenu();
                         }
@@ -882,24 +916,45 @@
                 const mkbInputs = findInputs(['код по мкб']);
                 if (!mkbInputs.length) return;
                 const inp = mkbInputs[0];
-                if (inp.value && inp.value.toUpperCase().includes(searchCode)) return;
+                if (inp.value && inp.value.toUpperCase().includes(`[${searchCode}]`)) return;
+
                 await closeAnyOpenMenu();
-                const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.parentElement;
-                const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator, button') : null;
+                const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+                const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
                 try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
                 restoreScreenPosition();
                 setVal(inp, searchCode);
-                if (popupBtn) popupBtn.click();
-                restoreScreenPosition();
-                await new Promise(r => setTimeout(r, 180));
-                const popper = document.querySelector('.MuiAutocomplete-popper, .MuiPopover-root');
-                if (popper) {
-                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'));
-                    const targetOpt = opts.find(o => {
-                        const t = (o.innerText || '').toUpperCase();
-                        return t.includes(`[${searchCode}]`) || t.startsWith(searchCode) || t.includes(searchCode);
-                    }) || opts[0];
-                    if (targetOpt) { targetOpt.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 70)); }
+                await new Promise(r => setTimeout(r, 120));
+                if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                    popupBtn.click();
+                    restoreScreenPosition();
+                }
+
+                let targetOpt = null;
+                for (let w = 0; w < 12; w++) {
+                    const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                    const popper = poppers[poppers.length - 1];
+                    if (popper) {
+                        const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                            .filter(o => {
+                                const tx = (o.innerText || '').trim().toLowerCase();
+                                return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                            });
+                        if (opts.length > 0) {
+                            targetOpt = opts.find(o => (o.innerText || '').toUpperCase().includes(`[${searchCode}]`))
+                                || opts.find(o => (o.innerText || '').toUpperCase().startsWith(searchCode))
+                                || opts.find(o => (o.innerText || '').toUpperCase().includes(searchCode))
+                                || opts[0];
+                            if (targetOpt) break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (targetOpt) {
+                    targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    targetOpt.click();
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 80));
                 }
                 if (inp.blur) inp.blur();
                 await closeAnyOpenMenu();
@@ -909,20 +964,20 @@
                 if (!buttonChoices) return;
                 const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices]).map(c => String(c).trim().toUpperCase()).filter(Boolean);
                 if (!choices.length) return;
-                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span'));
                 for (const kw of rowKeywords) {
                     const kwL = kw.toLowerCase();
                     const targets = labels.filter(el => {
-                        if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
-                        const t = el.innerText.trim().toLowerCase();
+                        if (!el.textContent || el.offsetParent === null || el.children.length > 2 || isInConclusion(el)) return false;
+                        const t = el.textContent.trim().toLowerCase();
                         return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 35;
                     });
                     for (const target of targets) {
-                        let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
+                        let p = target.closest('.MuiFormControl-root') || target.parentElement;
                         for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
                             const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => b.offsetParent !== null && !b.disabled && !isInConclusion(b));
                             const desired = btns.find(b => {
-                                const bt = (b.innerText || '').trim().toUpperCase();
+                                const bt = (b.innerText || b.textContent || '').trim().toUpperCase();
                                 return choices.some(ch => bt === ch || (ch.includes('СИММЕТР') && ch.startsWith('А') && bt.startsWith('А') && bt.includes('СИМ')));
                             });
                             if (desired) {
@@ -966,6 +1021,11 @@
                 clickButtonInRow(['пол'], (gUp.startsWith('М') || gUp === 'TRUE') ? ['МУЖЧИНА', 'МУЖСКОЙ'] : ['ЖЕНЩИНА', 'ЖЕНСКИЙ']);
             }
 
+            const initAgeRaw = String(window.lastLoadedApiCard?.initialAge || '').trim();
+            const initAgeM = initAgeRaw.match(/^(\d+)\s+([А-Яа-яЁё]+)/);
+            let finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : '') || (initAgeM ? initAgeM[1] : '');
+            let unitGuess = '';
+
             const bDateInps = findInputs(['дата рождения']);
             if (bDateInps.length > 0) {
                 const now = new Date();
@@ -982,15 +1042,16 @@
 
                 const rawB = servB || archB || scrB;
                 if (rawB) {
-                    const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawB);
-                    if (dateStr) setVal(bDateInps[0], dateStr);
-                    const finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : '') || ageStr;
-                    if (finAge) setAll(['возраст'], finAge, true);
-                } else if (data.age) setAll(['возраст'], data.age, true);
+                    const parsed = formatBirthDateAndCalcAge(rawB);
+                    if (parsed.dateStr) setVal(bDateInps[0], parsed.dateStr);
+                    if (!finAge && parsed.ageStr) finAge = parsed.ageStr;
+                    if (parsed.ageUnitGuess) unitGuess = parsed.ageUnitGuess;
+                }
             }
 
-            const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || 'Лет';
+            const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || (initAgeM ? initAgeM[2] : '') || unitGuess || 'Лет';
             await selectDropdown(['возраст (ед.)'], unitVal, false);
+            if (finAge) setAll(['возраст'], finAge, true);
             if (data.address) setAll(['место жительства (пребывания)'], data.address);
             if (data.apo) await selectDropdown(['территориальная апо', 'апо по месту жительства'], data.apo, false);
 

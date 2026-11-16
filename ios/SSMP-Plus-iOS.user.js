@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.1.0
-// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив, шаблоны, ЭКГ-конструктор, СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
+// @version      3.2.0
+// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив с валидацией, 63 шаблона, ЭКГ-конструктор, СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-idle
@@ -19,6 +19,7 @@
     window.activeAutofillData = window.activeAutofillData || null;
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
+    window.b103ActiveSheetClose = null;
 
     // Быстрое экранирование XSS
     function escapeHtml(str) {
@@ -31,7 +32,7 @@
             .replace(/'/g, '&#039;');
     }
 
-    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (без рефлоу и без прогона всего дерева)
+    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (без рефлоу)
     let cachedAnchor = null;
     let anchorTime = 0;
     function getConclusionAnchor() {
@@ -195,8 +196,8 @@
             }
         }
         const jArr = (k) => Array.isArray(raw[k]) ? raw[k].map(x => (x && (x.type || x.name || x.title)) || '').filter(Boolean).join(", ") : "";
-        let meds = raw._domMedications || "";
-        if (!meds && Array.isArray(raw.medications)) {
+        let meds = "";
+        if (Array.isArray(raw.medications)) {
             meds = raw.medications.map(m => {
                 const nm = m?.medication?.name || m?.name || "";
                 const cnt = m?.number || m?.count || "";
@@ -267,14 +268,14 @@
 
         const db = loadDb();
         const sixHoursAgo = Date.now() - 6 * 3600 * 1000;
-        const idx = db.findIndex(x => x.is_builtin === 0 && x.fio === entry.fio && x.timestamp > sixHoursAgo);
+        const idx = db.findIndex(x => x.is_builtin === 0 && (x.fio || '').toLowerCase() === entry.fio && x.timestamp > sixHoursAgo);
         if (idx >= 0) db[idx] = entry; else db.unshift(entry);
         saveDb(db);
         showToast(`💾 Карта ${entry.fio.toUpperCase()} сохранена!`);
     }
 
     // ==========================================
-    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП
+    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП (63 ШАБЛОНА)
     // ==========================================
     function tpl(id, title, mkb, diagnosis, complaints, anamnesis, opts = {}) {
         const d = Object.assign({
@@ -350,7 +351,7 @@
             });
             if (target) {
                 const fc = target.closest('.MuiFormControl-root');
-                if (fc) {
+                if (fc && !isInConclusion(fc)) {
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) return inps[0];
                 }
@@ -793,7 +794,13 @@
     // 5. МОДАЛЬНЫЕ ОКНА ДЛЯ iOS SAFARI
     // ==========================================
     function openIosSheet(title, colorHex, renderContentFn, onClose) {
+        // Если уже открыт другой лист — корректно вызываем его onClose перед удалением!
+        if (typeof window.b103ActiveSheetClose === 'function') {
+            try { window.b103ActiveSheetClose(); } catch (e) {}
+            window.b103ActiveSheetClose = null;
+        }
         document.getElementById('b103-ios-sheet-backdrop')?.remove();
+
         const backdrop = document.createElement('div');
         backdrop.id = 'b103-ios-sheet-backdrop';
         backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.52);z-index:100000;display:flex;flex-direction:column;justify-content:flex-end;font-family:-apple-system,BlinkMacSystemFont,Roboto,sans-serif;';
@@ -816,8 +823,10 @@
             if (typeof onClose === 'function') {
                 try { onClose(); } catch (e) {}
             }
+            window.b103ActiveSheetClose = null;
             backdrop.remove();
         }
+        window.b103ActiveSheetClose = doClose;
 
         backdrop.addEventListener('click', (e) => { if (e.target === backdrop) doClose(); });
         sheet.querySelector('#b103-sheet-close').onclick = doClose;
@@ -848,11 +857,15 @@
                 const q = inp.value.trim().toLowerCase();
                 listBox.innerHTML = '';
                 if (mode === 'tpl') {
-                    const custom = loadDb().filter(x => x.is_builtin === 2).map(x => {
-                        let d = {}; try { d = JSON.parse(x.json_data); } catch (e) {}
-                        return { title: x.fio, mkb: d.mkb || d.diagnosis || '', jsonData: x.json_data, isCustom: true };
+                    const custom = loadDb().filter(x => x && x.is_builtin === 2).map(x => {
+                        let d = {}; try { d = JSON.parse(x.json_data || '{}'); } catch (e) {}
+                        return { title: x.fio || 'Шаблон', mkb: d.mkb || d.diagnosis || '', jsonData: x.json_data || '{}', isCustom: true };
                     });
-                    const all = [...custom, ...BUILTIN_TEMPLATES].filter(x => !q || x.title.toLowerCase().includes(q) || x.mkb.toLowerCase().includes(q));
+                    const all = [...custom, ...BUILTIN_TEMPLATES].filter(x => {
+                        const t = (x.title || '').toLowerCase();
+                        const m = (x.mkb || '').toLowerCase();
+                        return !q || t.includes(q) || m.includes(q);
+                    });
                     all.forEach(item => {
                         const row = document.createElement('div');
                         row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#FFFDE7;border:1.5px solid #FFE082;color:#263238;font-size:13.5px;cursor:pointer;';
@@ -861,16 +874,24 @@
                         listBox.appendChild(row);
                     });
                 } else {
-                    const arch = loadDb().filter(x => x.is_builtin === 0 && (!q || x.fio.includes(q) || x.json_data.toLowerCase().includes(q)));
+                    const arch = loadDb().filter(x => {
+                        if (!x || x.is_builtin !== 0) return false;
+                        const f = (x.fio || '').toLowerCase();
+                        const jd = (x.json_data || '').toLowerCase();
+                        return !q || f.includes(q) || jd.includes(q);
+                    });
                     if (arch.length === 0) {
                         listBox.innerHTML = '<div style="padding:20px;text-align:center;color:#607D8B;">Архив пуст. Нажмите 💾 внутри карты для сохранения.</div>';
                         return;
                     }
                     arch.forEach(item => {
-                        let d = {}; try { d = JSON.parse(item.json_data); } catch (e) {}
+                        let d = {}; try { d = JSON.parse(item.json_data || '{}'); } catch (e) {}
+                        const safeFio = (item.fio || 'Пациент').toUpperCase();
+                        const safeDate = item.timestamp ? new Date(item.timestamp).toLocaleDateString() : '';
+                        const safeDiag = d.diagnosis || d.callReason || 'Без диагноза';
                         const row = document.createElement('div');
                         row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#F0F8FF;border:1.5px solid #BBDEFB;color:#263238;font-size:13.5px;cursor:pointer;';
-                        row.innerHTML = `<b>👤 ${escapeHtml(item.fio.toUpperCase())}</b> <span style="font-size:12px;color:#0277BD;">(${new Date(item.timestamp).toLocaleDateString()})</span><br><span style="color:#37474F;font-size:12.5px;">📋 ${escapeHtml(d.diagnosis || d.callReason || 'Без диагноза')}</span>`;
+                        row.innerHTML = `<b>👤 ${escapeHtml(safeFio)}</b> <span style="font-size:12px;color:#0277BD;">(${safeDate})</span><br><span style="color:#37474F;font-size:12.5px;">📋 ${escapeHtml(safeDiag)}</span>`;
                         row.onclick = () => { close(); window.activeAutofillData = d; window.applyAutofill(d); };
                         listBox.appendChild(row);
                     });
@@ -1037,7 +1058,7 @@
             timerInt = setInterval(update, 1000);
             update();
         }, () => {
-            // Надежная очистка интервала без устаревшего DOMNodeRemoved
+            // Надежная очистка интервала
             if (timerInt) clearInterval(timerInt);
         });
     }
@@ -1176,7 +1197,7 @@
         });
     }
 
-    // ГЛАВНОЕ МЕНЮ НА iOS (ИМПОРТ / ЭКСПОРТ / АРХИВ)
+    // ГЛАВНОЕ МЕНЮ НА iOS (ИМПОРТ / ЭКСПОРТ С ДЕДУПЛИКАЦИЕЙ)
     function openMainMenuIos() {
         openIosSheet('Меню SSMP Plus (iOS)', '#008577', (body, close) => {
             body.innerHTML = `
@@ -1208,13 +1229,39 @@
                 const reader = new FileReader();
                 reader.onload = () => {
                     try {
-                        const arr = JSON.parse(reader.result);
-                        if (Array.isArray(arr)) {
-                            const cur = loadDb();
-                            saveDb([...arr, ...cur]);
-                            showToast(`📥 Импортировано записей: ${arr.length}`);
-                        }
-                    } catch (err) { alert('Ошибка чтения JSON файла'); }
+                        const parsed = JSON.parse(reader.result);
+                        if (!Array.isArray(parsed)) throw new Error('Not array');
+
+                        const cur = loadDb();
+                        let importedCount = 0;
+
+                        // Поштучная валидация и дедупликация (по fio + timestamp)
+                        parsed.forEach(item => {
+                            if (!item || typeof item !== 'object') return;
+                            const f = (item.fio || '').trim();
+                            const jd = (item.json_data || '').trim();
+                            if (!f || !jd) return;
+
+                            // Проверяем, нет ли уже такой карты в архиве
+                            const exists = cur.some(c => (c.fio || '').toLowerCase() === f.toLowerCase() && c.timestamp === item.timestamp);
+                            if (!exists) {
+                                cur.unshift({
+                                    fio: f,
+                                    birth_date: item.birth_date || '',
+                                    timestamp: item.timestamp || Date.now(),
+                                    score: typeof item.score === 'number' ? item.score : 80,
+                                    json_data: jd,
+                                    is_builtin: item.is_builtin === 2 ? 2 : 0
+                                });
+                                importedCount++;
+                            }
+                        });
+
+                        saveDb(cur);
+                        showToast(`📥 Добавлено записей: ${importedCount}`);
+                    } catch (err) {
+                        alert('Ошибка: файл поврежден или имеет неверный формат JSON');
+                    }
                 };
                 reader.readAsText(file);
             };
@@ -1225,7 +1272,8 @@
     // 6. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК (БЕЗ ТЯЖЕЛЫХ REFLOW)
     // ==========================================
     function isInsideCard() {
-        const tabs = Array.from(document.querySelectorAll('[role="tab"], button'));
+        const tabs = document.querySelectorAll('.MuiTab-root, [role="tab"], .MuiTabs-root button');
+        if (tabs.length === 0) return false;
         for (let i = 0; i < tabs.length; i++) {
             const t = (tabs[i].textContent || '').toUpperCase();
             if (t.includes('О ВЫЗОВЕ') || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) {
@@ -1253,7 +1301,7 @@
         document.getElementById('btn-fill-db').onclick = openAutofillSheet;
     }
 
-    // Легкая проверка видимости: НИКАКОГО scrapeCache() на таймере!
+    // Легкая проверка видимости: НИКАКОГО scrapeCache() на таймере + сброс кэша при выходе!
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
@@ -1264,6 +1312,10 @@
             m.style.display = inCard ? 'none' : 'flex';
             s.style.display = inCard ? 'flex' : 'none';
             f.style.display = inCard ? 'flex' : 'none';
+        }
+        if (!inCard) {
+            window.activeAutofillData = null;
+            window.b103ScreenCache = {};
         }
     }
 

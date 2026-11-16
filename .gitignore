@@ -1,0 +1,19 @@
+# Gradle и кэш сборки
+.gradle/
+build/
+app/build/
+
+# Локальные свойства Android Studio и SDK
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Скомпилированные бинарные пакеты и логи
+*.apk
+*.aab
+captures/
+*.hprof
+
+# ВНИМАНИЕ: ssmp-release.jks НЕ игнорируем,
+# чтобы GitHub Actions мог работать с постоянным ключом подписи!

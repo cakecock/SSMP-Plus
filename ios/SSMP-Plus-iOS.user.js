@@ -831,20 +831,21 @@
         try {
             const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
 
-            function setVal(inp, val) {
+            function setVal(inp, val, allowEmpty = false) {
                 if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
                 const str = String(val).trim();
-                if (!str || inp.value.trim() === str) return;
+                if (!allowEmpty && !str) return;
+                if (inp.value.trim() === str) return;
                 try {
                     const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                     if (setter) setter.call(inp, str); else inp.value = str;
-                    if (inp._valueTracker) inp._valueTracker.setValue('');
+                    if (inp._valueTracker) inp._valueTracker.setValue('__prev__');
                     inp.dispatchEvent(new Event('input', { bubbles: true }));
                     inp.dispatchEvent(new Event('change', { bubbles: true }));
                 } catch (e) { inp.value = str; }
             }
-
+            
             function findInputs(keywords, exact = false) {
                 const res = [];
                 const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
@@ -885,7 +886,11 @@
                 return res;
             }
 
-            const setAll = (kws, val, ex = false) => { if (val) findInputs(kws, ex).forEach(i => setVal(i, val)); };
+            const setAll = (kws, val, ex = false, allowEmpty = false) => {
+                if (val !== undefined && val !== null && (allowEmpty || String(val).trim() !== '')) {
+                    findInputs(kws, ex).forEach(i => setVal(i, val, allowEmpty));
+                }
+            };
 
             function formatBirthDateAndCalcAge(rawDateStr) {
                 if (!rawDateStr) return { dateStr: '', ageStr: '', ageUnitGuess: '' };
@@ -929,10 +934,9 @@
                 return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge, ageUnitGuess };
             }
 
-            async function selectDropdown(keywords, valStr, forceMulti = false) {
-                if (!valStr) return;
-                const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-                if (!vals.length) return;
+            async function selectDropdown(keywords, valStr, forceMulti = false, allowClearMulti = false) {
+                const vals = String(valStr || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                if (!vals.length && !(forceMulti && allowClearMulti)) return;
 
                 const matchVal = (ot, v) => {
                     if (!ot || ot === 'не выбрано') return false;
@@ -1275,7 +1279,6 @@
                 if (data.positionDescription) setAll(['комментарий (вынужденное)'], data.positionDescription);
                 if (data.edemaDescription) setAll(['комментарий (периферические отеки)'], data.edemaDescription);
             }
-            clickButtonInRow(['получено устное согласие на простое медицинское вмешательство', 'получено устное согласие'], 'ДА');
 
             await selectDropdown(['общее состояние'], data.generalState || 'Удовлетворительное', false);
             await selectDropdown(['сознание'], data.consciousness || 'Ясное', false);

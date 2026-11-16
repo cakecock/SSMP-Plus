@@ -5,6 +5,7 @@ import android.content.*
 import android.content.ClipboardManager
 import android.graphics.*
 import android.graphics.drawable.*
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.text.Editable
@@ -31,7 +32,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var dbHelper: DatabaseHelper
     private var backPressedTime: Long = 0
+    @Volatile
     private var fullMkbList: List<MkbCodeItem> = emptyList()
+
+    private val targetHost = "soft.103brest.by"
 
     private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let {
@@ -81,10 +85,17 @@ class MainActivity : AppCompatActivity() {
 
         CookieManager.getInstance().apply { setAcceptCookie(true); setAcceptThirdPartyCookies(webView, true) }
         webView.settings.apply {
-            javaScriptEnabled = true; domStorageEnabled = true; databaseEnabled = true
-            allowFileAccess = true; allowContentAccess = true; loadWithOverviewMode = true
-            useWideViewPort = true; cacheMode = WebSettings.LOAD_DEFAULT
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            // Безопасность: отключаем доступ к локальной файловой системе устройства
+            allowFileAccess = false
+            allowContentAccess = false
+            loadWithOverviewMode = true
+            useWideViewPort = true
+            cacheMode = WebSettings.LOAD_DEFAULT
+            // Безопасность: запрещаем смешанный незащищенный HTTP-контент
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
 
@@ -108,10 +119,40 @@ class MainActivity : AppCompatActivity() {
         }
         webView.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")
-            override fun onReceivedSslError(v: WebView?, h: SslErrorHandler?, e: SslError?) { h?.proceed() }
-            override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean = false
-            override fun onPageStarted(v: WebView?, u: String?, f: Bitmap?) { super.onPageStarted(v, u, f); v?.evaluateJavascript(polyfill, null) }
-            override fun onPageFinished(v: WebView?, u: String?) { super.onPageFinished(v, u); injectScript() }
+            override fun onReceivedSslError(v: WebView?, h: SslErrorHandler?, e: SslError?) {
+                // Безопасность: обход SSL разрешен ТОЛЬКО для рабочего хоста СМП Брест
+                val reqHost = try { Uri.parse(e?.url ?: "").host?.lowercase() } catch (_: Exception) { null }
+                if (reqHost == targetHost) {
+                    h?.proceed()
+                } else {
+                    h?.cancel()
+                }
+            }
+
+            override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
+                // Безопасность: изоляция навигации внутри домена СМП
+                val url = r?.url ?: return false
+                val host = url.host?.lowercase() ?: ""
+                return if (host == targetHost || host.endsWith(".103brest.by")) {
+                    false
+                } else {
+                    // Запрещаем переход на сторонние сайты внутри доверенного WebView с AndroidBridge
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, url)
+                        startActivity(intent)
+                    } catch (_: Exception) {}
+                    true
+                }
+            }
+
+            override fun onPageStarted(v: WebView?, u: String?, f: Bitmap?) {
+                super.onPageStarted(v, u, f)
+                v?.evaluateJavascript(polyfill, null)
+            }
+            override fun onPageFinished(v: WebView?, u: String?) {
+                super.onPageFinished(v, u)
+                injectScript()
+            }
         }
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         webView.loadUrl("https://soft.103brest.by/ssmp/")
@@ -233,7 +274,6 @@ class MainActivity : AppCompatActivity() {
     private fun showAutofillPickerSheet(currentFio: String = "") {
         val (bs, root) = createSheet("⚡ Автозаполнение и Помощник:", "#0288D1")
 
-        // Быстрый вызов Помощника СМП прямо из открытой карты!
         root.addView(TextView(this).apply {
             text = "🧰 ОТКРЫТЬ ПОМОЩНИК СМП / ЭКГ / СЛР / ДОЗЫ"
             textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER

@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var dbHelper: DatabaseHelper
     private var backPressedTime: Long = 0
+    private var mkbLoadJob: Job? = null
 
     @Volatile
     private var fullMkbList: List<MkbCodeItem> = emptyList()
@@ -56,12 +57,13 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val json = contentResolver.openInputStream(it)?.bufferedReader()?.use { r -> r.readText() } ?: ""
                     val count = dbHelper.importDatabaseFromJson(json)
-                    withContext(Dispatchers.Main) { toast("📥 Импортировано записей: $count") }
+                    withContext(Dispatchers.Main) { toast("📥 Импортировано новых записей: $count") }
                 } catch (e: Exception) { withContext(Dispatchers.Main) { toast("Ошибка импорта файла") } }
             }
         }
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun roundBg(hex: String, r: Float, strokeHex: String? = null) = GradientDrawable().apply {
         setColor(Color.parseColor(hex)); cornerRadius = r; strokeHex?.let { setStroke(2, Color.parseColor(it)) }
@@ -74,7 +76,7 @@ class MainActivity : AppCompatActivity() {
 
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
-        loadFullMkbAsync()
+        mkbLoadJob = loadFullMkbAsync()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -89,13 +91,11 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            // Безопасность: отключаем доступ к файловой системе устройства
             allowFileAccess = false
             allowContentAccess = false
             loadWithOverviewMode = true
             useWideViewPort = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            // Безопасность: запрет смешанного HTTP-контента
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         }
@@ -121,28 +121,18 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(v: WebView?, h: SslErrorHandler?, e: SslError?) {
-                // Безопасность: обход SSL разрешен ТОЛЬКО для рабочего хоста СМП Брест
                 val reqHost = try { Uri.parse(e?.url ?: "").host?.lowercase() } catch (_: Exception) { null }
-                if (reqHost == targetHost) {
-                    h?.proceed()
-                } else {
-                    h?.cancel()
-                }
+                if (reqHost == targetHost) h?.proceed() else h?.cancel()
             }
 
             override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                // Безопасность: перехват только главного фрейма (игнорируем iframe и фоновые ресурсы)
                 if (r?.isForMainFrame != true) return false
-
                 val url = r.url ?: return false
                 val host = url.host?.lowercase() ?: ""
                 return if (host == targetHost || host.endsWith(".103brest.by")) {
                     false
                 } else {
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, url)
-                        startActivity(intent)
-                    } catch (_: Exception) {}
+                    try { startActivity(Intent(Intent.ACTION_VIEW, url)) } catch (_: Exception) {}
                     true
                 }
             }
@@ -160,7 +150,14 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://soft.103brest.by/ssmp/")
     }
 
-    private fun loadFullMkbAsync() = lifecycleScope.launch(Dispatchers.IO) {
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::dbHelper.isInitialized) {
+            dbHelper.close()
+        }
+    }
+
+    private fun loadFullMkbAsync(): Job = lifecycleScope.launch(Dispatchers.IO) {
         try {
             val arr = JSONArray(assets.open("mkb10.json").bufferedReader().use { it.readText() })
             val list = ArrayList<MkbCodeItem>(arr.length())
@@ -182,7 +179,7 @@ class MainActivity : AppCompatActivity() {
         val bs = BottomSheetDialog(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 18, 36, 24); setBackgroundColor(Color.WHITE) }
         root.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(90, 8).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = 14 }
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(8) }
             background = roundBg("#B0BEC5", 4f)
         })
         root.addView(TextView(this).apply {
@@ -190,7 +187,11 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor(titleColor)); setPadding(0, 0, 0, 12)
         })
         bs.setContentView(root)
-        bs.behavior.apply { state = BottomSheetBehavior.STATE_EXPANDED; skipCollapsed = true; peekHeight = 1400 }
+        bs.behavior.apply {
+            state = BottomSheetBehavior.STATE_EXPANDED
+            skipCollapsed = true
+            peekHeight = (resources.displayMetrics.heightPixels * 0.85).toInt()
+        }
         return bs to root
     }
 
@@ -212,7 +213,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMenuDialog(title: String, builders: (android.app.Dialog, LinearLayout) -> Unit) {
         val dialog = android.app.Dialog(this).apply { requestWindowFeature(Window.FEATURE_NO_TITLE); window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)) }
-        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(920, -2) }
+        val cardWidth = (resources.displayMetrics.widthPixels * 0.88).toInt().coerceAtMost(dp(420))
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(cardWidth, -2) }
         val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 20) }
         hdr.addView(TextView(this).apply { text = title; textSize = 19.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#212121")); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
         hdr.addView(TextView(this).apply { text = "✕"; textSize = 20f; setTextColor(Color.GRAY); setPadding(16, 4, 8, 4); setOnClickListener { dialog.dismiss() } })
@@ -248,7 +250,7 @@ class MainActivity : AppCompatActivity() {
         card.addView(row)
     }
 
-    // ПОДМЕНЮ: ПОМОЩНИК СМП (ВСЕ 11 ИНСТРУМЕНТОВ С ПРОКРУТКОЙ)
+    // ПОДМЕНЮ: ПОМОЩНИК СМП (ВСЕ 11 ИНСТРУМЕНТОВ)
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
         val scroll = NestedScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -268,7 +270,7 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, listLay, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
         addDialogBtn(d, listLay, "📋 ШПАРГАЛКИ И РАСЧЕТЫ (O2 МПа)", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
         addDialogBtn(d, listLay, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
-        addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ (130+)", "#C62828") { MedicalTools.showAntidotesSheet(this) }
+        addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
         addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
         addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
     }
@@ -301,10 +303,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val total = dbHelper.searchBuiltInTemplates("").size
+        // Без синхронного чтения SQLite в UI-потоке
+        val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
         var showT = true
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
-        val t1 = TextView(this).apply { text = "⭐ Образцы ($total)"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
+        val t1 = TextView(this).apply { text = "⭐ Образцы ($builtinCount)"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
         val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
 
@@ -323,6 +326,7 @@ class MainActivity : AppCompatActivity() {
                 if (showT) {
                     val list = dbHelper.searchBuiltInTemplates(q)
                     withContext(Dispatchers.Main) {
+                        if (q.isEmpty()) t1.text = "⭐ Образцы (${list.size})"
                         setupAdapter(lv, list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n📋 ${it.mkb}" }, "#FFFDE7", "#FFE082") { pos ->
                             bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(list[pos].jsonData)});", null); toast("⚡ Заполнен: ${list[pos].title}")
                         }
@@ -349,7 +353,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openMkbSheet() {
-        val (bs, root) = createSheet("📖 Справочник МКБ-10 (${fullMkbList.size} кодов)", "#00695C")
+        val initialTitle = if (fullMkbList.isEmpty()) "📖 Справочник МКБ-10 (загрузка...)" else "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
+        val (bs, root) = createSheet(initialTitle, "#00695C")
+        val titleTv = root.getChildAt(1) as? TextView
+
         val cats = listOf("🌟 Все" to "ALL", "❤️ I Кардио" to "I", "🫁 J Дыхание" to "J", "🧠 G Невро" to "G", "🩹 S Травмы" to "S", "🧪 T Токсико" to "T", "🚨 R Симптомы" to "R", "🤢 K ЖКТ" to "K", "🩸 E Эндокрин" to "E", "🤰 O Акушерство" to "O", "🏥 Z Прочее" to "Z", "🦠 A/B Инфекции" to "AB", "🤪 F Психиатрия" to "F", "🚽 N Урология" to "N", "🦴 M Кости" to "M", "🎗️ C/D Онко" to "CD", "👂 H ЛОР" to "H", "👶 P/Q Дети" to "PQ", "⚠️ V-Y Причины" to "VY")
         var selCat = "ALL"
         val chipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -363,6 +370,10 @@ class MainActivity : AppCompatActivity() {
         val lv = makeListView(root)
 
         fun filter() {
+            if (fullMkbList.isEmpty() && mkbLoadJob?.isActive == true) {
+                setupAdapter(lv, listOf("⏳ Загрузка базы МКБ-10 (12 500+ кодов)..."), "#F7FAFA", "#E0EAEA") {}
+                return
+            }
             val q = qInp.text.toString().trim().lowercase()
             val res = fullMkbList.asSequence().filter { item ->
                 val mc = when (selCat) {
@@ -392,11 +403,24 @@ class MainActivity : AppCompatActivity() {
         }
         qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) = filter(); override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })
         renderChips(); filter(); bs.show()
+
+        // Дожидаемся фоновой загрузки МКБ-10 без гонки
+        if (fullMkbList.isEmpty() && mkbLoadJob?.isActive == true) {
+            lifecycleScope.launch {
+                mkbLoadJob?.join()
+                if (bs.isShowing) {
+                    titleTv?.text = "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
+                    filter()
+                }
+            }
+        }
     }
 
     private fun openSearchSheet(isBest: Boolean) {
-        val total = dbHelper.searchBuiltInTemplates("").size
-        val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($total шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
+        val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
+        val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($builtinCount шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
+        val titleTv = root.getChildAt(1) as? TextView
+
         val qInp = EditText(this).apply {
             hint = if (isBest) "Поиск по диагнозу или СЛР..." else "Поиск по фамилии..."
             setPadding(30, 22, 30, 22)
@@ -410,6 +434,7 @@ class MainActivity : AppCompatActivity() {
             if (isBest) {
                 val list = dbHelper.searchBuiltInTemplates(q)
                 withContext(Dispatchers.Main) {
+                    if (q.isEmpty()) titleTv?.text = "⭐ Образцы карт (${list.size} шаблонов)"
                     setupAdapter(lv, list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n📋 ${it.mkb}" }, "#FFFDE7", "#FFE082") { pos -> bs.dismiss(); showTemplatePreview(list[pos]) }
                 }
             } else {
@@ -433,6 +458,7 @@ class MainActivity : AppCompatActivity() {
         })
         if (s.isCustom) {
             bar.addView(ImageButton(this).apply {
+                contentDescription = "Удалить шаблон"
                 setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 16f); setPadding(18, 16, 18, 16)
                 setOnClickListener {
                     AlertDialog.Builder(this@MainActivity).setTitle("Удалить шаблон?").setPositiveButton("Удалить") { _, _ ->
@@ -457,7 +483,10 @@ class MainActivity : AppCompatActivity() {
             val actions = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
             val toTpl = TextView(this@MainActivity).apply { text = "⭐ В шаблон"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); background = roundBg("#FFF8E1", 14f, "#FFE082"); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
             val fillBtn = TextView(this@MainActivity).apply { text = "⚡ Вставить"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); background = roundBg("#0288D1", 14f); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-            val delBtn = ImageButton(this@MainActivity).apply { setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 14f); setPadding(16, 12, 16, 12) }
+            val delBtn = ImageButton(this@MainActivity).apply {
+                contentDescription = "Удалить вызов"
+                setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 14f); setPadding(16, 12, 16, 12)
+            }
             actions.addView(toTpl); actions.addView(fillBtn); actions.addView(delBtn); root.addView(actions)
 
             val chipsLay = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
@@ -529,6 +558,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val dateInStringRegex = Regex("""\d{2}\.\d{2}\.\d{4}""")
+
     private fun cleanBpString(raw: String): String {
         val s = raw.trim().replace("null", "")
         if (s.isEmpty()) return ""
@@ -538,7 +569,7 @@ class MainActivity : AppCompatActivity() {
             val dis = o.optString("dis").ifEmpty { o.optString("dia") }.ifEmpty { o.optString("diastolic") }.replace("null", "").trim()
             if (sys.isNotEmpty() || dis.isNotEmpty()) "$sys/$dis" else ""
         } catch (_: Exception) { "" }
-        return if (s.contains("ул.") || s.contains(".202")) "" else s
+        return if (s.contains("ул.") || dateInStringRegex.containsMatchIn(s)) "" else s
     }
 
     private fun cleanMedicationsString(raw: String): String {
@@ -574,7 +605,7 @@ class MainActivity : AppCompatActivity() {
             add("• Пульс", "pulse", " уд/мин"); add("• ЧДД", "rr", " в мин"); add("• SpO2", "saturation", "%")
             add("• Сахар", "glucose", " ммоль/л"); add("• Температура", "temp", "°C")
             add("• Тоны сердца", "heartSounds"); add("• Дыхание", "lungs"); add("• Перкуссия", "percussion")
-            add("• Живот", "abdomen"); add("• Кожа", "skin"); add("• Высыпания", "rash")
+            add("• Живот", "abdomen"); add("• Асцит", "ascites"); add("• Кожа", "skin"); add("• Высыпания", "rash")
             add("• Отеки", "edema", if (j.optString("edemaDescription").isNotEmpty()) " (${j.optString("edemaDescription")})" else "")
             add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
             add("• Речь", "speech"); add("• Лицо", "face"); add("• Походка", "gait"); add("• Нистагм", "nystagmus")
@@ -669,6 +700,20 @@ class MainActivity : AppCompatActivity() {
                 else -> "НЕ УВЕЛИЧЕНА"
             }
 
+            // Исправлена мертвая ветка postAttack: проверяем JSONObject первым, затем Boolean
+            val attackVal = when {
+                raw.optJSONObject("postAttack") != null -> raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: ""
+                raw.has("postAttack") && !raw.isNull("postAttack") -> {
+                    val v = raw.opt("postAttack")
+                    if (v is Boolean) {
+                        if (v) "КУПИРОВАН" else "НЕ КУПИРОВАН"
+                    } else {
+                        v.toString().trim().uppercase()
+                    }
+                }
+                else -> ""
+            }
+
             val card = JSONObject().apply {
                 put("fio", fio); put("birthDate", bDate); put("age", raw.optString("age").replace("null", "")); put("ageUnit", ageUnit)
                 put("address", p.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", ""))
@@ -713,7 +758,7 @@ class MainActivity : AppCompatActivity() {
                 put("ecgBefore", raw.optString("electrocardiogramBefore").replace("null", ""))
                 put("ecgAfter", raw.optString("electrocardiogramAfter").replace("null", ""))
                 put("diagnosis", diag); put("mkb", if (icd != null) "[${icd.optString("code")}] ${icd.optString("type").ifEmpty { icd.optString("name") }}".trim() else "")
-                put("attack", if (raw.has("postAttack") && !raw.isNull("postAttack")) (if (raw.optBoolean("postAttack", true)) "КУПИРОВАН" else "НЕ КУПИРОВАН") else (raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: ""))
+                put("attack", attackVal)
                 put("therapyEffect", raw.optJSONObject("result")?.optString("type")?.uppercase() ?: "")
                 put("callResult", raw.optJSONObject("resultDeparture")?.optString("type")?.uppercase() ?: "")
             }

@@ -4,6 +4,19 @@
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
 
+    // Глобальная проверка границы вкладки "ЗАКЛЮЧЕНИЕ" (для защиты от случайной перезаписи)
+    function isInConclusion(el) {
+        if (!el) return false;
+        const anchor = Array.from(document.querySelectorAll('p, span, div, label')).find(e => {
+            if (!e.innerText || e.children.length > 2) return false;
+            const t = e.innerText.trim();
+            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
+        });
+        if (!anchor) return false;
+        return Boolean(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    window.b103IsInConclusion = isInConclusion;
+
     if (!window.b103NetHooked) {
         window.b103NetHooked = true;
         const origFetch = window.fetch;
@@ -61,7 +74,7 @@
 
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
+            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
     }
 
     function findInputByKw(keywords, exact = false) {
@@ -69,18 +82,18 @@
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText || el.offsetParent === null || el.children.length > 3) return false;
+                if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
                 const t = el.innerText.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
             if (target) {
                 const fc = target.closest('.MuiFormControl-root');
-                if (fc) {
+                if (fc && !isInConclusion(fc)) {
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) return inps[0];
                 }
                 let p = target.parentElement;
-                for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
                     const inps = getRealInputs(p);
                     if (inps.length === 1) return inps[0];
                     p = p.parentElement;
@@ -272,17 +285,7 @@ window.applyAutofill = async function(jsonStr) {
 
     try {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-
-        const conclusionAnchor = Array.from(document.querySelectorAll('p, span, div, label')).find(el => {
-            if (!el.innerText || el.children.length > 2) return false;
-            const t = el.innerText.trim();
-            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
-        });
-
-        function isInConclusion(el) {
-            if (!el || !conclusionAnchor) return false;
-            return Boolean(conclusionAnchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
-        }
+        const isInConclusion = window.b103IsInConclusion;
 
         function normBp(v) {
             if (!v) return "";
@@ -306,11 +309,6 @@ window.applyAutofill = async function(jsonStr) {
             } catch (e) { inp.value = str; }
         }
 
-        function getRealInputs(container) {
-            return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-                .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
-        }
-
         function findInputs(keywords, exact = false) {
             const res = [];
             const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
@@ -327,14 +325,14 @@ window.applyAutofill = async function(jsonStr) {
                         let foundInp = null;
 
                         const fc = l.closest('.MuiFormControl-root');
-                        if (fc) {
+                        if (fc && !isInConclusion(fc)) {
                             const inps = getRealInputs(fc);
                             if (inps.length === 1) foundInp = inps[0];
                         }
 
                         if (!foundInp) {
                             let p = l.parentElement;
-                            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                            for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
                                 const inps = getRealInputs(p);
                                 if (inps.length === 1) {
                                     foundInp = inps[0];
@@ -408,8 +406,8 @@ window.applyAutofill = async function(jsonStr) {
                     const t = l.innerText.trim().toLowerCase();
                     if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
                         let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
-                        for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                            if (p.querySelector('.MuiSelect-root, [role="button"]') && !isInConclusion(p)) {
+                        for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                            if (p.querySelector('.MuiSelect-root, [role="button"]')) {
                                 if (!ctrls.includes(p)) ctrls.push(p);
                                 break;
                             }
@@ -545,7 +543,7 @@ window.applyAutofill = async function(jsonStr) {
 
                 for (let target of targets) {
                     let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
-                    for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                    for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
                         const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => b.offsetParent !== null && !b.disabled && !isInConclusion(b));
                         const desired = btns.find(b => {
                             const bt = (b.innerText || '').trim().toUpperCase();
@@ -711,20 +709,26 @@ window.applyAutofill = async function(jsonStr) {
 };
 
 // ==========================================
-// ТОЧЕЧНАЯ ВСТАВКА ИЗ КОНСТРУКТОРОВ (ЭКГ, СЛР, ФРАЗЫ)
+// ТОЧЕЧНАЯ ВСТАВКА ИЗ КОНСТРУКТОРОВ (ЭКГ, СЛР, ФРАЗЫ) С ЖЕСТКОЙ ЗАЩИТОЙ ВКЛАДКИ ЗАКЛЮЧЕНИЕ
 // ==========================================
 window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
     try {
         const kwL = String(fieldKeyword).toLowerCase();
+        const isInConclusion = window.b103IsInConclusion;
         const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        
         for (let l of labels) {
-            if (!l.innerText || l.offsetParent === null || l.children.length > 3) continue;
+            // Защита: полностью игнорируем любые надписи внутри вкладки Заключение
+            if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
+            
             const t = l.innerText.trim().toLowerCase();
             if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
                 const fc = l.closest('.MuiFormControl-root') || l.parentElement?.parentElement;
-                if (!fc) continue;
+                if (!fc || isInConclusion(fc)) continue;
+
                 const inps = Array.from(fc.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-                    .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
+                    .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+
                 if (inps.length > 0) {
                     const inp = inps[0];
                     const cur = (inp.value || '').trim();

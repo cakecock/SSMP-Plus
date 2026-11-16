@@ -30,6 +30,38 @@
     }
     window.b103IsInConclusion = isInConclusion;
 
+    function cleanVal(v) {
+        if (v === undefined || v === null) return '';
+        if (typeof v === 'string') {
+            const s = v.trim();
+            return (s === 'null' || s.startsWith('[object')) ? '' : s;
+        }
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+        if (Array.isArray(v)) return v.map(cleanVal).filter(Boolean).join(', ');
+        if (typeof v === 'object') return cleanVal(v.type || v.name || v.display || v.title || '');
+        return '';
+    }
+
+    function cleanBpString(raw) {
+        if (!raw) return '';
+        if (typeof raw === 'object') {
+            const s = String(raw.sys || raw.systolic || '').replace(/null/g, '').trim();
+            const d = String(raw.dis || raw.dia || raw.diastolic || '').replace(/null/g, '').trim();
+            return (s || d) ? `${s}/${d}` : '';
+        }
+        const str = String(raw).replace(/null/g, '').trim();
+        if (!str) return '';
+        if (str.startsWith('{')) {
+            try {
+                const o = JSON.parse(str);
+                const s = String(o.sys || o.systolic || '').replace(/null/g, '').trim();
+                const d = String(o.dis || o.dia || o.diastolic || '').replace(/null/g, '').trim();
+                return (s || d) ? `${s}/${d}` : '';
+            } catch (e) { return ''; }
+        }
+        return (str.includes('ул.') || /\d{2}\.\d{2}\.\d{4}/.test(str)) ? '' : str;
+    }
+
     if (!window.b103NetHooked) {
         window.b103NetHooked = true;
         const origFetch = window.fetch;
@@ -87,7 +119,7 @@
 
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+            .filter(el => !el.classList.contains('MuiSelect-nativeInput') && !el.classList.contains('MuiTextareaAutosize-shadow') && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
     }
 
     function findInputByKw(keywords, exact = false) {
@@ -95,8 +127,8 @@
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText || el.offsetParent === null) return false;
-                const t = el.innerText.trim().toLowerCase();
+                if (!el.textContent) return false;
+                const t = el.textContent.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
             if (target) {
@@ -380,7 +412,7 @@ window.applyAutofill = async function(jsonStr) {
         for (let attempt = 0; attempt < 5; attempt++) {
             const popovers = getActivePopovers();
             const expandedBtns = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
-            if (popovers.length === 0 && expandedBtns.length === 0) break;
+            if (!popovers.length && !expandedBtns.length) break;
 
             const escInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
             if (document.activeElement && document.activeElement !== document.body) {
@@ -419,37 +451,25 @@ window.applyAutofill = async function(jsonStr) {
         const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
         const isInConclusion = window.b103IsInConclusion;
 
-        function normBp(v) {
-            if (!v) return "";
-            if (typeof v === 'object') return (v.sys || v.dis || v.dia) ? `${v.sys||''}/${v.dis||v.dia||''}` : "";
-            const s = String(v).trim();
-            if (s.startsWith("{")) { try { const o = JSON.parse(s); return `${o.sys||''}/${o.dis||o.dia||''}`; } catch(e){ return ""; } }
-            return s;
-        }
-
         function setVal(inp, val, allowEmpty = false) {
             if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
-            const str = String(val).trim();
-            const prev = inp.value || '';
+            const str = cleanVal(val);
+            const prev = cleanVal(inp.value);
             if (!allowEmpty && !str) return;
-            if (prev.trim() === str) return;
+            if (prev === str) return;
             try {
                 const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                 if (setter) setter.call(inp, str); else inp.value = str;
-                if (inp._valueTracker) inp._valueTracker.setValue(prev);
+                if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 inp.dispatchEvent(new Event('change', { bubbles: true }));
-                const rk = Object.keys(inp).find(k => k.startsWith('__reactEventHandlers$') || k.startsWith('__reactProps$'));
-                if (rk && inp[rk] && typeof inp[rk].onChange === 'function') {
-                    try { inp[rk].onChange({ target: inp, currentTarget: inp, type: 'change' }); } catch (e) {}
-                }
             } catch (e) { inp.value = str; }
         }
 
         function getRealInputsAutofill(container) {
             return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-                .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+                .filter(el => !el.classList.contains('MuiSelect-nativeInput') && !el.classList.contains('MuiTextareaAutosize-shadow') && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
         }
 
         function findInputs(keywords, exact = false) {
@@ -460,9 +480,9 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
+                    if (!l.textContent || l.children.length > 3 || isInConclusion(l)) continue;
 
-                    const t = l.innerText.trim().toLowerCase();
+                    const t = l.textContent.trim().toLowerCase();
                     const isMatch = exact ? t === kwL : (t === kwL || t.includes(kwL));
                     if (isMatch && t.length < kwL.length + 35) {
                         let foundInp = null;
@@ -488,7 +508,7 @@ window.applyAutofill = async function(jsonStr) {
                         }
 
                         if (foundInp && !res.includes(foundInp)) {
-                            const holderText = ((foundInp.closest('.MuiFormControl-root') || foundInp.parentElement)?.innerText || '').trim().toLowerCase();
+                            const holderText = cleanVal((foundInp.closest('.MuiFormControl-root') || foundInp.parentElement)?.innerText).toLowerCase();
                             if (!searchingFio && (holderText === 'фио' || holderText.startsWith('фио\n') || holderText.includes('фио пациента'))) continue;
                             if (searchingFio) {
                                 const rowTxt = (foundInp.closest('.MuiGrid-container') || foundInp.parentElement?.parentElement?.parentElement)?.innerText || '';
@@ -503,7 +523,7 @@ window.applyAutofill = async function(jsonStr) {
         }
 
         const setAll = (kws, val, ex = false, allowEmpty = false) => {
-            if (val !== undefined && val !== null && (allowEmpty || String(val).trim() !== '')) {
+            if (val !== undefined && val !== null && (allowEmpty || cleanVal(val) !== '')) {
                 findInputs(kws, ex).forEach(i => setVal(i, val, allowEmpty));
             }
         };
@@ -552,7 +572,7 @@ window.applyAutofill = async function(jsonStr) {
         }
 
         async function selectDropdown(keywords, valStr, forceMulti = false, allowClearMulti = false) {
-            const vals = String(valStr || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            const vals = cleanVal(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
             if (!vals.length && !(forceMulti && allowClearMulti)) return;
 
             const matchVal = (ot, v) => {
@@ -570,8 +590,8 @@ window.applyAutofill = async function(jsonStr) {
             for (let kw of keywords) {
                 const kwL = kw.toLowerCase();
                 for (let l of labels) {
-                    if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
-                    const t = l.innerText.trim().toLowerCase();
+                    if (!l.textContent || l.children.length > 3 || isInConclusion(l)) continue;
+                    const t = l.textContent.trim().toLowerCase();
                     if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
                         let p = l.closest('.MuiFormControl-root') || l.parentElement;
                         for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
@@ -588,10 +608,10 @@ window.applyAutofill = async function(jsonStr) {
 
             for (let c of ctrls) {
                 const btn = c.querySelector('.MuiSelect-root, [role="button"]');
-                if (!btn || btn.offsetParent === null || btn.classList.contains('Mui-disabled') || isInConclusion(btn)) continue;
+                if (!btn || btn.classList.contains('Mui-disabled') || isInConclusion(btn)) continue;
 
                 const isMulti = forceMulti || btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
-                const curText = (btn.innerText || '').trim().toLowerCase();
+                const curText = cleanVal(btn.innerText).toLowerCase();
                 const curItems = (!curText || curText === 'не выбрано') ? [] : curText.split(',').map(s => s.trim()).filter(Boolean);
 
                 if (!isMulti && vals.length > 0 && matchVal(curText, vals[0])) continue;
@@ -622,7 +642,7 @@ window.applyAutofill = async function(jsonStr) {
                     const treatAsMulti = isMulti || hasCheckboxes;
 
                     if (!treatAsMulti) {
-                        const match = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), vals[0]));
+                        const match = opts.find(o => matchVal(cleanVal(o.innerText).toLowerCase(), vals[0]));
                         if (match) {
                             match.click();
                             restoreScreenPosition();
@@ -632,7 +652,7 @@ window.applyAutofill = async function(jsonStr) {
                     } else {
                         const wanted = new Set();
                         for (let v of vals) {
-                            const m = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), v));
+                            const m = opts.find(o => matchVal(cleanVal(o.innerText).toLowerCase(), v));
                             if (m) wanted.add(m);
                         }
                         for (let o of opts) {
@@ -658,7 +678,7 @@ window.applyAutofill = async function(jsonStr) {
             const searchCode = codeMatch ? codeMatch[1].toUpperCase() : String(mkbStr).trim();
 
             const mkbInputs = findInputs(["код по мкб"]);
-            if (mkbInputs.length === 0) return;
+            if (!mkbInputs.length) return;
             const inp = mkbInputs[0];
 
             if (inp.value && inp.value.toUpperCase().includes(`[${searchCode}]`)) return;
@@ -684,13 +704,13 @@ window.applyAutofill = async function(jsonStr) {
                 if (popper) {
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
-                            const tx = (o.innerText || '').trim().toLowerCase();
+                            const tx = cleanVal(o.innerText).toLowerCase();
                             return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
                         });
                     if (opts.length > 0) {
-                        targetOpt = opts.find(o => (o.innerText || '').toUpperCase().includes(`[${searchCode}]`))
-                            || opts.find(o => (o.innerText || '').toUpperCase().startsWith(searchCode))
-                            || opts.find(o => (o.innerText || '').toUpperCase().includes(searchCode))
+                        targetOpt = opts.find(o => cleanVal(o.innerText).toUpperCase().includes(`[${searchCode}]`))
+                            || opts.find(o => cleanVal(o.innerText).toUpperCase().startsWith(searchCode))
+                            || opts.find(o => cleanVal(o.innerText).toUpperCase().includes(searchCode))
                             || opts[0];
                         if (targetOpt) break;
                     }
@@ -709,13 +729,14 @@ window.applyAutofill = async function(jsonStr) {
         }
 
         async function fillSimpleAutocomplete(keywords, targetVal, skipIfFilled = false) {
-            if (!targetVal) return;
+            const cleanTarget = cleanVal(targetVal);
+            if (!cleanTarget) return;
             const inps = findInputs(keywords);
             if (!inps.length) return;
             const inp = inps[0];
-            const cur = (inp.value || '').trim();
-            const fullTargetL = targetVal.trim().toLowerCase();
-            const shortSearch = targetVal.split('(')[0].trim();
+            const cur = cleanVal(inp.value);
+            const fullTargetL = cleanTarget.toLowerCase();
+            const shortSearch = cleanTarget.split('(')[0].trim();
             const shortTargetL = shortSearch.toLowerCase();
 
             if (skipIfFilled && cur) return;
@@ -745,13 +766,13 @@ window.applyAutofill = async function(jsonStr) {
                 if (popper) {
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
-                            const tx = (o.innerText || '').trim().toLowerCase();
+                            const tx = cleanVal(o.innerText).toLowerCase();
                             return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
                         });
                     if (opts.length > 0) {
-                        targetOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === fullTargetL)
-                            || opts.find(o => (o.innerText || '').trim().toLowerCase().startsWith(shortTargetL))
-                            || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(shortTargetL))
+                        targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === fullTargetL)
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(shortTargetL))
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(shortTargetL))
                             || opts[0];
                         if (targetOpt) break;
                     }
@@ -771,14 +792,14 @@ window.applyAutofill = async function(jsonStr) {
         function clickButtonInRow(rowKeywords, buttonChoices) {
             if (!buttonChoices) return;
             const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices])
-                .map(c => String(c).trim().toUpperCase()).filter(Boolean);
-            if (choices.length === 0) return;
+                .map(c => cleanVal(c).toUpperCase()).filter(Boolean);
+            if (!choices.length) return;
 
             const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span'));
-            for (let kw of rowKeywords) {
+            for (const kw of rowKeywords) {
                 const kwL = kw.toLowerCase();
                 const targets = labels.filter(el => {
-                    if (!el.textContent || el.offsetParent === null || el.children.length > 2 || isInConclusion(el)) return false;
+                    if (!el.textContent || el.children.length > 2 || isInConclusion(el)) return false;
                     const t = el.textContent.trim().toLowerCase();
                     return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 35;
                 });
@@ -786,9 +807,9 @@ window.applyAutofill = async function(jsonStr) {
                 for (let target of targets) {
                     let p = target.closest('.MuiFormControl-root') || target.parentElement;
                     for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
-                        const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => b.offsetParent !== null && !b.disabled && !isInConclusion(b));
+                        const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => !b.disabled && !isInConclusion(b));
                         const desired = btns.find(b => {
-                            const bt = (b.innerText || b.textContent || '').trim().toUpperCase();
+                            const bt = cleanVal(b.innerText || b.textContent).toUpperCase();
                             return choices.some(ch => bt === ch || (ch.includes("СИММЕТР") && ch.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ")));
                         });
                         if (desired) {
@@ -806,7 +827,7 @@ window.applyAutofill = async function(jsonStr) {
         }
 
         function fillBP(isAd, raw, allowEmpty = false) {
-            const str = normBp(raw);
+            const str = cleanBpString(raw);
             if (!str.includes('/') && !allowEmpty) return;
             const p = str.includes('/') ? str.split('/') : ['', ''];
             const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
@@ -835,14 +856,14 @@ window.applyAutofill = async function(jsonStr) {
         if (data.fio) setAll(["фио"], data.fio, true);
 
         if (data.gender) {
-            const gUp = String(data.gender).trim().toUpperCase();
+            const gUp = cleanVal(data.gender).toUpperCase();
             const gTarget = (gUp.startsWith("М") || gUp === "TRUE") ? ["МУЖЧИНА", "МУЖСКОЙ"] : ["ЖЕНЩИНА", "ЖЕНСКИЙ"];
             clickButtonInRow(["пол"], gTarget);
         }
 
-        const initAgeRaw = String(window.lastLoadedApiCard?.initialAge || "").trim();
+        const initAgeRaw = cleanVal(window.lastLoadedApiCard?.initialAge);
         const initAgeM = initAgeRaw.match(/^(\d+)\s+([А-Яа-яЁё]+)/);
-        let finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || (initAgeM ? initAgeM[1] : "");
+        let finAge = cleanVal(data.age) || cleanVal(window.lastLoadedApiCard?.age) || (initAgeM ? initAgeM[1] : "");
         let unitGuess = "";
 
         const bDateInps = findInputs(["дата рождения"]);
@@ -852,11 +873,11 @@ window.applyAutofill = async function(jsonStr) {
             const todayDot = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;
             const regDateIso = (window.lastLoadedApiCard?.dateOfRegistration || "").split("T")[0];
 
-            let servB = window.lastLoadedApiCard?.patient?.birthDate || "";
+            let servB = cleanVal(window.lastLoadedApiCard?.patient?.birthDate);
             if (servB && (servB.startsWith(todayIso) || (regDateIso && servB.startsWith(regDateIso)))) servB = "";
-            let archB = data.birthDate || "";
+            let archB = cleanVal(data.birthDate);
             if (archB && (archB.includes(todayIso) || archB.includes(todayDot))) archB = "";
-            let scrB = bDateInps[0].value || "";
+            let scrB = cleanVal(bDateInps[0].value);
             let scrDateOnly = scrB.split("/")[0].trim();
             if (scrDateOnly.includes("_") || scrDateOnly === todayDot) scrB = "";
 
@@ -869,18 +890,19 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || (initAgeM ? initAgeM[2] : "") || unitGuess || "Лет";
+        const unitVal = cleanVal(data.ageUnit) || cleanVal(window.lastLoadedApiCard?.ageType) || (initAgeM ? initAgeM[2] : "") || unitGuess || "Лет";
         await selectDropdown(["возраст (ед.)"], unitVal, false);
         if (finAge) setAll(["возраст"], finAge, true);
 
-        const savedSettl = data.settlement || findInputs(["нас. пункт"])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.settlement?.type || window.lastLoadedApiCard?.settlement || "";
-        const savedStreet = data.street || findInputs(["улица"])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.street?.type || window.lastLoadedApiCard?.street || "";
-        const savedBld = data.building || findInputs(["дом"], true)[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.building || window.lastLoadedApiCard?.building || "";
-        const savedFlat = data.flat || findInputs(["квартира"], true)[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.flat || window.lastLoadedApiCard?.flat || "";
-        const savedClar = data.clarificationAddress || findInputs(["уточнение места жительства"])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.clarificationAddress || "";
-        const savedAddr = data.address || findInputs(["место жительства (пребывания)"])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.placeOfRegistration || window.lastLoadedApiCard?.address || "";
+        const getInpVal = (kws, exact = false) => cleanVal(findInputs(kws, exact)[0]?.value);
+        const savedSettl = cleanVal(data.settlement) || getInpVal(['нас. пункт']) || cleanVal(window.lastLoadedApiCard?.patient?.settlement) || cleanVal(window.lastLoadedApiCard?.settlement);
+        const savedStreet = cleanVal(data.street) || getInpVal(['улица']) || cleanVal(window.lastLoadedApiCard?.patient?.street) || cleanVal(window.lastLoadedApiCard?.street);
+        const savedBld = cleanVal(data.building) || getInpVal(['дом'], true) || cleanVal(window.lastLoadedApiCard?.patient?.building) || cleanVal(window.lastLoadedApiCard?.building);
+        const savedFlat = cleanVal(data.flat) || getInpVal(['квартира'], true) || cleanVal(window.lastLoadedApiCard?.patient?.flat) || cleanVal(window.lastLoadedApiCard?.flat);
+        const savedClar = cleanVal(data.clarificationAddress) || getInpVal(['уточнение места жительства']) || cleanVal(window.lastLoadedApiCard?.patient?.clarificationAddress);
+        const savedAddr = cleanVal(data.address) || getInpVal(['место жительства (пребывания)']) || cleanVal(window.lastLoadedApiCard?.patient?.placeOfRegistration) || cleanVal(window.lastLoadedApiCard?.address);
 
-        const ctzVal = data.citizenship || window.lastLoadedApiCard?.patient?.countryOfRegistration?.type || "";
+        const ctzVal = cleanVal(data.citizenship) || cleanVal(window.lastLoadedApiCard?.patient?.countryOfRegistration) || '';
         if (ctzVal) await fillSimpleAutocomplete(["гражданство"], ctzVal, !data.citizenship);
         if (savedSettl) await fillSimpleAutocomplete(["нас. пункт"], savedSettl, false);
         if (savedStreet) await fillSimpleAutocomplete(["улица"], savedStreet, false);
@@ -908,20 +930,20 @@ window.applyAutofill = async function(jsonStr) {
 
         setAll(["экг до оказания"], data.ecgBefore ?? "", false, true);
         setAll(["экг после оказания"], data.ecgAfter ?? "", false, true);
-        setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15", false, true);
-        setAll(["тонус мышц"], data.muscleTone || "Нормальный", false, true);
-        setAll(["патологические рефлексы"], data.pathologicalReflexes || "Отрицательные", false, true);
-        setAll(["менингиальные знаки"], data.meningealSymptoms || "Отрицательные", false, true);
-        setAll(["плегии, парезы"], data.plegia || "Нет", false, true);
-        setAll(["язык"], data.tongue || "Чистые", false, true);
-        setAll(["слизистые"], data.mucous || "Бледно-розовые", false, true);
+        setAll(["шкала комы глазго (баллы)"], cleanVal(data.glasgowScore) || "15", false, true);
+        setAll(["тонус мышц"], cleanVal(data.muscleTone) || "Нормальный", false, true);
+        setAll(["патологические рефлексы"], cleanVal(data.pathologicalReflexes) || "Отрицательные", false, true);
+        setAll(["менингиальные знаки"], cleanVal(data.meningealSymptoms) || "Отрицательные", false, true);
+        setAll(["плегии, парезы"], cleanVal(data.plegia) || "Нет", false, true);
+        setAll(["язык"], cleanVal(data.tongue) || "Чистые", false, true);
+        setAll(["слизистые"], cleanVal(data.mucous) || "Бледно-розовые", false, true);
 
         clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
         clickButtonInRow(["поведение"], data.behavior || "СПОКОЙНОЕ");
         if (data.pupils) {
             clickButtonInRow(["зрачки"], [data.pupils, data.pupils.replace("АНИЗОКОРИЯ", "АНИЗОКАРИЯ")]);
         } else {
-            const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent.trim().toLowerCase() === 'зрачки' && e.offsetParent !== null && !isInConclusion(e));
+            const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent && e.textContent.trim().toLowerCase() === 'зрачки' && !isInConclusion(e));
             if (pupLbl && pupLbl.parentElement) {
                 Array.from(pupLbl.parentElement.querySelectorAll('button'))
                     .filter(b => b.className.includes('MuiButton-contained') && !b.disabled)
@@ -1008,7 +1030,7 @@ window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
                     const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                     if (setter) setter.call(inp, finalVal); else inp.value = finalVal;
-                    if (inp._valueTracker) inp._valueTracker.setValue(cur);
+                    if (inp._valueTracker) inp._valueTracker.setValue(cur + '__force_diff');
                     inp.dispatchEvent(new Event('input', { bubbles: true }));
                     inp.dispatchEvent(new Event('change', { bubbles: true }));
                     return true;

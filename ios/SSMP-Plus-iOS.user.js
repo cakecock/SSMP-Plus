@@ -2,7 +2,7 @@
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
 // @version      3.0.0
-// @description  Мобильный ассистент СМП (г. Брест): умное автозаполнение, оффлайн-архив, 63 шаблона, ЭКГ-конструктор, СЛР-таймер, калькуляторы (O2 МПа, Допамин, Педиатрия), 130+ антидотов и приказы МЗ РБ.
+// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив, шаблоны, ЭКГ-конструктор, СЛР-таймер, O2 в МПа, шкалы и протоколы.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-idle
@@ -19,6 +19,19 @@
     window.activeAutofillData = window.activeAutofillData || null;
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
+
+    // Глобальная проверка границы вкладки "ЗАКЛЮЧЕНИЕ" (для защиты от случайной перезаписи)
+    function isInConclusion(el) {
+        if (!el) return false;
+        const anchor = Array.from(document.querySelectorAll('p, span, div, label')).find(e => {
+            if (!e.innerText || e.children.length > 2) return false;
+            const t = e.innerText.trim();
+            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
+        });
+        if (!anchor) return false;
+        return Boolean(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    window.b103IsInConclusion = isInConclusion;
 
     // ==========================================
     // 1. БАЗА ДАННЫХ LOCALSTORAGE (СОВМЕСТИМАЯ С ANDROID JSON)
@@ -213,6 +226,7 @@
 
         const db = loadDb();
         const sixHoursAgo = Date.now() - 6 * 3600 * 1000;
+        // Строгое совпадение по полному ФИО (защита от однофамильцев)
         const idx = db.findIndex(x => x.is_builtin === 0 && x.fio === entry.fio && x.timestamp > sixHoursAgo);
         if (idx >= 0) db[idx] = entry; else db.unshift(entry);
         saveDb(db);
@@ -243,10 +257,10 @@
     }
 
     const BUILTIN_TEMPLATES = [
-        tpl(1, "🚨 СЛР (Клиническая смерть, безуспешная)", "[I46.9] Остановка сердца неуточненная", "Внезапная сердечная смерть. Клиническая смерть. Безуспешная СЛР. Биологическая смерть.", "Жалоб нет ввиду клинической смерти.", "Внезапно потерял сознание, прекратились дыхание и кровообращение. Немедленно начата расширенная СЛР (НМС, ИВЛ, мониторинг ЭКГ, в/в доступ). Через 30 минут СЛР спонтанное кровообращение не восстановлено, констатирована биологическая смерть.", { generalState: "Клиническая смерть", consciousness: "Отсутствует", position: "ПАССИВНОЕ", glasgowScore: "3", bp: "0/0", pulse: "0", pulseExists: "НЕТ", rr: "0", temp: "0", saturation: "0", glucose: "0", heartSounds: "Отсутствуют", lungs: "Отсутствует", skin: "Бледная, Цианоз, Холодная", pupils: "МИДРИАЗ", lightReaction: "НЕТ", speech: "ОТСУТСТВУЕТ", gait: "НЕ ОЦЕНИВАЛАСЬ", muscleTone: "Атония", peristalsis: "НЕТ", stool: "ОТСУТСТВУЕТ", ecgBefore: "Асистолия.", ecgAfter: "Изолиния." }),
+        tpl(1, "🚨 СЛР (Клиническая смерть, безуспешная)", "[I46.9] Остановка сердца неуточненная", "Внезапная сердечная смерть. Клиническая смерть. Безуспешная СЛР. Биологическая смерть.", "Жалоб нет ввиду клинической смерти.", "В присутствии бригады потерял сознание, прекратились дыхание и пульс на сонных артериях. Проводилась расширенная СЛР (НМС, ИВЛ, ЭКГ, в/в доступ). Через 30 минут спонтанное кровообращение не восстановлено, констатирована биологическая смерть.", { generalState: "Клиническая смерть", consciousness: "Отсутствует", position: "ПАССИВНОЕ", glasgowScore: "3", bp: "0/0", pulse: "0", pulseExists: "НЕТ", rr: "0", temp: "0", saturation: "0", glucose: "0", heartSounds: "Отсутствуют", lungs: "Отсутствует", skin: "Бледная, Цианоз, Холодная", pupils: "МИДРИАЗ", lightReaction: "НЕТ", speech: "ОТСУТСТВУЕТ", gait: "НЕ ОЦЕНИВАЛАСЬ", muscleTone: "Атония", peristalsis: "НЕТ", stool: "ОТСУТСТВУЕТ", ecgBefore: "Асистолия.", ecgAfter: "Изолиния." }),
         tpl(2, "⚡ СЛР (Успешная реанимация)", "[I46.0] Остановка сердца с успешным восстановлением сердечной деятельности", "ИБС: Остановка кровообращения по механизму ФЖ. Клиническая смерть. Успешная СЛР.", "Не предъявляет ввиду угнетения сознания.", "Внезапная потеря сознания с остановкой дыхания и кровообращения. Начата СЛР, на ЭКГ ФЖ, выполнена дефибрилляция 200 Дж, восстановлено спонтанное кровообращение.", { generalState: "Крайне тяжелое", consciousness: "Кома", position: "ПАССИВНОЕ", glasgowScore: "6", bp: "90/60", pulse: "98", rr: "14", temp: "36.2", saturation: "94", glucose: "7.8", heartSounds: "Глухие, Ритмичные", lungs: "Ослабленное, Везикулярное", skin: "Бледная, Влажная", pupils: "МИДРИАЗ", lightReaction: "НЕТ", speech: "ОТСУТСТВУЕТ", gait: "НЕ ОЦЕНИВАЛАСЬ", ecgBefore: "Крупноволновая ФЖ.", ecgAfter: "Ритм синусовый, ЧСС 98 в мин." }),
         tpl(3, "🕊️ Констатация биологической смерти (до СМП)", "[R96.0] Мгновенная смерть", "Биологическая смерть до прибытия бригады СМП.", "Жалоб нет ввиду биологической смерти.", "Обнаружен родственниками без признаков жизни около 1,5 часов назад. Реанимационные мероприятия не проводились ввиду достоверных признаков биологической смерти.", { generalState: "Биологическая смерть", consciousness: "Отсутствует", position: "ПАССИВНОЕ", glasgowScore: "3", bp: "0/0", pulse: "0", pulseExists: "НЕТ", rr: "0", temp: "0", saturation: "0", glucose: "0", heartSounds: "Отсутствуют", lungs: "Отсутствует", skin: "Бледная, Холодная, Гипостатические пятна", pupils: "МИДРИАЗ", lightReaction: "НЕТ", speech: "ОТСУТСТВУЕТ", gait: "НЕ ОЦЕНИВАЛАСЬ", muscleTone: "Трупное окоченение", peristalsis: "НЕТ", stool: "ОТСУТСТВУЕТ", localStatus: "Зрачки широкие, с-м Белоглазова положительный, трупные пятна, трупное окоченение. Признаков насильственной смерти нет.", ecgBefore: "Изолиния.", ecgAfter: "Изолиния." }),
-        tpl(4, "Гипертонический криз (неосложненный)", "[I10] Эссенциальная (первичная) гипертензия", "Артериальная гипертензия 2 ст., риск 3. Неосложненный гипертонический криз.", "На головную боль в затылочной области, головокружение, мелькание мушек перед глазами.", "Ухудшение около 2 часов назад после стресса, подъем АД до 180/100 мм рт. ст.", { generalState: "Средней степени тяжести", bp: "180/100", bpAdapted: "130/80", pulse: "84", heartSounds: "Глухие, Ритмичные", ecgBefore: "Ритм синусовый, ЧСС 84 в мин. ЭОС отклонена влево, признаки ГЛЖ." }),
+        tpl(4, "Гипертонический криз (неосложненный)", "[I10] Эссенциальная (первичная) гипертензия", "Артериальная гипертензия 2 ст., риск 3. Неосложненный гипертонический криз.", "На головную боль в затылочной области, головокружение, мелькание мушек перед глазами.", "Ухудшение около 2 часов назад после стресса, подъем АД дома до 180/100 мм рт. ст.", { generalState: "Средней степени тяжести", bp: "180/100", bpAdapted: "130/80", pulse: "84", heartSounds: "Глухие, Ритмичные", ecgBefore: "Ритм синусовый, ЧСС 84 в мин. ЭОС отклонена влево, признаки ГЛЖ." }),
         tpl(5, "Гипертонический криз (осложненный, церебральный)", "[I10] Эссенциальная (первичная) гипертензия", "Артериальная гипертензия 3 ст., риск 4. Осложненный гипертонический криз (острая гипертоническая энцефалопатия).", "На интенсивную распирающую головную боль, головокружение, тошноту, рвоту.", "Ухудшение 3 часа назад на фоне подъема АД до 210/115 мм рт. ст.", { generalState: "Тяжелое", position: "ВЫНУЖДЕННОЕ", positionDescription: "Лежа с приподнятым изголовьем", behavior: "ВОЗБУЖДЕННОЕ", bp: "210/115", pulse: "92", heartSounds: "Глухие, Ритмичные" }),
         tpl(6, "Пароксизм фибрилляции предсердий (ФП)", "[I48] Фибрилляция и трепетание предсердий", "ИБС: АТС кардиосклероз. Персистирующая форма ФП, тахисистолический вариант, пароксизм.", "На приступ учащенного неритмичного сердцебиения, перебои в работе сердца, слабость.", "Ухудшение сегодня утром, внезапно ощутил срыв ритма.", { generalState: "Средней степени тяжести", bp: "130/80", pulse: "128", heartSounds: "Аритмичные, Ясные", ecgBefore: "Фибрилляция предсердий с ЧЖС 120-135 в мин.", ecgAfter: "Ритм синусовый, ЧСС 76 в мин." }),
         tpl(7, "Постоянная форма ФП (декомпенсация ХСН)", "[I48] Фибрилляция и трепетание предсердий", "ИБС: кардиосклероз. Постоянная форма ФП, тахисистолия. ХСН ФК III.", "На одышку при минимальной нагрузке, сердцебиение, отечность голеней.", "Ухудшение за несколько дней на фоне пропуска плановой терапии.", { generalState: "Средней степени тяжести", bp: "135/85", pulse: "116", rr: "20", saturation: "95", heartSounds: "Аритмичные, Глухие", edema: "ДА", edemaDescription: "Отечность голеней", ecgBefore: "ФП с ЧЖС 110-120 в мин." }),
@@ -282,7 +296,7 @@
     // ==========================================
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
-            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1);
+            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
     }
 
     function findInputByKw(keywords, exact = false) {
@@ -290,18 +304,18 @@
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText || el.offsetParent === null || el.children.length > 3) return false;
+                if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
                 const t = el.innerText.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
             if (target) {
                 const fc = target.closest('.MuiFormControl-root');
-                if (fc) {
+                if (fc && !isInConclusion(fc)) {
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) return inps[0];
                 }
                 let p = target.parentElement;
-                for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
                     const inps = getRealInputs(p);
                     if (inps.length === 1) return inps[0];
                     p = p.parentElement;
@@ -322,16 +336,17 @@
         if (g("локальный статус")) c.localStatus = g("локальный статус");
     }
 
+    // Точечная вставка с гарантированной защитой вкладки Заключение
     window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
         try {
             const kwL = String(fieldKeyword).toLowerCase();
             const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
             for (let l of labels) {
-                if (!l.innerText || l.offsetParent === null || l.children.length > 3) continue;
+                if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
                 const t = l.innerText.trim().toLowerCase();
                 if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
                     const fc = l.closest('.MuiFormControl-root') || l.parentElement?.parentElement;
-                    if (!fc) continue;
+                    if (!fc || isInConclusion(fc)) continue;
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) {
                         const inp = inps[0];
@@ -417,12 +432,6 @@
 
         try {
             const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-            const conclusionAnchor = Array.from(document.querySelectorAll('p, span, div, label')).find(el => {
-                if (!el.innerText || el.children.length > 2) return false;
-                const t = el.innerText.trim();
-                return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
-            });
-            const isInConclusion = (el) => (el && conclusionAnchor) ? Boolean(conclusionAnchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) : false;
 
             function setVal(inp, val) {
                 if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
@@ -450,14 +459,14 @@
                         if ((exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35) {
                             let foundInp = null;
                             const fc = l.closest('.MuiFormControl-root');
-                            if (fc) {
-                                const inps = getRealInputs(fc).filter(el => !isInConclusion(el));
+                            if (fc && !isInConclusion(fc)) {
+                                const inps = getRealInputs(fc);
                                 if (inps.length === 1) foundInp = inps[0];
                             }
                             if (!foundInp) {
                                 let p = l.parentElement;
-                                for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                                    const inps = getRealInputs(p).filter(el => !isInConclusion(el));
+                                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                                    const inps = getRealInputs(p);
                                     if (inps.length === 1) { foundInp = inps[0]; break; }
                                     else if (inps.length > 1) break;
                                     p = p.parentElement;
@@ -494,8 +503,8 @@
                         const t = l.innerText.trim().toLowerCase();
                         if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
                             let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
-                            for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                                if (p.querySelector('.MuiSelect-root, [role="button"]') && !isInConclusion(p)) {
+                            for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                                if (p.querySelector('.MuiSelect-root, [role="button"]')) {
                                     if (!ctrls.includes(p)) ctrls.push(p);
                                     break;
                                 }
@@ -588,7 +597,7 @@
                     const targets = labels.filter(el => el.innerText && el.offsetParent !== null && el.children.length <= 3 && !isInConclusion(el) && el.innerText.trim().toLowerCase().includes(kwL) && el.innerText.trim().length < kwL.length + 35);
                     for (let target of targets) {
                         let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
-                        for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                        for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
                             const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => b.offsetParent !== null && !b.disabled && !isInConclusion(b));
                             const desired = btns.find(b => {
                                 const bt = (b.innerText || '').trim().toUpperCase();
@@ -809,6 +818,7 @@
         openIosSheet('🧰 Помощник СМП (iOS)', '#0277BD', (body) => {
             const tools = [
                 { t: '📈 КОНСТРУКТОР ЭКГ (В КАРТУ)', c: '#00897B', fn: openEcgBuilderIos },
+                { t: '⏱️ ТАЙМЕР И ПРОТОКОЛ СЛР', c: '#D32F2F', fn: openCprTimerIos },
                 { t: '📝 ФРАЗЫ: ОТКАЗЫ И ПРИМЕЧАНИЯ', c: '#5D4037', fn: openQuickPhrasesIos },
                 { t: '👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ (№118)', c: '#0277BD', fn: openPediatricsIos },
                 { t: '📋 КАЛЬКУЛЯТОРЫ (% МГ, ДОПАМИН, O2 МПа)', c: '#EF6C00', fn: openCalculatorsIos },
@@ -855,6 +865,104 @@
         });
     }
 
+    // Состояние СЛР на iOS (не сбрасывается при закрытии шторки)
+    window.b103CprState = window.b103CprState || { isRunning: false, startEpoch: 0, accumulatedSec: 0, adr: 0, shock: 0, log: [] };
+
+    function openCprTimerIos() {
+        openIosSheet('⏱️ Таймер и логгер СЛР (iOS)', '#D32F2F', (body, close) => {
+            const st = window.b103CprState;
+            body.innerHTML = `
+                <div id="cpr-banner" style="padding:16px;border-radius:16px;background:#C62828;color:#fff;font-weight:700;font-size:18px;text-align:center;margin-bottom:12px;"></div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button id="cpr-btn-start" style="flex:1.5;padding:14px;border:none;border-radius:12px;background:#2E7D32;color:#fff;font-weight:700;font-size:14px;"></button>
+                    <button id="cpr-btn-rosc" style="flex:1;padding:14px;border:none;border-radius:12px;background:#0277BD;color:#fff;font-weight:700;font-size:13px;">❤️ ВСК/ФИНАЛ</button>
+                    <button id="cpr-btn-reset" style="padding:14px 18px;border:none;border-radius:12px;background:#ECEFF1;color:#37474F;font-weight:700;font-size:16px;">🔄</button>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+                    <button id="cpr-add-adr" style="padding:11px;border:1px solid #FFCDD2;border-radius:10px;background:#FFEBEE;color:#B71C1C;font-weight:700;font-size:12.5px;">💉 +Адреналин 1 мг</button>
+                    <button id="cpr-add-shock" style="padding:11px;border:1px solid #FFCDD2;border-radius:10px;background:#FFEBEE;color:#B71C1C;font-weight:700;font-size:12.5px;">⚡ +Разряд 200 Дж</button>
+                </div>
+                <div id="cpr-log-box" style="padding:12px;background:#F5F7F8;border-radius:12px;font-size:13px;line-height:1.45;color:#263238;height:120px;overflow-y:auto;white-space:pre-line;margin-bottom:10px;"></div>
+                <button id="cpr-btn-insert" style="width:100%;padding:14px;border:none;border-radius:12px;background:#00695C;color:#fff;font-weight:700;font-size:13.5px;cursor:pointer;">⚡ ВСТАВИТЬ ПРОТОКОЛ СЛР В КАРТУ</button>
+            `;
+            const banner = body.querySelector('#cpr-banner');
+            const btnStart = body.querySelector('#cpr-btn-start');
+            const btnRosc = body.querySelector('#cpr-btn-rosc');
+            const btnReset = body.querySelector('#cpr-btn-reset');
+            const logBox = body.querySelector('#cpr-log-box');
+
+            function getSec() {
+                return st.isRunning ? (st.accumulatedSec + Math.floor((Date.now() - st.startEpoch)/1000)) : st.accumulatedSec;
+            }
+
+            function update() {
+                const sTotal = getSec();
+                const m = Math.floor(sTotal / 60);
+                const s = sTotal % 60;
+                const isRhythm = (sTotal % 120 === 0 && sTotal > 0);
+                const isAdr = (sTotal % 180 === 0 && sTotal > 0);
+
+                let hint = "НМС 100–120/мин, 30:2";
+                if (isRhythm && isAdr) hint = "🔔 2 МИН: Контроль ритма! + 💉 Адреналин 1 мг!";
+                else if (isRhythm) hint = "🔔 2 МИНУТЫ! Оцените ритм на ЭКГ!";
+                else if (isAdr) hint = "💉 Прошло 3 мин! Время ввести Адреналин 1 мг!";
+
+                banner.style.background = ((isRhythm || isAdr) && st.isRunning) ? '#E65100' : (st.isRunning ? '#C62828' : '#78909C');
+                banner.innerHTML = `⏱️ СЛР: ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} (Адр: ${st.adr} | Разряд: ${st.shock})<br><span style="font-size:13px;font-weight:600;">${hint}</span>`;
+                btnStart.innerText = st.isRunning ? "⏸️ ПАУЗА" : (sTotal === 0 ? "▶️ СТАРТ СЛР" : "▶️ ПРОДОЛЖИТЬ");
+                btnStart.style.background = st.isRunning ? "#F57C00" : "#2E7D32";
+                logBox.innerText = st.log.length ? st.log.join('\n') : "Журнал реанимации пуст...";
+            }
+
+            function addLog(txt) {
+                const sTotal = getSec();
+                st.log.push(`[${new Date().toLocaleTimeString()} | ${Math.floor(sTotal/60)}:${String(sTotal%60).padStart(2,'0')}] ${txt}`);
+                update();
+            }
+
+            btnStart.onclick = () => {
+                if (!st.isRunning) {
+                    st.isRunning = true;
+                    st.startEpoch = Date.now();
+                    if (getSec() === 0 && !st.log.length) addLog("Начата расширенная СЛР (НМС, ИВЛ, ЭКГ, в/в доступ)");
+                } else {
+                    st.accumulatedSec += Math.floor((Date.now() - st.startEpoch)/1000);
+                    st.isRunning = false;
+                }
+                update();
+            };
+
+            btnRosc.onclick = () => {
+                if (st.isRunning) {
+                    st.accumulatedSec += Math.floor((Date.now() - st.startEpoch)/1000);
+                    st.isRunning = false;
+                }
+                addLog(`Завершение СЛР. Итого: Адреналин — ${st.adr} мг, Разрядов — ${st.shock}.`);
+                update();
+            };
+
+            btnReset.onclick = () => {
+                if (confirm("Сбросить протокол СЛР для нового вызова?")) {
+                    st.isRunning = false; st.startEpoch = 0; st.accumulatedSec = 0; st.adr = 0; st.shock = 0; st.log = [];
+                    update();
+                }
+            };
+
+            body.querySelector('#cpr-add-adr').onclick = () => { st.adr++; addLog(`Введен Адреналин 1 мг в/в (#${st.adr})`); };
+            body.querySelector('#cpr-add-shock').onclick = () => { st.shock++; addLog(`Дефибрилляция 200 Дж (#${st.shock})`); };
+            body.querySelector('#cpr-btn-insert').onclick = () => {
+                const summary = "Хронология СЛР:\n" + st.log.join('; ');
+                window.insertIntoCardField('анамнез заболевания', summary, true);
+                copyText(summary);
+                close();
+            };
+
+            const timerInt = setInterval(update, 1000);
+            update();
+            body.closest('#b103-ios-sheet-backdrop').addEventListener('DOMNodeRemoved', () => clearInterval(timerInt));
+        });
+    }
+
     function openQuickPhrasesIos() {
         openIosSheet('📝 Быстрые фразы и Отказы', '#5D4037', (body, close) => {
             const list = [
@@ -889,8 +997,8 @@
                     `🫁 ИВЛ И ДЕФИБРИЛЛЯЦИЯ НА ${w} КГ:\n` +
                     `• Дыхательный объем ИВЛ (6–8 мл/кг): ${Math.round(w*6)} – ${Math.round(w*8)} мл\n` +
                     `• Разряд дефибрилляции: 1-й = ${Math.round(w*2)} Дж (2 Дж/кг), далее ${Math.round(w*4)} Дж\n\n` +
-                    `💉 ЭКСТРЕННЫЕ ДОЗЫ НА ${w} КГ:\n` +
-                    `• Адреналин 0,18% (СЛР / Анафилаксия): ${f(Math.min(0.5, w*0.01))} мл (в разведении 1:10 при СЛР = ${f(Math.min(10, w*0.1))} мл)\n` +
+                    `💉 ЭКСТРЕННЫЕ ДОЗЫ НА ${w} КГ (Пост. №118):\n` +
+                    `• Адреналин 0,18% (СЛР / Анафилаксия): ${f(Math.min(0.3, w*0.01))} мл (макс. 0.3 мл детям!)\n` +
                     `• Преднизолон (30 мг/мл): ${f(Math.min(90, w*2))} мг = ${f(Math.min(3, w*2/30))} мл\n` +
                     `• Дексаметазон (4 мг/мл): ${f(Math.min(16, w*0.4))} мг = ${f(Math.min(4, w*0.1))} мл\n` +
                     `• Диазепам 0,5% (судороги): ${f(Math.min(2, w*0.05))} мл\n` +
@@ -982,7 +1090,7 @@
                 • Коррекция АД на СМП при инсульте: снижать плавно на 10–15% только при АД >= 220/120 (или > 185/110 в окне ТЛТ)!
 
                 <b>⚡ АНАФИЛАКСИЯ (Пост. № 50 / № 99):</b>
-                1. Эпинефрин 0,18% в/м в переднебоковую поверхность бедра: взрослым 0,3–0,5 мл, детям 0,01 мл/кг (повтор через 5–10 мин).
+                1. Эпинефрин 0,18% в/м в переднебоковую поверхность бедра: взрослым 0,3–0,5 мл, детям 0,01 мл/кг (макс. 0.3 мл, повтор через 5–10 мин).
                 2. Инфузия NaCl 0,9% 500–1000 мл (детям 20 мл/кг), O2.
                 3. Преднизолон 90–120 мг в/в (детям 2–5 мг/кг).
             </div>`;

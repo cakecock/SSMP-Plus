@@ -39,7 +39,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) { try { db.execSQL("ALTER TABLE cards ADD COLUMN is_builtin INTEGER DEFAULT 0") } catch (_: Exception) {} }
+        if (oldVersion < 2) {
+            try { db.execSQL("ALTER TABLE cards ADD COLUMN is_builtin INTEGER DEFAULT 0") } catch (_: Exception) {}
+        }
+        if (oldVersion < 3) {
+            // Схема v3: структура таблицы cards не изменялась (резервная ветка миграции)
+        }
     }
 
     fun saveOrUpdateCard(fio: String, birthDate: String, score: Int, jsonData: String, isBuiltin: Boolean = false) {
@@ -94,7 +99,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         cursor.close()
         if (list.isEmpty()) return null
 
-        // Среди карт этого же пациента выбираем наиболее полную (score >= 60) или самую свежую
         val bestScored = list.maxByOrNull { it.first }
         return if (bestScored != null && bestScored.first >= 60) bestScored.second else list[0].second
     }
@@ -136,30 +140,53 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return arr.toString()
     }
 
+    // Импорт с проверкой на дубликаты (fio + timestamp для архива и fio для личных шаблонов)
     fun importDatabaseFromJson(jsonStr: String): Int {
         val arr = JSONArray(jsonStr)
         val db = writableDatabase
         var count = 0
+
+        val existingKeys = HashSet<String>()
+        val cur = db.rawQuery("SELECT fio, timestamp, is_builtin FROM cards WHERE is_builtin IN (0, 2)", null)
+        while (cur.moveToNext()) {
+            val efio = cur.getString(0).trim().lowercase()
+            val ets = cur.getLong(1)
+            val eisb = cur.getInt(2)
+            existingKeys.add(if (eisb == 2) "tpl_$efio" else "card_${efio}_$ets")
+        }
+        cur.close()
+
         db.beginTransaction()
         try {
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val isB = obj.optInt("is_builtin", 0)
+                val obj = arr.optJSONObject(i) ?: continue
+                val isB = if (obj.optInt("is_builtin", 0) == 2) 2 else 0
                 val fio = if (isB == 2) obj.optString("fio").trim() else obj.optString("fio").trim().lowercase()
-                val jd = obj.optString("json_data")
+                val jd = obj.optString("json_data").trim()
+                val ts = obj.optLong("timestamp", System.currentTimeMillis())
+
                 if (fio.isNotEmpty() && jd.isNotEmpty()) {
-                    db.insert("cards", null, ContentValues().apply {
-                        put("fio", fio); put("birth_date", obj.optString("birth_date"))
-                        put("timestamp", obj.optLong("timestamp", System.currentTimeMillis()))
-                        put("score", obj.optInt("score", 80)); put("json_data", jd); put("is_builtin", if (isB == 2) 2 else 0)
-                    })
-                    count++
+                    val key = if (isB == 2) "tpl_${fio.lowercase()}" else "card_${fio}_$ts"
+                    if (!existingKeys.contains(key)) {
+                        existingKeys.add(key)
+                        db.insert("cards", null, ContentValues().apply {
+                            put("fio", fio)
+                            put("birth_date", obj.optString("birth_date"))
+                            put("timestamp", ts)
+                            put("score", obj.optInt("score", 80))
+                            put("json_data", jd)
+                            put("is_builtin", isB)
+                        })
+                        count++
+                    }
                 }
             }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
         return count
     }
+
+    fun getBuiltinTemplateCountOnly(): Int = builtInTemplates.size
 
     fun searchBuiltInTemplates(query: String): List<BestCardSample> {
         val q = query.trim().lowercase()
@@ -403,7 +430,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 "Боль возникла после подъема тяжести. Таблетки без эффекта.",
                 "Остеохондроз", "Удовлетворительное", position = "ВЫНУЖДЕННОЕ", positionDescription = "Щадящее из-за боли в спине",
                 localStatus = "Болезненность паравертебральных точек L4-S1, дефанс мышц спины. С-м Ласега + слева 45°."),
-            makeSample(26, "Межреберная невралгия (торакалгия)", "[G54.6] Синдром фантома конечности с болью",
+            // Пункт 1 ревью: исправлен ошибочный код G54.6 (фантомная боль) на корректный G58.0
+            makeSample(26, "Межреберная невралгия (торакалгия)", "[G58.0] Межреберная невропатия",
                 "Остеохондроз ГОП. Вертеброгенная торакалгия (межреберная невралгия).",
                 "На колющую боль в левой половине грудной клетки, усиливающуюся при вдохе и поворотах.",
                 "Боль после неловкого движения и переохлаждения. На ЭКГ без острой патологии.",

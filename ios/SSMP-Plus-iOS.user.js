@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.0.0
-// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив, шаблоны, ЭКГ-конструктор, СЛР-таймер, O2 в МПа, шкалы и протоколы.
+// @version      3.1.0
+// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив, шаблоны, ЭКГ-конструктор, СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-idle
@@ -20,27 +20,67 @@
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
 
-    // Глобальная проверка границы вкладки "ЗАКЛЮЧЕНИЕ" (для защиты от случайной перезаписи)
+    // Быстрое экранирование XSS
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (без рефлоу и без прогона всего дерева)
+    let cachedAnchor = null;
+    let anchorTime = 0;
+    function getConclusionAnchor() {
+        const now = (window.performance && performance.now) ? performance.now() : Date.now();
+        if (cachedAnchor && (now - anchorTime < 2500) && cachedAnchor.isConnected) {
+            return cachedAnchor;
+        }
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, h6, .MuiTypography-root'));
+        cachedAnchor = labels.find(e => {
+            if (!e.textContent || e.children.length > 2) return false;
+            const t = e.textContent.trim();
+            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда';
+        }) || null;
+        anchorTime = now;
+        return cachedAnchor;
+    }
+
     function isInConclusion(el) {
         if (!el) return false;
-        const anchor = Array.from(document.querySelectorAll('p, span, div, label')).find(e => {
-            if (!e.innerText || e.children.length > 2) return false;
-            const t = e.innerText.trim();
-            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда' || t === 'Дата и время начала транспортировки';
-        });
+        const anchor = getConclusionAnchor();
         if (!anchor) return false;
         return Boolean(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
     }
     window.b103IsInConclusion = isInConclusion;
 
     // ==========================================
-    // 1. БАЗА ДАННЫХ LOCALSTORAGE (СОВМЕСТИМАЯ С ANDROID JSON)
+    // 1. БАЗА ДАННЫХ LOCALSTORAGE С ВАЛИДАЦИЕЙ И МИГРАЦИЕЙ
     // ==========================================
     function loadDb() {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch (e) { return []; }
+        try {
+            let raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) {
+                raw = localStorage.getItem('ssmp_plus_ios_cards_v2') || localStorage.getItem('ssmp_plus_cards');
+            }
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            return [];
+        }
     }
+
     function saveDb(arr) {
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); } catch (e) { alert('Ошибка сохранения в память браузера'); }
+        try {
+            const valid = Array.isArray(arr) ? arr : [];
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(valid));
+        } catch (e) {
+            alert('Ошибка сохранения в память браузера');
+        }
     }
 
     function showToast(msg) {
@@ -171,13 +211,14 @@
         const bpAd = cleanBp(raw.arterialPressureAdaptive);
         const icd = raw.icd;
         const liverVal = (typeof raw.liver === 'boolean') ? (raw.liver ? "УВЕЛИЧЕНА" : "НЕ УВЕЛИЧЕНА") : (raw.liver?.type?.toUpperCase() || "НЕ УВЕЛИЧЕНА");
+        const genderVal = (p.gender === true) ? "МУЖЧИНА" : ((p.gender === false) ? "ЖЕНЩИНА" : "");
 
         const card = {
             fio, birthDate: bDate, age: raw.age ? String(raw.age) : "", ageUnit,
             address: p.placeOfRegistration || raw.address || "",
             apo: p.territorialMedicalFacility?.type || "",
             callReason: raw.reasonToCall?.type || "",
-            gender: p.gender === true ? "МУЖЧИНА" : "ЖЕНЩИНА",
+            gender: genderVal,
             complaints: raw.complaints || "", anamnesis: raw.anamnesis || "", pastDiseases: raw.pastIllnesses || "",
             allergy: raw.allergy ? "ДА" : "НЕТ",
             generalState: raw.generalState?.type || "", consciousness: raw.consciousness?.type || "",
@@ -226,7 +267,6 @@
 
         const db = loadDb();
         const sixHoursAgo = Date.now() - 6 * 3600 * 1000;
-        // Строгое совпадение по полному ФИО (защита от однофамильцев)
         const idx = db.findIndex(x => x.is_builtin === 0 && x.fio === entry.fio && x.timestamp > sixHoursAgo);
         if (idx >= 0) db[idx] = entry; else db.unshift(entry);
         saveDb(db);
@@ -234,7 +274,7 @@
     }
 
     // ==========================================
-    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП (63 ШАБЛОНА)
+    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП
     // ==========================================
     function tpl(id, title, mkb, diagnosis, complaints, anamnesis, opts = {}) {
         const d = Object.assign({
@@ -292,7 +332,7 @@
     ];
 
     // ==========================================
-    // 4. DOM-УТИЛИТЫ И ТОЧНЫЙ АВТОПИЛОТ (БЕЗ ПРЫЖКОВ И БЕЗ ЗАКЛЮЧЕНИЯ)
+    // 4. DOM-УТИЛИТЫ И АВТОПИЛОТ
     // ==========================================
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
@@ -300,22 +340,22 @@
     }
 
     function findInputByKw(keywords, exact = false) {
-        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
+                if (!el.innerText || el.offsetParent === null) return false;
                 const t = el.innerText.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
             if (target) {
                 const fc = target.closest('.MuiFormControl-root');
-                if (fc && !isInConclusion(fc)) {
+                if (fc) {
                     const inps = getRealInputs(fc);
                     if (inps.length > 0) return inps[0];
                 }
                 let p = target.parentElement;
-                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                for (let i = 0; i < 3 && p && p !== document.body; i++) {
                     const inps = getRealInputs(p);
                     if (inps.length === 1) return inps[0];
                     p = p.parentElement;
@@ -334,13 +374,34 @@
         if (g("жалобы")) c.complaints = g("жалобы");
         if (g("анамнез заболевания")) c.anamnesis = g("анамнез заболевания");
         if (g("локальный статус")) c.localStatus = g("локальный статус");
+
+        const qtyNodes = Array.from(document.querySelectorAll('*')).filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
+        if (qtyNodes.length > 0) {
+            const meds = [];
+            for (let q of qtyNodes) {
+                let card = q.parentElement;
+                while (card && card !== document.body) {
+                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+                    const qi = lines.findIndex(l => l.includes("Количество:"));
+                    if (qi > 0) {
+                        const nm = lines[0], qt = lines[qi].replace(/Количество:\s*/i, '').trim();
+                        const rt = (lines.find(l => l.includes("Путь введения:")) || "").replace(/Путь введения:\s*/i, '').trim();
+                        const rtStr = (rt && !rt.includes("не определен")) ? ` [${rt}]` : '';
+                        if (nm && !nm.includes("Лекарственные") && !nm.includes("ДОБАВИТЬ")) meds.push(`${nm} — ${qt}${rtStr}`);
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+            }
+            if (meds.length > 0) c._domMedications = Array.from(new Set(meds)).join(";\n• ");
+        }
     }
 
     // Точечная вставка с гарантированной защитой вкладки Заключение
     window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
         try {
             const kwL = String(fieldKeyword).toLowerCase();
-            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
             for (let l of labels) {
                 if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
                 const t = l.innerText.trim().toLowerCase();
@@ -450,7 +511,7 @@
             function findInputs(keywords, exact = false) {
                 const res = [];
                 const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
-                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
                 for (let kw of keywords) {
                     const kwL = kw.toLowerCase();
                     for (let l of labels) {
@@ -494,7 +555,7 @@
                 const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
                 if (vals.length === 0) return;
 
-                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
                 const ctrls = [];
                 for (let kw of keywords) {
                     const kwL = kw.toLowerCase();
@@ -591,7 +652,7 @@
             function clickButtonInRow(rowKeywords, buttonChoices) {
                 if (!buttonChoices) return;
                 const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices]).map(c => String(c).trim().toUpperCase()).filter(Boolean);
-                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span, div'));
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
                 for (let kw of rowKeywords) {
                     const kwL = kw.toLowerCase();
                     const targets = labels.filter(el => el.innerText && el.offsetParent !== null && el.children.length <= 3 && !isInConclusion(el) && el.innerText.trim().toLowerCase().includes(kwL) && el.innerText.trim().length < kwL.length + 35);
@@ -621,10 +682,13 @@
                 Array.from(document.querySelectorAll('*')).filter(e => e.offsetParent !== null && e.children.length === 0 && e.textContent.trim() === '/' && !isInConclusion(e)).forEach(sl => {
                     let pr = sl.parentElement;
                     for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
-                        const inps = getRealInputs(pr).filter(el => !isInConclusion(el));
+                        const inps = getRealInputs(pr);
                         if (inps.length === 2) {
                             const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
-                            if (isAd ? tx.includes("адаптированное") : (tx.includes("ад") && !tx.includes("адаптированное"))) {
+                            const isMatch = isAd
+                                ? (tx.includes("адаптированное") && (tx.includes("ад") || tx.includes("давлен")))
+                                : (!tx.includes("адаптированное") && (tx.includes("ад (мм") || tx.includes("артериальн")));
+                            if (isMatch) {
                                 setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); break;
                             }
                         }
@@ -726,9 +790,9 @@
     };
 
     // ==========================================
-    // 5. МОДАЛЬНЫЕ ОКНА И ИНТЕРФЕЙС ДЛЯ iOS SAFARI
+    // 5. МОДАЛЬНЫЕ ОКНА ДЛЯ iOS SAFARI
     // ==========================================
-    function openIosSheet(title, colorHex, renderContentFn) {
+    function openIosSheet(title, colorHex, renderContentFn, onClose) {
         document.getElementById('b103-ios-sheet-backdrop')?.remove();
         const backdrop = document.createElement('div');
         backdrop.id = 'b103-ios-sheet-backdrop';
@@ -740,7 +804,7 @@
         sheet.innerHTML = `
             <div style="width:44px;height:5px;background:#B0BEC5;border-radius:3px;margin:0 auto 10px auto;"></div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                <div style="font-size:18px;font-weight:700;color:${colorHex};">${title}</div>
+                <div style="font-size:18px;font-weight:700;color:${colorHex};">${escapeHtml(title)}</div>
                 <button id="b103-sheet-close" style="border:none;background:#ECEFF1;color:#37474F;width:32px;height:32px;border-radius:50%;font-size:16px;font-weight:bold;cursor:pointer;">✕</button>
             </div>
             <div id="b103-sheet-body" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
@@ -748,12 +812,19 @@
         backdrop.appendChild(sheet);
         document.body.appendChild(backdrop);
 
-        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
-        sheet.querySelector('#b103-sheet-close').onclick = () => backdrop.remove();
-        renderContentFn(sheet.querySelector('#b103-sheet-body'), () => backdrop.remove());
+        function doClose() {
+            if (typeof onClose === 'function') {
+                try { onClose(); } catch (e) {}
+            }
+            backdrop.remove();
+        }
+
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) doClose(); });
+        sheet.querySelector('#b103-sheet-close').onclick = doClose;
+        renderContentFn(sheet.querySelector('#b103-sheet-body'), doClose);
     }
 
-    // ОКОШКО АВТОЗАПОЛНЕНИЯ И ПОИСКА ШАБЛОНОВ/АРХИВА
+    // ОКОШКО АВТОЗАПОЛНЕНИЯ
     function openAutofillSheet() {
         openIosSheet('⚡ Автозаполнение и Помощник', '#0288D1', (body, close) => {
             body.innerHTML = `
@@ -785,7 +856,7 @@
                     all.forEach(item => {
                         const row = document.createElement('div');
                         row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#FFFDE7;border:1.5px solid #FFE082;color:#263238;font-size:13.5px;cursor:pointer;';
-                        row.innerHTML = `<b>${item.isCustom ? '📌' : '⭐'} ${item.title}</b><br><span style="color:#546E7A;font-size:12.5px;">📋 ${item.mkb}</span>`;
+                        row.innerHTML = `<b>${item.isCustom ? '📌' : '⭐'} ${escapeHtml(item.title)}</b><br><span style="color:#546E7A;font-size:12.5px;">📋 ${escapeHtml(item.mkb)}</span>`;
                         row.onclick = () => { close(); window.activeAutofillData = JSON.parse(item.jsonData); window.applyAutofill(window.activeAutofillData); };
                         listBox.appendChild(row);
                     });
@@ -799,7 +870,7 @@
                         let d = {}; try { d = JSON.parse(item.json_data); } catch (e) {}
                         const row = document.createElement('div');
                         row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#F0F8FF;border:1.5px solid #BBDEFB;color:#263238;font-size:13.5px;cursor:pointer;';
-                        row.innerHTML = `<b>👤 ${item.fio.toUpperCase()}</b> <span style="font-size:12px;color:#0277BD;">(${new Date(item.timestamp).toLocaleDateString()})</span><br><span style="color:#37474F;font-size:12.5px;">📋 ${d.diagnosis || d.callReason || 'Без диагноза'}</span>`;
+                        row.innerHTML = `<b>👤 ${escapeHtml(item.fio.toUpperCase())}</b> <span style="font-size:12px;color:#0277BD;">(${new Date(item.timestamp).toLocaleDateString()})</span><br><span style="color:#37474F;font-size:12.5px;">📋 ${escapeHtml(d.diagnosis || d.callReason || 'Без диагноза')}</span>`;
                         row.onclick = () => { close(); window.activeAutofillData = d; window.applyAutofill(d); };
                         listBox.appendChild(row);
                     });
@@ -813,7 +884,7 @@
         });
     }
 
-    // ПОДМЕНЮ ПОМОЩНИКА СМП НА iOS
+    // ПОДМЕНЮ ПОМОЩНИКА СМП
     function openHelperMenuSheet() {
         openIosSheet('🧰 Помощник СМП (iOS)', '#0277BD', (body) => {
             const tools = [
@@ -865,12 +936,14 @@
         });
     }
 
-    // Состояние СЛР на iOS (не сбрасывается при закрытии шторки)
-    window.b103CprState = window.b103CprState || { isRunning: false, startEpoch: 0, accumulatedSec: 0, adr: 0, shock: 0, log: [] };
+    // СЛР на iOS с монотонными часами performance.now()
+    window.b103CprState = window.b103CprState || { isRunning: false, startPerf: 0, accumulatedSec: 0, adr: 0, shock: 0, log: [] };
 
     function openCprTimerIos() {
+        let timerInt = null;
+        const st = window.b103CprState;
+
         openIosSheet('⏱️ Таймер и логгер СЛР (iOS)', '#D32F2F', (body, close) => {
-            const st = window.b103CprState;
             body.innerHTML = `
                 <div id="cpr-banner" style="padding:16px;border-radius:16px;background:#C62828;color:#fff;font-weight:700;font-size:18px;text-align:center;margin-bottom:12px;"></div>
                 <div style="display:flex;gap:8px;margin-bottom:10px;">
@@ -892,7 +965,9 @@
             const logBox = body.querySelector('#cpr-log-box');
 
             function getSec() {
-                return st.isRunning ? (st.accumulatedSec + Math.floor((Date.now() - st.startEpoch)/1000)) : st.accumulatedSec;
+                if (!st.isRunning) return st.accumulatedSec;
+                const now = (window.performance && performance.now) ? performance.now() : Date.now();
+                return st.accumulatedSec + Math.floor((now - st.startPerf) / 1000);
             }
 
             function update() {
@@ -921,20 +996,22 @@
             }
 
             btnStart.onclick = () => {
+                const now = (window.performance && performance.now) ? performance.now() : Date.now();
                 if (!st.isRunning) {
                     st.isRunning = true;
-                    st.startEpoch = Date.now();
+                    st.startPerf = now;
                     if (getSec() === 0 && !st.log.length) addLog("Начата расширенная СЛР (НМС, ИВЛ, ЭКГ, в/в доступ)");
                 } else {
-                    st.accumulatedSec += Math.floor((Date.now() - st.startEpoch)/1000);
+                    st.accumulatedSec += Math.floor((now - st.startPerf) / 1000);
                     st.isRunning = false;
                 }
                 update();
             };
 
             btnRosc.onclick = () => {
+                const now = (window.performance && performance.now) ? performance.now() : Date.now();
                 if (st.isRunning) {
-                    st.accumulatedSec += Math.floor((Date.now() - st.startEpoch)/1000);
+                    st.accumulatedSec += Math.floor((now - st.startPerf) / 1000);
                     st.isRunning = false;
                 }
                 addLog(`Завершение СЛР. Итого: Адреналин — ${st.adr} мг, Разрядов — ${st.shock}.`);
@@ -943,7 +1020,7 @@
 
             btnReset.onclick = () => {
                 if (confirm("Сбросить протокол СЛР для нового вызова?")) {
-                    st.isRunning = false; st.startEpoch = 0; st.accumulatedSec = 0; st.adr = 0; st.shock = 0; st.log = [];
+                    st.isRunning = false; st.startPerf = 0; st.accumulatedSec = 0; st.adr = 0; st.shock = 0; st.log = [];
                     update();
                 }
             };
@@ -957,9 +1034,11 @@
                 close();
             };
 
-            const timerInt = setInterval(update, 1000);
+            timerInt = setInterval(update, 1000);
             update();
-            body.closest('#b103-ios-sheet-backdrop').addEventListener('DOMNodeRemoved', () => clearInterval(timerInt));
+        }, () => {
+            // Надежная очистка интервала без устаревшего DOMNodeRemoved
+            if (timerInt) clearInterval(timerInt);
         });
     }
 
@@ -974,7 +1053,7 @@
             list.forEach(item => {
                 const d = document.createElement('div');
                 d.style.cssText = 'padding:14px;border-radius:12px;background:#EFEBE9;border:1px solid #D7CCC8;margin-bottom:8px;cursor:pointer;font-size:13.5px;color:#263238;';
-                d.innerHTML = `<b>${item.t}</b><br><span style="font-size:12.5px;color:#4E342E;">${item.v}</span>`;
+                d.innerHTML = `<b>${escapeHtml(item.t)}</b><br><span style="font-size:12.5px;color:#4E342E;">${escapeHtml(item.v)}</span>`;
                 d.onclick = () => { window.insertIntoCardField(item.k, item.v, true); copyText(item.v); close(); };
                 body.appendChild(d);
             });
@@ -1069,10 +1148,10 @@
                 <i>8–10 б — норма; 6–7 б — легкая асфиксия; 4–5 б — средняя; 0–3 б — тяжелая.</i>
 
                 <b>🤲 ПОСОБИЕ ПО ЦОВЬЯНОВУ I (чисто ягодичное):</b>
-                Удерживать ножки плода вытянутыми вдоль туловища (большие пальцы прижимают ножки к животу, 4 пальца — на крестце), чтобы ножки прижимали ручки к груди и сохраняли сгибание головки.
+                Удерживать ножки плода вытянутыми вдоль туловища, прижимая ручки к груди и сохраняя сгибание головки.
 
                 <b>🦶 ПОСОБИЕ ПО ЦОВЬЯНОВУ II (ножное предлежание):</b>
-                Стерильной салфеткой ладонью оказывать противодействие рождающимся стопам во время потуг, пока плод не «присядет на корточки» и не произойдет полное раскрытие шейки матки.
+                Стерильной салфеткой оказывать противодействие ножкам во время потуг, пока плод не «присядет на корточки» и не раскроется шейка матки.
             </div>`;
         });
     }
@@ -1114,10 +1193,12 @@
             body.querySelector('#m-exp').onclick = () => {
                 const data = JSON.stringify(loadDb());
                 const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
+                a.href = url;
                 a.download = `ssmp_archive_${new Date().toISOString().slice(0,10)}.json`;
                 a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
                 showToast('📤 Архив экспортирован!');
             };
             const fInp = body.querySelector('#ios-file-inp');
@@ -1141,11 +1222,17 @@
     }
 
     // ==========================================
-    // 6. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК (☰, 💾, ⚡)
+    // 6. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК (БЕЗ ТЯЖЕЛЫХ REFLOW)
     // ==========================================
     function isInsideCard() {
-        const t = document.body ? document.body.innerText : '';
-        return (t.includes('О ВЫЗОВЕ') && t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ');
+        const tabs = Array.from(document.querySelectorAll('[role="tab"], button'));
+        for (let i = 0; i < tabs.length; i++) {
+            const t = (tabs[i].textContent || '').toUpperCase();
+            if (t.includes('О ВЫЗОВЕ') || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function ensureToolbar() {
@@ -1166,10 +1253,10 @@
         document.getElementById('btn-fill-db').onclick = openAutofillSheet;
     }
 
+    // Легкая проверка видимости: НИКАКОГО scrapeCache() на таймере!
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
-        if (inCard) scrapeCache();
         const m = document.getElementById('btn-main-menu');
         const s = document.getElementById('btn-save-db');
         const f = document.getElementById('btn-fill-db');
@@ -1182,5 +1269,5 @@
 
     ensureToolbar();
     updateVisibility();
-    setInterval(updateVisibility, 350);
+    setInterval(updateVisibility, 400);
 })();

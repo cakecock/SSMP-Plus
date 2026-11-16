@@ -4,7 +4,7 @@
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
 
-    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (без рефлоу и без прогона всего дерева)
+    // Быстрый кэшированный поиск границы вкладки "ЗАКЛЮЧЕНИЕ" (без рефлоу)
     let cachedAnchor = null;
     let anchorTime = 0;
     function getConclusionAnchor() {
@@ -106,7 +106,7 @@
                     if (inps.length > 0) return inps[0];
                 }
                 let p = target.parentElement;
-                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                for (let i = 0; i < 3 && p && p !== document.body; i++) {
                     const inps = getRealInputs(p);
                     if (inps.length === 1) return inps[0];
                     p = p.parentElement;
@@ -116,18 +116,25 @@
         return null;
     }
 
-    // Сбор кэша вызывается ТОЛЬКО по клику на кнопку "💾 Сохранить"
+    // Сбор кэша вызывается ТОЛЬКО по клику на кнопку "💾 Сохранить" (одиночный вызов без дублирования!)
     function scrapeCache() {
         const c = window.b103ScreenCache;
-        const g = (k) => findInputByKw([k])?.value?.trim();
-        if (g("экг до оказания")) c.electrocardiogramBefore = g("экг до оказания");
-        if (g("экг после оказания")) c.electrocardiogramAfter = g("экг после оказания");
-        if (g("предварительный диагноз")) c.diagnosis = g("предварительный диагноз");
-        if (g("жалобы")) c.complaints = g("жалобы");
-        if (g("анамнез заболевания")) c.anamnesis = g("анамнез заболевания");
-        if (g("локальный статус")) c.localStatus = g("локальный статус");
+        const setValIfFound = (kw, fieldName) => {
+            const v = findInputByKw([kw])?.value?.trim();
+            if (v) c[fieldName] = v;
+        };
 
-        const qtyNodes = Array.from(document.querySelectorAll('*')).filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
+        setValIfFound("экг до оказания", "electrocardiogramBefore");
+        setValIfFound("экг после оказания", "electrocardiogramAfter");
+        setValIfFound("предварительный диагноз", "diagnosis");
+        setValIfFound("жалобы", "complaints");
+        setValIfFound("анамнез заболевания", "anamnesis");
+        setValIfFound("локальный статус", "localStatus");
+
+        // Узкий поиск только по текстовым блокам (без querySelectorAll('*'))
+        const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+            .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
+
         if (qtyNodes.length > 0) {
             const meds = [];
             for (let q of qtyNodes) {
@@ -149,17 +156,9 @@
         }
     }
 
-    // Быстрая проверка без reflow (никакого document.body.innerText!)
+    // Мгновенная проверка открытия карты через структуру табов Material-UI (без textContent и без reflow!)
     function isInsideCard() {
-        const tabs = document.querySelectorAll('.MuiTab-root, [role="tab"], .MuiTabs-root button');
-        if (tabs.length === 0) return false;
-        for (let i = 0; i < tabs.length; i++) {
-            const t = (tabs[i].textContent || '').toUpperCase();
-            if (t.includes('О ВЫЗОВЕ') || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) {
-                return true;
-            }
-        }
-        return false;
+        return Boolean(document.querySelector('.MuiTabs-root, [role="tablist"]'));
     }
 
     function ensureToolbar() {
@@ -190,7 +189,6 @@
         };
     }
 
-    // Легкая проверка видимости каждые 400 мс (без scrapeCache и без reflow)
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
@@ -224,7 +222,8 @@ window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
 
     const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
-    const savedScrollContainers = Array.from(document.querySelectorAll('main, [class*="content"], [class*="scroll"], div'))
+    // Сканируем только реальные панели скролла, исключая тысячи лишних div
+    const savedScrollContainers = Array.from(document.querySelectorAll('main, .MuiDialog-paper, [role="tabpanel"], .MuiContainer-root'))
         .filter(el => el.scrollTop > 0)
         .map(el => ({ el, top: el.scrollTop }));
 
@@ -267,9 +266,10 @@ window.applyAutofill = async function(jsonStr) {
             if (popovers.length === 0 && expandedBtns.length === 0) break;
 
             const escInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
-            if (document.activeElement) {
+            if (document.activeElement && document.activeElement !== document.body) {
                 document.activeElement.dispatchEvent(new KeyboardEvent('keydown', escInit));
                 document.activeElement.dispatchEvent(new KeyboardEvent('keyup', escInit));
+                if (document.activeElement.blur) document.activeElement.blur();
             }
 
             for (let pop of popovers) {
@@ -293,15 +293,8 @@ window.applyAutofill = async function(jsonStr) {
                 }
             }
 
-            if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) {
-                document.activeElement.blur();
-            }
-            document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-            document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
-            document.body.click();
-
             restoreScreenPosition();
-            await new Promise(r => setTimeout(r, 55));
+            await new Promise(r => setTimeout(r, 45));
         }
     }
 
@@ -459,7 +452,7 @@ window.applyAutofill = async function(jsonStr) {
                 btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                 btn.click();
                 restoreScreenPosition();
-                await new Promise(r => setTimeout(r, 105));
+                await new Promise(r => setTimeout(r, 95));
 
                 const activePops = getActivePopovers();
                 const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
@@ -477,7 +470,7 @@ window.applyAutofill = async function(jsonStr) {
                         if (match) {
                             match.click();
                             restoreScreenPosition();
-                            await new Promise(r => setTimeout(r, 85));
+                            await new Promise(r => setTimeout(r, 80));
                             if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                         } else {
                             await closeAnyOpenMenu();
@@ -497,10 +490,9 @@ window.applyAutofill = async function(jsonStr) {
                             if (shouldBe !== isSel) {
                                 o.click();
                                 restoreScreenPosition();
-                                await new Promise(r => setTimeout(r, 35));
+                                await new Promise(r => setTimeout(r, 30));
                             }
                         }
-                        await new Promise(r => setTimeout(r, 35));
                         await closeAnyOpenMenu();
                     }
                 } else {
@@ -530,8 +522,9 @@ window.applyAutofill = async function(jsonStr) {
             setVal(inp, searchCode);
             if (popupBtn) popupBtn.click();
             restoreScreenPosition();
-            await new Promise(r => setTimeout(r, 210));
+            await new Promise(r => setTimeout(r, 180));
 
+            // Ищем поппер строго связанный с данным полем (или последний открытый)
             const popper = document.querySelector('.MuiAutocomplete-popper, .MuiPopover-root');
             if (popper) {
                 const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'));
@@ -543,7 +536,7 @@ window.applyAutofill = async function(jsonStr) {
                 if (targetOpt) {
                     targetOpt.click();
                     restoreScreenPosition();
-                    await new Promise(r => setTimeout(r, 75));
+                    await new Promise(r => setTimeout(r, 70));
                 }
             }
             if (inp.blur) inp.blur();
@@ -587,11 +580,14 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Пункт 2 ревью: точный селектор АД (строгие маркеры "ад (мм" и "артериальн")
+        // Точный поиск строк давления строго по тексту "АД (мм" без сканирования '*'
         function fillBP(isAd, raw) {
             const str = normBp(raw); if (!str.includes('/')) return;
             const p = str.split('/');
-            Array.from(document.querySelectorAll('*')).filter(e => e.offsetParent !== null && e.children.length === 0 && e.textContent.trim() === '/' && !isInConclusion(e)).forEach(sl => {
+            const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+                .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+
+            for (let sl of slashNodes) {
                 let pr = sl.parentElement;
                 for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
                     const inps = getRealInputsAutofill(pr);
@@ -601,15 +597,14 @@ window.applyAutofill = async function(jsonStr) {
                             ? (tx.includes("адаптированное") && (tx.includes("ад") || tx.includes("давлен")))
                             : (!tx.includes("адаптированное") && (tx.includes("ад (мм") || tx.includes("артериальн")));
                         if (isMatch) {
-                            setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); break;
+                            setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); return;
                         }
                     }
                     pr = pr.parentElement;
                 }
-            });
+            }
         }
 
-        // 1. ПАСПОРТНЫЕ ДАННЫЕ, ПОЛ, ДАТА РОЖДЕНИЯ, ВОЗРАСТ, АПО
         if (data.fio) setAll(["фио"], data.fio, true);
 
         if (data.gender) {
@@ -650,7 +645,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.address) setAll(["место жительства (пребывания)"], data.address);
         if (data.apo) await selectDropdown(["территориальная апо", "апо по месту жительства"], data.apo, false);
 
-        // 2. ЖАЛОБЫ, АНАМНЕЗ, ПЕРЕНЕСЕННЫЕ ЗАБОЛЕВАНИЯ, ПРЕДВАРИТЕЛЬНЫЙ ДИАГНОЗ, КОД ПО МКБ
         setAll(["жалобы"], data.complaints);
         setAll(["анамнез заболевания"], data.anamnesis);
         setAll(["перенесенные заболевания"], data.pastDiseases);
@@ -658,7 +652,6 @@ window.applyAutofill = async function(jsonStr) {
         setAll(["локальный статус"], data.localStatus);
         if (data.mkb) await fillMkbAutocomplete(data.mkb);
 
-        // 3. АД, ПУЛЬС, ЧДД, ТЕМПЕРАТУРА
         if (data.bpAdapted) fillBP(true, data.bpAdapted);
         if (data.bp) fillBP(false, data.bp);
         if (data.pulse) setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse);
@@ -667,7 +660,6 @@ window.applyAutofill = async function(jsonStr) {
         if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
         if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], String(data.glucose).replace(',', '.'));
 
-        // 4. ЭКГ И НЕВРОЛОГИЯ
         setAll(["экг до оказания"], data.ecgBefore);
         setAll(["экг после оказания"], data.ecgAfter);
         setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
@@ -678,7 +670,6 @@ window.applyAutofill = async function(jsonStr) {
         setAll(["язык"], data.tongue || "Чистые");
         setAll(["слизистые"], data.mucous || "Бледно-розовые");
 
-        // 5. КНОПКИ СОСТОЯНИЯ И НЕВРОЛОГИИ + ДОП. КОММЕНТАРИИ
         clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
         if (data.positionDescription) setAll(["комментарий (вынужденное)"], data.positionDescription);
 
@@ -692,7 +683,6 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["мочеиспускание"], data.urination || "НЕ НАРУШЕНО");
         clickButtonInRow(["стул"], data.stool || "НЕ НАРУШЕН");
 
-        // 6. КНОПКИ "ДА / НЕТ"
         clickButtonInRow(["аллергия"], data.allergy || "НЕТ");
         clickButtonInRow(["реакция на свет"], data.lightReaction || "ДА");
         clickButtonInRow(["высыпания"], data.rash || "НЕТ");
@@ -707,7 +697,6 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["перистальтика"], data.peristalsis || "ДА");
         clickButtonInRow(["получено устное согласие на простое медицинское вмешательство", "получено устное согласие"], "ДА");
 
-        // 7. ВЫПАДАЮЩИЕ СПИСКИ MATERIAL-UI
         await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
         await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
 
@@ -720,7 +709,7 @@ window.applyAutofill = async function(jsonStr) {
         await closeAnyOpenMenu();
         restoreScreenPosition();
     } catch (e) { console.error(e); } finally {
-        await new Promise(r => setTimeout(r, 70));
+        await new Promise(r => setTimeout(r, 60));
         await closeAnyOpenMenu();
         if (activeTabBefore) {
             const curActive = Array.from(document.querySelectorAll('[role="tab"], button'))
@@ -728,16 +717,16 @@ window.applyAutofill = async function(jsonStr) {
             if (curActive !== activeTabBefore) activeTabBefore.click();
         }
         restoreScreenPosition();
-        setTimeout(restoreScreenPosition, 50);
+        setTimeout(restoreScreenPosition, 40);
 
         document.getElementById('b103-hide-menus')?.remove();
         if (fillBtn) fillBtn.innerText = "⚡";
-        setTimeout(() => { window.b103IsApplying = false; }, 200);
+        setTimeout(() => { window.b103IsApplying = false; }, 150);
     }
 };
 
 // ==========================================
-// БЫСТРАЯ ТОЧЕЧНАЯ ВСТАВКА В ПОЛЯ КАРТЫ (С ЗАЩИТОЙ ВКЛАДКИ ЗАКЛЮЧЕНИЕ)
+// БЫСТРАЯ ТОЧЕЧНАЯ ВСТАВКА В ПОЛЯ КАРТЫ (С ЗАЩИТОЙ ЗАКЛЮЧЕНИЯ)
 // ==========================================
 window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
     try {

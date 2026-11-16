@@ -658,9 +658,9 @@ class MainActivity : AppCompatActivity() {
         if (fio.isEmpty()) null else {
             val regDateOnly = raw.optString("dateOfRegistration").substringBefore("T")
             val rawBDate = p.optString("birthDate").replace("null", "")
-            val ageUnit = raw.optJSONObject("ageType")?.optString("type") ?: ""
+            val ageUnit = raw.optJSONObject("ageType")?.optString("type") ?: raw.optString("ageType").replace("null", "")
             var bDate = ""
-            if (rawBDate.includes("-")) {
+            if (rawBDate.contains("-")) {
                 val bDateOnly = rawBDate.substringBefore("T")
                 if (bDateOnly != regDateOnly || ageUnit in listOf("Дней", "Часов")) {
                     val sp = bDateOnly.split("-"); if (sp.size == 3) bDate = "${sp[2]}.${sp[1]}.${sp[0]} / 00:00"
@@ -711,16 +711,48 @@ class MainActivity : AppCompatActivity() {
                 else -> ""
             }
 
+            val citizenship = raw.optString("citizenship").ifEmpty {
+                p.optJSONObject("countryOfRegistration")?.optString("type")
+            }?.replace("null", "")?.trim() ?: ""
+
+            val settlement = raw.optString("settlement").ifEmpty {
+                p.optJSONObject("settlement")?.optString("type") ?: raw.optJSONObject("settlement")?.optString("type")
+            }?.replace("null", "")?.trim() ?: ""
+
+            val street = raw.optString("street").ifEmpty {
+                p.optJSONObject("street")?.optString("type") ?: raw.optJSONObject("street")?.optString("type")
+            }?.replace("null", "")?.trim() ?: ""
+
+            val building = raw.optString("building").ifEmpty {
+                p.optString("building")
+            }.replace("null", "").trim()
+
+            val flat = raw.optString("flat").ifEmpty {
+                p.optString("flat")
+            }.replace("null", "").trim()
+
+            val clarificationAddress = raw.optString("clarificationAddress").ifEmpty {
+                p.optString("clarificationAddress")
+            }.replace("null", "").trim()
+
+            val address = raw.optString("address").ifEmpty {
+                p.optString("placeOfRegistration")
+            }.replace("null", "").trim()
+
+            val apo = raw.optString("apo").ifEmpty {
+                p.optJSONObject("territorialMedicalFacility")?.optString("type")
+            }?.replace("null", "")?.trim() ?: ""
+
             val card = JSONObject().apply {
                 put("fio", fio); put("birthDate", bDate); put("age", raw.optString("age").replace("null", "")); put("ageUnit", ageUnit)
-                put("citizenship", p.optJSONObject("countryOfRegistration")?.optString("type")?.replace("null", "") ?: "")
-                put("settlement", p.optJSONObject("settlement")?.optString("type")?.ifEmpty { raw.optString("settlement") }?.replace("null", "")?.trim() ?: "")
-                put("street", p.optJSONObject("street")?.optString("type")?.ifEmpty { raw.optString("street") }?.replace("null", "")?.trim() ?: "")
-                put("building", p.optString("building").ifEmpty { raw.optString("building") }.replace("null", "").trim())
-                put("flat", p.optString("flat").ifEmpty { raw.optString("flat") }.replace("null", "").trim())
-                put("clarificationAddress", p.optString("clarificationAddress").replace("null", "").trim())
-                put("address", p.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", "").trim())
-                put("apo", p.optJSONObject("territorialMedicalFacility")?.optString("type") ?: "")
+                put("citizenship", citizenship)
+                put("settlement", settlement)
+                put("street", street)
+                put("building", building)
+                put("flat", flat)
+                put("clarificationAddress", clarificationAddress)
+                put("address", address)
+                put("apo", apo)
                 put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
                 put("gender", if (p.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")
                 put("complaints", complaints); put("anamnesis", anamnesis); put("pastDiseases", raw.optString("pastIllnesses").replace("null", ""))

@@ -349,9 +349,14 @@
 
         const card = {
             fio, birthDate: bDate, age: cleanS(raw.age), ageUnit,
-            citizenship: cleanS(p.countryOfRegistration?.type),
-            address: cleanS(p.placeOfRegistration || raw.address),
-            apo: cleanS(p.territorialMedicalFacility?.type),
+            citizenship: cleanS(raw.citizenship || p.countryOfRegistration?.type),
+            settlement: cleanS(raw.settlement?.type || raw.settlement || p.settlement?.type),
+            street: cleanS(raw.street?.type || raw.street || p.street?.type),
+            building: cleanS(raw.building || p.building),
+            flat: cleanS(raw.flat || p.flat),
+            clarificationAddress: cleanS(raw.clarificationAddress || p.clarificationAddress),
+            address: cleanS(raw.address || p.placeOfRegistration),
+            apo: cleanS(raw.apo || p.territorialMedicalFacility?.type),
             callReason: cleanS(raw.reasonToCall?.type),
             gender: p.gender === true ? 'МУЖЧИНА' : (p.gender === false ? 'ЖЕНЩИНА' : ''),
             complaints, anamnesis, pastDiseases: cleanS(raw.pastIllnesses),
@@ -586,6 +591,13 @@
             const v = findInputByKw(Array.isArray(kw) ? kw : [kw], exact)?.value?.trim();
             if (v && !v.startsWith('__')) c[fieldName] = v;
         };
+        setValIfFound('гражданство', 'citizenship', true);
+        setValIfFound('нас. пункт', 'settlement');
+        setValIfFound('улица', 'street');
+        setValIfFound('дом', 'building', true);
+        setValIfFound('квартира', 'flat', true);
+        setValIfFound('уточнение места жительства', 'clarificationAddress');
+        setValIfFound('место жительства (пребывания)', 'address');
         setValIfFound('экг до оказания', 'electrocardiogramBefore');
         setValIfFound('экг после оказания', 'electrocardiogramAfter');
         setValIfFound('предварительный диагноз', 'diagnosis');
@@ -653,6 +665,7 @@
         const gs = getSelectText('общее состояние'); if (gs) c.generalState = { type: gs };
         const cs = getSelectText('сознание'); if (cs) c.consciousness = { type: cs };
         const au = getSelectText('возраст (ед.)'); if (au) c.ageType = { type: au };
+        const ap = getSelectText('территориальная апо') || getSelectText('апо по месту жительства'); if (ap) c.apo = ap;
         const toArr = (kw, key) => {
             const v = getSelectText(kw);
             if (v) c[key] = v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type);
@@ -832,19 +845,24 @@
             const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
 
             function setVal(inp, val, allowEmpty = false) {
-                if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
-                const str = String(val).trim();
-                if (!allowEmpty && !str) return;
-                if (inp.value.trim() === str) return;
-                try {
-                    const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                    if (setter) setter.call(inp, str); else inp.value = str;
-                    if (inp._valueTracker) inp._valueTracker.setValue('__prev__');
-                    inp.dispatchEvent(new Event('input', { bubbles: true }));
-                    inp.dispatchEvent(new Event('change', { bubbles: true }));
-                } catch (e) { inp.value = str; }
-            }
+            if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
+            const str = String(val).trim();
+            const prev = inp.value || '';
+            if (!allowEmpty && !str) return;
+            if (prev.trim() === str) return;
+            try {
+                const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(inp, str); else inp.value = str;
+                if (inp._valueTracker) inp._valueTracker.setValue(prev);
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                const rk = Object.keys(inp).find(k => k.startsWith('__reactEventHandlers$') || k.startsWith('__reactProps$'));
+                if (rk && inp[rk] && typeof inp[rk].onChange === 'function') {
+                    try { inp[rk].onChange({ target: inp, currentTarget: inp, type: 'change' }); } catch (e) {}
+                }
+            } catch (e) { inp.value = str; }
+        }
             
             function findInputs(keywords, exact = false) {
                 const res = [];
@@ -1075,24 +1093,32 @@
                 if (!inps.length) return;
                 const inp = inps[0];
                 const cur = (inp.value || '').trim();
+                const fullTargetL = targetVal.trim().toLowerCase();
+                const shortSearch = targetVal.split('(')[0].trim();
+                const shortTargetL = shortSearch.toLowerCase();
+
                 if (skipIfFilled && cur) return;
-                if (cur.toLowerCase() === targetVal.trim().toLowerCase()) return;
+                if (cur && (cur.toLowerCase() === fullTargetL || cur.toLowerCase().startsWith(shortTargetL))) return;
 
                 await closeAnyOpenMenu();
                 const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+                const clearBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-clearIndicator') : null;
                 const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
                 try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+                if (cur && clearBtn) {
+                    clearBtn.click();
+                    await new Promise(r => setTimeout(r, 50));
+                }
                 restoreScreenPosition();
-                setVal(inp, targetVal);
-                await new Promise(r => setTimeout(r, 120));
+                setVal(inp, shortSearch, true);
+                await new Promise(r => setTimeout(r, 140));
                 if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
                     popupBtn.click();
                     restoreScreenPosition();
                 }
 
-                const valL = targetVal.trim().toLowerCase();
                 let targetOpt = null;
-                for (let w = 0; w < 10; w++) {
+                for (let w = 0; w < 12; w++) {
                     const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
                     const popper = poppers[poppers.length - 1];
                     if (popper) {
@@ -1102,8 +1128,9 @@
                                 return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
                             });
                         if (opts.length > 0) {
-                            targetOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === valL)
-                                || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(valL))
+                            targetOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === fullTargetL)
+                                || opts.find(o => (o.innerText || '').trim().toLowerCase().startsWith(shortTargetL))
+                                || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(shortTargetL))
                                 || opts[0];
                             if (targetOpt) break;
                         }
@@ -1212,9 +1239,21 @@
             const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || (initAgeM ? initAgeM[2] : '') || unitGuess || 'Лет';
             await selectDropdown(['возраст (ед.)'], unitVal, false);
             if (finAge) setAll(['возраст'], finAge, true);
-            const ctzVal = data.citizenship || window.lastLoadedApiCard?.patient?.countryOfRegistration?.type || 'Беларусь';
-            await fillSimpleAutocomplete(['гражданство'], ctzVal, !data.citizenship);
-            if (data.address) setAll(['место жительства (пребывания)'], data.address);
+            const savedSettl = data.settlement || findInputs(['нас. пункт'])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.settlement?.type || window.lastLoadedApiCard?.settlement || '';
+            const savedStreet = data.street || findInputs(['улица'])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.street?.type || window.lastLoadedApiCard?.street || '';
+            const savedBld = data.building || findInputs(['дом'], true)[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.building || window.lastLoadedApiCard?.building || '';
+            const savedFlat = data.flat || findInputs(['квартира'], true)[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.flat || window.lastLoadedApiCard?.flat || '';
+            const savedClar = data.clarificationAddress || findInputs(['уточнение места жительства'])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.clarificationAddress || '';
+            const savedAddr = data.address || findInputs(['место жительства (пребывания)'])[0]?.value?.trim() || window.lastLoadedApiCard?.patient?.placeOfRegistration || window.lastLoadedApiCard?.address || '';
+
+            const ctzVal = data.citizenship || window.lastLoadedApiCard?.patient?.countryOfRegistration?.type || '';
+            if (ctzVal) await fillSimpleAutocomplete(['гражданство'], ctzVal, !data.citizenship);
+            if (savedSettl) await fillSimpleAutocomplete(['нас. пункт'], savedSettl, false);
+            if (savedStreet) await fillSimpleAutocomplete(['улица'], savedStreet, false);
+            if (savedBld) setAll(['дом'], savedBld, true);
+            if (savedFlat) setAll(['квартира'], savedFlat, true);
+            if (savedClar) setAll(['уточнение места жительства'], savedClar);
+            if (savedAddr) setAll(['место жительства (пребывания)'], savedAddr);
             if (data.apo) await selectDropdown(['территориальная апо', 'апо по месту жительства'], data.apo, false);
 
             setAll(['жалобы'], data.complaints);

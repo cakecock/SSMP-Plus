@@ -1,1 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
 
+    <!-- 1. Глубокий изумрудно-бирюзовый градиентный фон -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#009688" />
+                <item android:offset="0.5" android:color="#00796B" />
+                <item android:offset="1.0" android:color="#004D40" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 2. Деликатное внутреннее свечение по центру для глубины -->
+    <path
+        android:fillColor="#14FFFFFF"
+        android:pathData="M54,54m-34,0a34,34 0,1 1,68 0a34,34 0,1 1,-68 0" />
+
+    <!-- 3. Мягкая тень под медицинским крестом (придает легкий 3D-объем) -->
+    <path
+        android:fillColor="#30000000"
+        android:pathData="M47,29 L61,29 A4,4 0 0,1 65,33 L65,45 L77,45 A4,4 0 0,1 81,49 L81,63 A4,4 0 0,1 77,67 L65,67 L65,79 A4,4 0 0,1 61,83 L47,83 A4,4 0 0,1 43,79 L43,67 L31,67 A4,4 0 0,1 27,63 L27,49 A4,4 0 0,1 31,45 L43,45 L43,33 A4,4 0 0,1 47,29 Z" />
+
+    <!-- 4. Чистый минималистичный белоснежный крест со скругленными углами -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M47,27 L61,27 A4,4 0 0,1 65,31 L65,43 L77,43 A4,4 0 0,1 81,47 L81,61 A4,4 0 0,1 77,65 L65,65 L65,77 A4,4 0 0,1 61,81 L47,81 A4,4 0 0,1 43,77 L43,65 L31,65 A4,4 0 0,1 27,61 L27,47 A4,4 0 0,1 31,43 L43,43 L43,31 A4,4 0 0,1 47,27 Z" />
+
+</vector>

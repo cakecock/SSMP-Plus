@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.2.0
-// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, оффлайн-архив с валидацией, 63 шаблона, ЭКГ-конструктор, СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
+// @version      3.3.0
+// @description  Мобильный ассистент СМП (г. Брест): автозаполнение без дергания экрана, надежный архив, шаблоны, ЭКГ-конструктор, пороговый СЛР-таймер на performance.now(), O2 в МПа, шкалы и протоколы.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-idle
@@ -21,7 +21,6 @@
     window.b103IsApplying = false;
     window.b103ActiveSheetClose = null;
 
-    // Быстрое экранирование XSS
     function escapeHtml(str) {
         if (!str) return '';
         return String(str)
@@ -196,8 +195,10 @@
             }
         }
         const jArr = (k) => Array.isArray(raw[k]) ? raw[k].map(x => (x && (x.type || x.name || x.title)) || '').filter(Boolean).join(", ") : "";
-        let meds = "";
-        if (Array.isArray(raw.medications)) {
+        
+        // Исправление потери данных: сначала проверяем DOM-медикаменты, затем массив API
+        let meds = raw._domMedications || "";
+        if (!meds && Array.isArray(raw.medications)) {
             meds = raw.medications.map(m => {
                 const nm = m?.medication?.name || m?.name || "";
                 const cnt = m?.number || m?.count || "";
@@ -275,7 +276,7 @@
     }
 
     // ==========================================
-    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП (63 ШАБЛОНА)
+    // 3. ВСТРОЕННЫЕ КЛИНИЧЕСКИЕ ШАБЛОНЫ СМП
     // ==========================================
     function tpl(id, title, mkb, diagnosis, complaints, anamnesis, opts = {}) {
         const d = Object.assign({
@@ -366,17 +367,24 @@
         return null;
     }
 
+    // Сбор кэша (одиночный вызов без дублей)
     function scrapeCache() {
         const c = window.b103ScreenCache;
-        const g = (k) => findInputByKw([k])?.value?.trim();
-        if (g("экг до оказания")) c.electrocardiogramBefore = g("экг до оказания");
-        if (g("экг после оказания")) c.electrocardiogramAfter = g("экг после оказания");
-        if (g("предварительный диагноз")) c.diagnosis = g("предварительный диагноз");
-        if (g("жалобы")) c.complaints = g("жалобы");
-        if (g("анамнез заболевания")) c.anamnesis = g("анамнез заболевания");
-        if (g("локальный статус")) c.localStatus = g("локальный статус");
+        const setValIfFound = (kw, fieldName) => {
+            const v = findInputByKw([kw])?.value?.trim();
+            if (v) c[fieldName] = v;
+        };
 
-        const qtyNodes = Array.from(document.querySelectorAll('*')).filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
+        setValIfFound("экг до оказания", "electrocardiogramBefore");
+        setValIfFound("экг после оказания", "electrocardiogramAfter");
+        setValIfFound("предварительный диагноз", "diagnosis");
+        setValIfFound("жалобы", "complaints");
+        setValIfFound("анамнез заболевания", "anamnesis");
+        setValIfFound("локальный статус", "localStatus");
+
+        const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+            .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
+
         if (qtyNodes.length > 0) {
             const meds = [];
             for (let q of qtyNodes) {
@@ -432,7 +440,7 @@
         if (window.b103IsApplying) return;
 
         const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
-        const savedScrollContainers = Array.from(document.querySelectorAll('main, [class*="content"], [class*="scroll"], div'))
+        const savedScrollContainers = Array.from(document.querySelectorAll('main, .MuiDialog-paper, [role="tabpanel"], .MuiContainer-root'))
             .filter(el => el.scrollTop > 0)
             .map(el => ({ el, top: el.scrollTop }));
 
@@ -471,13 +479,15 @@
                 if (popovers.length === 0 && expandedBtns.length === 0) break;
 
                 const escInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
-                if (document.activeElement) {
+                if (document.activeElement && document.activeElement !== document.body) {
                     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', escInit));
                     document.activeElement.dispatchEvent(new KeyboardEvent('keyup', escInit));
+                    if (document.activeElement.blur) document.activeElement.blur();
                 }
                 for (let pop of popovers) {
                     const list = pop.querySelector('[role="listbox"], [role="menu"], ul, .MuiMenu-list') || pop;
                     list.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                    list.dispatchEvent(new KeyboardEvent('keyup', escInit));
                     const backdrop = pop.querySelector('.MuiBackdrop-root') || (pop.firstElementChild?.classList.contains('MuiBackdrop-root') ? pop.firstElementChild : null);
                     if (backdrop) {
                         backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
@@ -485,10 +495,15 @@
                         backdrop.click();
                     }
                 }
-                if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) document.activeElement.blur();
-                document.body.click();
+                for (let b of expandedBtns) {
+                    b.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                    if (attempt >= 2) {
+                        b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+                        b.click();
+                    }
+                }
                 restoreScreenPosition();
-                await new Promise(r => setTimeout(r, 55));
+                await new Promise(r => setTimeout(r, 45));
             }
         }
 
@@ -527,7 +542,7 @@
                             }
                             if (!foundInp) {
                                 let p = l.parentElement;
-                                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                                for (let i = 0; i < 3 && p && p !== document.body; i++) {
                                     const inps = getRealInputs(p);
                                     if (inps.length === 1) { foundInp = inps[0]; break; }
                                     else if (inps.length > 1) break;
@@ -588,7 +603,7 @@
                     btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
                     btn.click();
                     restoreScreenPosition();
-                    await new Promise(r => setTimeout(r, 105));
+                    await new Promise(r => setTimeout(r, 95));
 
                     const activePops = getActivePopovers();
                     const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
@@ -600,7 +615,7 @@
                                 const ot = (o.innerText || '').trim().toLowerCase();
                                 return ot !== "не выбрано" && (ot === vals[0] || ot.includes(vals[0]) || vals[0].includes(ot));
                             });
-                            if (match) { match.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 85)); }
+                            if (match) { match.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 80)); }
                             if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                         } else {
                             const wanted = new Set();
@@ -614,7 +629,7 @@
                             for (let o of opts) {
                                 const shouldBe = wanted.has(o);
                                 const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
-                                if (shouldBe !== isSel) { o.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 35)); }
+                                if (shouldBe !== isSel) { o.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 30)); }
                             }
                             await closeAnyOpenMenu();
                         }
@@ -639,12 +654,12 @@
                 setVal(inp, searchCode);
                 if (popupBtn) popupBtn.click();
                 restoreScreenPosition();
-                await new Promise(r => setTimeout(r, 210));
+                await new Promise(r => setTimeout(r, 180));
                 const popper = document.querySelector('.MuiAutocomplete-popper, .MuiPopover-root');
                 if (popper) {
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'));
                     const targetOpt = opts.find(o => (o.innerText || '').toUpperCase().includes(searchCode)) || opts[0];
-                    if (targetOpt) { targetOpt.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 75)); }
+                    if (targetOpt) { targetOpt.click(); restoreScreenPosition(); await new Promise(r => setTimeout(r, 70)); }
                 }
                 if (inp.blur) inp.blur();
                 await closeAnyOpenMenu();
@@ -677,10 +692,14 @@
                 }
             }
 
+            // Точный поиск строк давления строго по тексту "АД (мм" без сканирования '*'
             function fillBP(isAd, raw) {
                 const str = cleanBp(raw); if (!str.includes('/')) return;
                 const p = str.split('/');
-                Array.from(document.querySelectorAll('*')).filter(e => e.offsetParent !== null && e.children.length === 0 && e.textContent.trim() === '/' && !isInConclusion(e)).forEach(sl => {
+                const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+                    .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+
+                for (let sl of slashNodes) {
                     let pr = sl.parentElement;
                     for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
                         const inps = getRealInputs(pr);
@@ -690,12 +709,12 @@
                                 ? (tx.includes("адаптированное") && (tx.includes("ад") || tx.includes("давлен")))
                                 : (!tx.includes("адаптированное") && (tx.includes("ад (мм") || tx.includes("артериальн")));
                             if (isMatch) {
-                                setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); break;
+                                setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); return;
                             }
                         }
                         pr = pr.parentElement;
                     }
-                });
+                }
             }
 
             if (data.fio) setAll(["фио"], data.fio, true);
@@ -765,6 +784,7 @@
 
             await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
             await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
+
             if (data.skin) await selectDropdown(["кожа"], data.skin, true);
             if (data.heartSounds) await selectDropdown(["тоны сердца"], data.heartSounds, true);
             if (data.lungs) await selectDropdown(["дыхание"], data.lungs, true);
@@ -775,7 +795,7 @@
             restoreScreenPosition();
             showToast("⚡ Карта заполнена!");
         } catch (e) { console.error(e); } finally {
-            await new Promise(r => setTimeout(r, 70));
+            await new Promise(r => setTimeout(r, 60));
             await closeAnyOpenMenu();
             if (activeTabBefore) {
                 const curActive = Array.from(document.querySelectorAll('[role="tab"], button'))
@@ -783,10 +803,10 @@
                 if (curActive !== activeTabBefore) activeTabBefore.click();
             }
             restoreScreenPosition();
-            setTimeout(restoreScreenPosition, 50);
+            setTimeout(restoreScreenPosition, 40);
             document.getElementById('b103-hide-menus')?.remove();
             if (fillBtn) fillBtn.innerText = "⚡";
-            setTimeout(() => { window.b103IsApplying = false; }, 200);
+            setTimeout(() => { window.b103IsApplying = false; }, 150);
         }
     };
 
@@ -794,7 +814,6 @@
     // 5. МОДАЛЬНЫЕ ОКНА ДЛЯ iOS SAFARI
     // ==========================================
     function openIosSheet(title, colorHex, renderContentFn, onClose) {
-        // Если уже открыт другой лист — корректно вызываем его onClose перед удалением!
         if (typeof window.b103ActiveSheetClose === 'function') {
             try { window.b103ActiveSheetClose(); } catch (e) {}
             window.b103ActiveSheetClose = null;
@@ -833,7 +852,7 @@
         renderContentFn(sheet.querySelector('#b103-sheet-body'), doClose);
     }
 
-    // ОКОШКО АВТОЗАПОЛНЕНИЯ
+    // ОКОШКО АВТОЗАПОЛНЕНИЯ (С ЗАЩИТОЙ JSON.parse)
     function openAutofillSheet() {
         openIosSheet('⚡ Автозаполнение и Помощник', '#0288D1', (body, close) => {
             body.innerHTML = `
@@ -870,7 +889,16 @@
                         const row = document.createElement('div');
                         row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#FFFDE7;border:1.5px solid #FFE082;color:#263238;font-size:13.5px;cursor:pointer;';
                         row.innerHTML = `<b>${item.isCustom ? '📌' : '⭐'} ${escapeHtml(item.title)}</b><br><span style="color:#546E7A;font-size:12.5px;">📋 ${escapeHtml(item.mkb)}</span>`;
-                        row.onclick = () => { close(); window.activeAutofillData = JSON.parse(item.jsonData); window.applyAutofill(window.activeAutofillData); };
+                        row.onclick = () => {
+                            try {
+                                const parsed = JSON.parse(item.jsonData);
+                                close();
+                                window.activeAutofillData = parsed;
+                                window.applyAutofill(parsed);
+                            } catch (e) {
+                                alert('Ошибка чтения данных шаблона');
+                            }
+                        };
                         listBox.appendChild(row);
                     });
                 } else {
@@ -957,8 +985,17 @@
         });
     }
 
-    // СЛР на iOS с монотонными часами performance.now()
-    window.b103CprState = window.b103CprState || { isRunning: false, startPerf: 0, accumulatedSec: 0, adr: 0, shock: 0, log: [] };
+    // СЛР на iOS: пороговые напоминания без пропуска секунд
+    window.b103CprState = window.b103CprState || {
+        isRunning: false,
+        startPerf: 0,
+        accumulatedSec: 0,
+        adr: 0,
+        shock: 0,
+        log: [],
+        nextRhythmSec: 120,
+        nextAdrSec: 180
+    };
 
     function openCprTimerIos() {
         let timerInt = null;
@@ -995,15 +1032,21 @@
                 const sTotal = getSec();
                 const m = Math.floor(sTotal / 60);
                 const s = sTotal % 60;
-                const isRhythm = (sTotal % 120 === 0 && sTotal > 0);
-                const isAdr = (sTotal % 180 === 0 && sTotal > 0);
+
+                // Пороговые напоминания (никогда не пропустят сигнал при троттлинге таймера)
+                const isRhythmAlert = sTotal >= st.nextRhythmSec && sTotal < st.nextRhythmSec + 12;
+                const isAdrAlert = sTotal >= st.nextAdrSec && sTotal < st.nextAdrSec + 12;
+
+                if (sTotal >= st.nextRhythmSec + 12) st.nextRhythmSec += 120;
+                if (sTotal >= st.nextAdrSec + 12) st.nextAdrSec += 180;
 
                 let hint = "НМС 100–120/мин, 30:2";
-                if (isRhythm && isAdr) hint = "🔔 2 МИН: Контроль ритма! + 💉 Адреналин 1 мг!";
-                else if (isRhythm) hint = "🔔 2 МИНУТЫ! Оцените ритм на ЭКГ!";
-                else if (isAdr) hint = "💉 Прошло 3 мин! Время ввести Адреналин 1 мг!";
+                if (sTotal >= 1800) hint = "⚠️ Прошло 30 мин СЛР! Оценить констатацию смерти";
+                else if (isRhythmAlert && isAdrAlert) hint = "🔔 2 МИН: Контроль ритма! + 💉 Адреналин 1 мг!";
+                else if (isRhythmAlert) hint = "🔔 2 МИНУТЫ! Оцените ритм на ЭКГ!";
+                else if (isAdrAlert) hint = "💉 Прошло 3 мин! Время ввести Адреналин 1 мг!";
 
-                banner.style.background = ((isRhythm || isAdr) && st.isRunning) ? '#E65100' : (st.isRunning ? '#C62828' : '#78909C');
+                banner.style.background = ((isRhythmAlert || isAdrAlert) && st.isRunning) ? '#E65100' : (st.isRunning ? '#C62828' : '#78909C');
                 banner.innerHTML = `⏱️ СЛР: ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} (Адр: ${st.adr} | Разряд: ${st.shock})<br><span style="font-size:13px;font-weight:600;">${hint}</span>`;
                 btnStart.innerText = st.isRunning ? "⏸️ ПАУЗА" : (sTotal === 0 ? "▶️ СТАРТ СЛР" : "▶️ ПРОДОЛЖИТЬ");
                 btnStart.style.background = st.isRunning ? "#F57C00" : "#2E7D32";
@@ -1042,6 +1085,7 @@
             btnReset.onclick = () => {
                 if (confirm("Сбросить протокол СЛР для нового вызова?")) {
                     st.isRunning = false; st.startPerf = 0; st.accumulatedSec = 0; st.adr = 0; st.shock = 0; st.log = [];
+                    st.nextRhythmSec = 120; st.nextAdrSec = 180;
                     update();
                 }
             };
@@ -1058,7 +1102,6 @@
             timerInt = setInterval(update, 1000);
             update();
         }, () => {
-            // Надежная очистка интервала
             if (timerInt) clearInterval(timerInt);
         });
     }
@@ -1197,7 +1240,7 @@
         });
     }
 
-    // ГЛАВНОЕ МЕНЮ НА iOS (ИМПОРТ / ЭКСПОРТ С ДЕДУПЛИКАЦИЕЙ)
+    // ГЛАВНОЕ МЕНЮ НА iOS (БЫСТРЫЙ ИМПОРТ O(N) ЧЕРЕЗ SET)
     function openMainMenuIos() {
         openIosSheet('Меню SSMP Plus (iOS)', '#008577', (body, close) => {
             body.innerHTML = `
@@ -1233,18 +1276,18 @@
                         if (!Array.isArray(parsed)) throw new Error('Not array');
 
                         const cur = loadDb();
+                        const existingSignatures = new Set(cur.map(c => `${(c.fio || '').toLowerCase()}_${c.timestamp || 0}`));
                         let importedCount = 0;
 
-                        // Поштучная валидация и дедупликация (по fio + timestamp)
                         parsed.forEach(item => {
                             if (!item || typeof item !== 'object') return;
                             const f = (item.fio || '').trim();
                             const jd = (item.json_data || '').trim();
                             if (!f || !jd) return;
 
-                            // Проверяем, нет ли уже такой карты в архиве
-                            const exists = cur.some(c => (c.fio || '').toLowerCase() === f.toLowerCase() && c.timestamp === item.timestamp);
-                            if (!exists) {
+                            const sig = `${f.toLowerCase()}_${item.timestamp || 0}`;
+                            if (!existingSignatures.has(sig)) {
+                                existingSignatures.add(sig);
                                 cur.unshift({
                                     fio: f,
                                     birth_date: item.birth_date || '',
@@ -1269,18 +1312,10 @@
     }
 
     // ==========================================
-    // 6. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК (БЕЗ ТЯЖЕЛЫХ REFLOW)
+    // 6. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК
     // ==========================================
     function isInsideCard() {
-        const tabs = document.querySelectorAll('.MuiTab-root, [role="tab"], .MuiTabs-root button');
-        if (tabs.length === 0) return false;
-        for (let i = 0; i < tabs.length; i++) {
-            const t = (tabs[i].textContent || '').toUpperCase();
-            if (t.includes('О ВЫЗОВЕ') || t.includes('УТОЧНЕННЫЕ СВЕДЕНИЯ') || t.includes('ОБЪЕКТИВНЫЕ ДАННЫЕ')) {
-                return true;
-            }
-        }
-        return false;
+        return Boolean(document.querySelector('.MuiTabs-root, [role="tablist"]'));
     }
 
     function ensureToolbar() {
@@ -1301,7 +1336,6 @@
         document.getElementById('btn-fill-db').onclick = openAutofillSheet;
     }
 
-    // Легкая проверка видимости: НИКАКОГО scrapeCache() на таймере + сброс кэша при выходе!
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();

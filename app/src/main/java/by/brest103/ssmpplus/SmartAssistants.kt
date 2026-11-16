@@ -1,10 +1,12 @@
 package by.brest103.ssmpplus
 
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -19,6 +21,33 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 object SmartAssistants {
+
+    // Фоновое состояние таймера СЛР (не сбрасывается при случайном закрытии шторки)
+    private var isCprRunning = false
+    private var cprStartRealtime = 0L
+    private var cprAccumulatedSec = 0
+    private var cprAdrCount = 0
+    private var cprAmioCount = 0
+    private var cprShockCount = 0
+    private val cprLogEntries = mutableListOf<String>()
+
+    private fun getCurrentCprElapsedSec(): Int {
+        return if (isCprRunning) {
+            cprAccumulatedSec + ((SystemClock.elapsedRealtime() - cprStartRealtime) / 1000).toInt()
+        } else {
+            cprAccumulatedSec
+        }
+    }
+
+    private fun resetCprState() {
+        isCprRunning = false
+        cprStartRealtime = 0L
+        cprAccumulatedSec = 0
+        cprAdrCount = 0
+        cprAmioCount = 0
+        cprShockCount = 0
+        cprLogEntries.clear()
+    }
 
     private fun insertToWebField(context: Context, webView: WebView, fieldKw: String, text: String, append: Boolean = false) {
         MedicalTools.copyToClipboard(context, fieldKw, text)
@@ -75,7 +104,6 @@ object SmartAssistants {
             previewBox.setText(sb.toString().replace("  ", " ").trim())
         }
 
-        // Кнопки прямой вставки в карту
         val btnRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 14) }
         fun makeInsertBtn(title: String, color: String, kw: String) = TextView(context).apply {
             text = title; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
@@ -90,7 +118,6 @@ object SmartAssistants {
         btnRow.addView(makeInsertBtn("⚡ В ЭКГ ПОСЛЕ", "#0277BD", "экг после оказания"))
         content.addView(btnRow)
 
-        // Ввод ЧСС
         val hrRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 10) }
         hrRow.addView(TextView(context).apply { text = "💓 ЧСС / ЧЖС (в мин): "; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#263238")) })
         val hrInp = EditText(context).apply {
@@ -207,92 +234,143 @@ object SmartAssistants {
     }
 
     // =========================================================
-    // 2. ТАЙМЕР-ЛОГГЕР РЕАНИМАЦИИ (СЛР) С ПОМИНУТНЫМ ПРОТОКОЛОМ
+    // 2. РЕАНИМАЦИОННЫЙ ТАЙМЕР-ЛОГГЕР СЛР (ПО ЧАСАМ ПРОЦЕССОРА)
     // =========================================================
     fun showCprTimerSheet(context: Context, webView: WebView) {
         val (bs, root) = MedicalTools.createBaseSheet(context, "⏱️ Реанимационный таймер и логгер СЛР", "#D32F2F")
 
         val handler = Handler(Looper.getMainLooper())
-        var isRunning = false
-        var elapsedSec = 0
-        var adrCount = 0
-        var amioCount = 0
-        var shockCount = 0
-        val logEntries = mutableListOf<String>()
         val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
         val timerBanner = TextView(context).apply {
-            text = "00:00\nНажмите СТАРТ для отсчета СЛР"
-            textSize = 20f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(24, 24, 24, 24); background = MedicalTools.roundBg("#C62828", 18f)
+            textSize = 19.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(24, 22, 24, 22); background = MedicalTools.roundBg("#C62828", 18f)
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12 }
         }
         root.addView(timerBanner)
 
         val logText = TextView(context).apply {
-            text = "Журнал реанимации пуст. Нажимайте кнопки ниже при введении препаратов и разрядах..."
             textSize = 14f; setTextColor(Color.parseColor("#263238")); setLineSpacing(5f, 1.15f)
             setPadding(20, 16, 20, 20)
         }
 
-        fun addLog(action: String) {
-            val min = elapsedSec / 60
-            val sec = elapsedSec % 60
-            val stamp = String.format(Locale.US, "[%s | %02d:%02d]", timeFmt.format(Date()), min, sec)
-            logEntries.add("$stamp $action")
-            logText.text = logEntries.joinToString("\n")
+        fun updateLogDisplay() {
+            if (cprLogEntries.isEmpty()) {
+                logText.text = "Журнал реанимации пуст. Нажимайте кнопки ниже при введении препаратов и разрядах..."
+            } else {
+                logText.text = cprLogEntries.joinToString("\n")
+            }
         }
 
-        val runnable = object : Runnable {
+        fun addLog(action: String) {
+            val totalSec = getCurrentCprElapsedSec()
+            val min = totalSec / 60
+            val sec = totalSec % 60
+            val stamp = String.format(Locale.US, "[%s | %02d:%02d]", timeFmt.format(Date()), min, sec)
+            cprLogEntries.add("$stamp $action")
+            updateLogDisplay()
+        }
+
+        fun updateTimerUi() {
+            val totalSec = getCurrentCprElapsedSec()
+            val m = totalSec / 60
+            val s = totalSec % 60
+            val cycleSec = totalSec % 120
+            val isRhythmTime = (cycleSec == 0 && totalSec > 0)
+            val isAdrTime = (totalSec % 180 == 0 && totalSec > 0)
+
+            // Пункт 3 ревью: объединение подсказок на 6-й, 12-й, 18-й минутах
+            val hint = when {
+                totalSec >= 1800 -> "⚠️ Прошло 30 минут СЛР! Оценить целесообразность / констатацию"
+                isRhythmTime && isAdrTime -> "🔔 2 МИН: Контроль ритма на ЭКГ! + 💉 Адреналин 1 мг в/в!"
+                isRhythmTime -> "🔔 2 МИНУТЫ! Оцените ритм на ЭКГ и пульс!"
+                isAdrTime -> "💉 Прошло 3 мин! Время ввести Адреналин 1 мг в/в!"
+                !isCprRunning && totalSec == 0 -> "Нажмите СТАРТ для начала отсчета реанимации"
+                !isCprRunning -> "СЛР приостановлена (нажмите ПРОДОЛЖИТЬ)"
+                else -> "НМС 100–120/мин (глубина 5–6 см), соотношение 30:2"
+            }
+
+            val isAlert = (isRhythmTime || isAdrTime) && isCprRunning
+            timerBanner.background = MedicalTools.roundBg(if (isAlert) "#E65100" else (if (isCprRunning) "#C62828" else "#78909C"), 18f)
+            timerBanner.text = String.format(Locale.US, "⏱️ СЛР: %02d:%02d  (Адр: %d | Разряд: %d)\n%s", m, s, cprAdrCount, cprShockCount, hint)
+        }
+
+        // Пункт 2 ревью: отсчет по SystemClock.elapsedRealtime() без дрейфа
+        val tickerRunnable = object : Runnable {
             override fun run() {
-                if (!isRunning) return
-                elapsedSec++
-                val m = elapsedSec / 60
-                val s = elapsedSec % 60
-                val cycleSec = elapsedSec % 120
-                val hint = when {
-                    elapsedSec >= 1800 -> "⚠️ Прошло 30 минут СЛР! Оценить целесообразность / констатацию"
-                    cycleSec == 0 && elapsedSec > 0 -> "🔔 2 МИНУТЫ! Оцените ритм на ЭКГ и пульс!"
-                    elapsedSec % 180 == 0 && elapsedSec > 0 -> "💉 Прошло 3 мин! Время ввести Адреналин 1 мг в/в!"
-                    else -> "НМС 100–120/мин (глубина 5–6 см), соотношение 30:2"
+                if (isCprRunning) {
+                    updateTimerUi()
+                    handler.postDelayed(this, 1000)
                 }
-                timerBanner.background = MedicalTools.roundBg(if (cycleSec < 8 && elapsedSec > 10) "#FF6F00" else "#C62828", 18f)
-                timerBanner.text = String.format(Locale.US, "⏱️ СЛР: %02d:%02d  (Адр: %d | Разряд: %d)\n%s", m, s, adrCount, shockCount, hint)
-                handler.postDelayed(this, 1000)
             }
         }
 
         val ctrlRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 10) }
         val startBtn = TextView(context).apply {
-            text = "▶️ СТАРТ СЛР"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(16, 18, 16, 18); background = MedicalTools.roundBg("#2E7D32", 14f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
-            setOnClickListener {
-                if (!isRunning) {
-                    isRunning = true
-                    if (elapsedSec == 0) addLog("Начата расширенная СЛР (НМС, ИВЛ, мониторинг ЭКГ, в/в доступ)")
-                    text = "⏸️ ПАУЗА"
-                    background = MedicalTools.roundBg("#F57C00", 14f)
-                    handler.postDelayed(runnable, 1000)
-                } else {
-                    isRunning = false
-                    text = "▶️ ПРОДОЛЖИТЬ"
-                    background = MedicalTools.roundBg("#2E7D32", 14f)
-                }
-            }
+            text = if (isCprRunning) "⏸️ ПАУЗА" else (if (getCurrentCprElapsedSec() == 0) "▶️ СТАРТ СЛР" else "▶️ ПРОДОЛЖИТЬ")
+            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(16, 18, 16, 18)
+            background = MedicalTools.roundBg(if (isCprRunning) "#F57C00" else "#2E7D32", 14f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1.2f).apply { rightMargin = 8 }
         }
         val roscBtn = TextView(context).apply {
-            text = "❤️ ВСК / ФИНАЛ"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(16, 18, 16, 18); background = MedicalTools.roundBg("#0277BD", 14f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            text = "❤️ ВСК / ФИНАЛ"; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(14, 18, 14, 18); background = MedicalTools.roundBg("#0277BD", 14f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
             setOnClickListener {
-                isRunning = false
-                addLog("Завершение СЛР (длительность ${elapsedSec / 60} мин ${elapsedSec % 60} сек). Всего: Адреналин — $adrCount мг, Разрядов — $shockCount, Амиодарон — $amioCount.")
+                if (isCprRunning) {
+                    cprAccumulatedSec += ((SystemClock.elapsedRealtime() - cprStartRealtime) / 1000).toInt()
+                    isCprRunning = false
+                    startBtn.text = "▶️ ПРОДОЛЖИТЬ"
+                    startBtn.background = MedicalTools.roundBg("#2E7D32", 14f)
+                }
+                val totalSec = getCurrentCprElapsedSec()
+                addLog("Завершение СЛР (длительность ${totalSec / 60} мин ${totalSec % 60} сек). Итого: Адреналин — $cprAdrCount мг, Разрядов — $cprShockCount, Амиодарон — $cprAmioCount.")
+                updateTimerUi()
             }
         }
-        ctrlRow.addView(startBtn); ctrlRow.addView(roscBtn); root.addView(ctrlRow)
+        val resetBtn = TextView(context).apply {
+            text = "🔄"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#455A64")); gravity = Gravity.CENTER
+            setPadding(14, 18, 14, 18); background = MedicalTools.roundBg("#ECEFF1", 14f, "#CFD8DC")
+            layoutParams = LinearLayout.LayoutParams(-2, -2)
+            setOnClickListener {
+                AlertDialog.Builder(context)
+                    .setTitle("Сбросить протокол СЛР?")
+                    .setMessage("Таймер и лог реанимации будут обнулены для нового пациента.")
+                    .setPositiveButton("Сбросить") { _, _ ->
+                        resetCprState()
+                        startBtn.text = "▶️ СТАРТ СЛР"
+                        startBtn.background = MedicalTools.roundBg("#2E7D32", 14f)
+                        updateLogDisplay()
+                        updateTimerUi()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+        }
 
-        // Быстрые кнопки событий СЛР
+        startBtn.setOnClickListener {
+            if (!isCprRunning) {
+                isCprRunning = true
+                cprStartRealtime = SystemClock.elapsedRealtime()
+                if (getCurrentCprElapsedSec() == 0 && cprLogEntries.isEmpty()) {
+                    addLog("Начата расширенная СЛР (НМС, ИВЛ, мониторинг ЭКГ, в/в доступ)")
+                }
+                startBtn.text = "⏸️ ПАУЗА"
+                startBtn.background = MedicalTools.roundBg("#F57C00", 14f)
+                handler.post(tickerRunnable)
+            } else {
+                cprAccumulatedSec += ((SystemClock.elapsedRealtime() - cprStartRealtime) / 1000).toInt()
+                isCprRunning = false
+                startBtn.text = "▶️ ПРОДОЛЖИТЬ"
+                startBtn.background = MedicalTools.roundBg("#2E7D32", 14f)
+                handler.removeCallbacks(tickerRunnable)
+                updateTimerUi()
+            }
+        }
+
+        ctrlRow.addView(startBtn); ctrlRow.addView(roscBtn); ctrlRow.addView(resetBtn); root.addView(ctrlRow)
+
         val actionsGrid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 10) }
         fun makeActionRow(b1Lbl: String, b1Act: () -> Unit, b2Lbl: String, b2Act: () -> Unit) {
             val r = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 } }
@@ -300,17 +378,17 @@ object SmartAssistants {
                 text = t; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#B71C1C")); gravity = Gravity.CENTER
                 setPadding(12, 16, 12, 16); background = MedicalTools.roundBg("#FFEBEE", 12f, "#FFCDD2")
                 layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = mr }
-                setOnClickListener { act() }
+                setOnClickListener { act(); updateTimerUi() }
             }
             r.addView(btn(b1Lbl, 8, b1Act)); r.addView(btn(b2Lbl, 0, b2Act)); actionsGrid.addView(r)
         }
 
         makeActionRow(
-            "💉 +Адреналин 1 мг", { adrCount++; addLog("Введен Эпинефрин (Адреналин) 1 мг в/в (#$adrCount)") },
-            "⚡ +Разряд 200 Дж", { shockCount++; addLog("Дефибрилляция разрядом 200 Дж (#$shockCount)") }
+            "💉 +Адреналин 1 мг", { cprAdrCount++; addLog("Введен Эпинефрин (Адреналин) 1 мг в/в (#$cprAdrCount)") },
+            "⚡ +Разряд 200 Дж", { cprShockCount++; addLog("Дефибрилляция разрядом 200 Дж (#$cprShockCount)") }
         )
         makeActionRow(
-            "💉 +Амиодарон 300/150", { amioCount++; addLog("Введен Амиодарон ${if (amioCount == 1) "300 мг" else "150 мг"} в/в") },
+            "💉 +Амиодарон 300/150", { cprAmioCount++; addLog("Введен Амиодарон ${if (cprAmioCount == 1) "300 мг" else "150 мг"} в/в") },
             "🫁 Интубация / Ларинг.", { addLog("Обеспечена проходимость ВДП (ЭТТ / Ларингеальная маска), ИВЛ 100% O2") }
         )
         makeActionRow(
@@ -333,14 +411,24 @@ object SmartAssistants {
             setPadding(20, 20, 20, 20); background = MedicalTools.roundBg("#00695C", 14f)
             layoutParams = LinearLayout.LayoutParams(-1, -2)
             setOnClickListener {
-                val summary = "Хронология СЛР:\n" + logEntries.joinToString("; ")
+                val summary = "Хронология СЛР:\n" + cprLogEntries.joinToString("; ")
                 insertToWebField(context, webView, "анамнез заболевания", summary, true)
+                // Шторка закрывается, но таймер в объекте SmartAssistants продолжает жить!
                 bs.dismiss()
             }
         })
         root.addView(insertRow)
 
-        bs.setOnDismissListener { isRunning = false; handler.removeCallbacksAndMessages(null) }
+        // При закрытии шторки отключаем только перерисовку UI, сам таймер продолжает идти в фоне!
+        bs.setOnDismissListener {
+            handler.removeCallbacksAndMessages(null)
+        }
+
+        updateLogDisplay()
+        updateTimerUi()
+        if (isCprRunning) {
+            handler.post(tickerRunnable)
+        }
         bs.show()
     }
 

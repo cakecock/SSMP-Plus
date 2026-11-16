@@ -103,6 +103,15 @@ jobs:
         print(f'Total MKB-10 entries saved: {len(data)}')
         "
 
+    # Проверка целостности базы МКБ-10 (сборка остановится, если файл пуст)
+    - name: Verify MKB-10 Database Integrity
+      run: |
+        if [ ! -s app/src/main/assets/mkb10.json ]; then
+          echo "❌ Ошибка: Файл mkb10.json отсутствует или пуст! Сборка остановлена."
+          exit 1
+        fi
+        echo "✅ База МКБ-10 успешно проверена (размер: $(stat -c%s app/src/main/assets/mkb10.json) байт)."
+
     - name: Setup Gradle 8.5
       uses: gradle/actions/setup-gradle@v3
       with:
@@ -119,7 +128,7 @@ jobs:
       run: |
         cp app/build/outputs/apk/release/*.apk SSMP-Plus-v1.0.${{ github.run_number }}.apk
 
-    # Автоматическая очистка всех старых релизов и тегов (чтобы не копились десятки сборок)
+    # Автоматическая очистка всех старых релизов и тегов
     - name: Cleanup Old Releases and Tags
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

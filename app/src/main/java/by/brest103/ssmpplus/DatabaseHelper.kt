@@ -81,20 +81,22 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
     fun deleteCard(cardId: Long): Boolean =
         writableDatabase.delete("cards", "id = ? AND is_builtin = 0", arrayOf(cardId.toString())) > 0
 
+    // Клиническая безопасность: автоподстановка ТОЛЬКО при 100% точном совпадении ФИО
     fun getBestCardForPatient(fio: String): String? {
         val cleanFio = fio.trim().lowercase()
-        val surname = cleanFio.split(" ").firstOrNull()?.trim() ?: cleanFio
+        if (cleanFio.length < 3) return null
         val cursor = readableDatabase.rawQuery(
-            "SELECT id, score, json_data FROM cards WHERE is_builtin = 0 AND (fio = ? OR fio LIKE ?) ORDER BY (fio = ?) DESC, timestamp DESC LIMIT 5",
-            arrayOf(cleanFio, "%$surname%", cleanFio)
+            "SELECT id, score, json_data FROM cards WHERE is_builtin = 0 AND fio = ? ORDER BY timestamp DESC LIMIT 5",
+            arrayOf(cleanFio)
         )
         val list = mutableListOf<Pair<Int, String>>()
         while (cursor.moveToNext()) list.add(cursor.getInt(1) to cursor.getString(2))
         cursor.close()
         if (list.isEmpty()) return null
-        if (list.size == 1 || list[0].first >= 60) return list[0].second
-        val bestPast = list.drop(1).maxByOrNull { it.first }
-        return if (bestPast != null && bestPast.first > list[0].first) bestPast.second else list[0].second
+
+        // Среди карт этого же пациента выбираем наиболее полную (score >= 60) или самую свежую
+        val bestScored = list.maxByOrNull { it.first }
+        return if (bestScored != null && bestScored.first >= 60) bestScored.second else list[0].second
     }
 
     fun searchPatientSummaries(query: String): List<PatientSummary> {

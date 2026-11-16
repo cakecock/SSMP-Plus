@@ -14,8 +14,8 @@
         }
         const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, h6, .MuiTypography-root'));
         cachedAnchor = labels.find(e => {
-            if (!e.innerText || e.children.length > 2) return false;
-            const t = e.innerText.trim();
+            if (!e.textContent || e.children.length > 2) return false;
+            const t = e.textContent.trim();
             return t === 'Результат оказания мед. помощи' || t === 'Результат выезда';
         }) || null;
         anchorTime = now;
@@ -116,12 +116,12 @@
         return null;
     }
 
-    // Сбор кэша вызывается ТОЛЬКО по клику на кнопку "💾 Сохранить" (одиночный вызов без дублирования!)
+    // Полный сбор кэша с экрана вызывается ТОЛЬКО по клику на кнопку "💾 Сохранить"
     function scrapeCache() {
         const c = window.b103ScreenCache;
-        const setValIfFound = (kw, fieldName) => {
-            const v = findInputByKw([kw])?.value?.trim();
-            if (v) c[fieldName] = v;
+        const setValIfFound = (kw, fieldName, exact = false) => {
+            const v = findInputByKw(Array.isArray(kw) ? kw : [kw], exact)?.value?.trim();
+            if (v && !v.startsWith('__')) c[fieldName] = v;
         };
 
         setValIfFound("экг до оказания", "electrocardiogramBefore");
@@ -129,9 +129,111 @@
         setValIfFound("предварительный диагноз", "diagnosis");
         setValIfFound("жалобы", "complaints");
         setValIfFound("анамнез заболевания", "anamnesis");
+        setValIfFound("перенесенные заболевания", "pastIllnesses");
         setValIfFound("локальный статус", "localStatus");
+        setValIfFound("возраст", "age", true);
+        setValIfFound(["комментарий (пульс", "пульс, ударов в минуту"], "pulse");
+        setValIfFound("частота дыхания (в минуту)", "breathCount");
+        setValIfFound("температура тела (°c)", "skinTemp");
+        setValIfFound("сатурация 1 (%)", "saturation1");
+        setValIfFound("гликемия 1 (ммоль/л)", "glycemia1");
+        setValIfFound("шкала комы глазго (баллы)", "comaScale");
+        setValIfFound("тонус мышц", "muscleTone");
+        setValIfFound("патологические рефлексы", "pathologicalReflexes");
+        setValIfFound("менингиальные знаки", "meningealSymptoms");
+        setValIfFound("плегии, парезы", "plegia");
+        setValIfFound("язык", "tongue");
+        setValIfFound("слизистые", "mucosa");
+        setValIfFound("комментарий (вынужденное)", "positionDescription");
+        setValIfFound("комментарий (периферические отеки)", "peripheralEdemaDescription");
 
-        // Узкий поиск только по текстовым блокам (без querySelectorAll('*'))
+        const mkbVal = findInputByKw(["код по мкб"])?.value?.trim();
+        if (mkbVal) {
+            const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
+            if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+        }
+
+        const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+            .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+        for (const sl of slashNodes) {
+            let pr = sl.parentElement;
+            for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
+                const inps = getRealInputs(pr);
+                if (inps.length === 2) {
+                    const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
+                    const s = inps[0].value.trim(), d = inps[1].value.trim();
+                    if (s || d) {
+                        if (tx.includes("адаптированное")) c.arterialPressureAdaptive = { sys: s, dia: d };
+                        else if (tx.includes("ад (мм") || tx.includes("артериальн")) c.arterialPressure = { sys: s, dia: d };
+                    }
+                    break;
+                }
+                pr = pr.parentElement;
+            }
+        }
+
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+        const getSelectText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return '';
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                const b = p.querySelector('.MuiSelect-root, [role="button"]');
+                if (b) {
+                    const t = (b.innerText || '').trim();
+                    return (t && t.toLowerCase() !== 'не выбрано') ? t : '';
+                }
+                p = p.parentElement;
+            }
+            return '';
+        };
+        const gs = getSelectText("общее состояние"); if (gs) c.generalState = { type: gs };
+        const cs = getSelectText("сознание"); if (cs) c.consciousness = { type: cs };
+        const au = getSelectText("возраст (ед.)"); if (au) c.ageType = { type: au };
+        const toArr = (kw, key) => {
+            const v = getSelectText(kw);
+            if (v) c[key] = v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type);
+        };
+        toArr("кожа", "skins");
+        toArr("тоны сердца", "heartSounds");
+        toArr("дыхание", "breaths");
+        toArr("перкуссия легких", "percussionOfLungs");
+        toArr("живот", "stomachs");
+
+        const getActiveBtnText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return null;
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                const btns = Array.from(p.querySelectorAll('button')).filter(b => !isInConclusion(b));
+                if (btns.length >= 2 && btns.length <= 6) {
+                    const act = btns.find(b => b.className.includes('MuiButton-contained'));
+                    return act ? (act.innerText || act.textContent || '').trim().toUpperCase() : '';
+                }
+                p = p.parentElement;
+            }
+            return null;
+        };
+        const pup = getActiveBtnText("зрачки"); if (pup !== null) c.pupils = pup ? { type: pup } : null;
+        const pos = getActiveBtnText("положение"); if (pos) c.position = { type: pos };
+        const beh = getActiveBtnText("поведение"); if (beh) c.behavior = { type: beh };
+        const spc = getActiveBtnText("речь"); if (spc) c.speech = { type: spc };
+        const fac = getActiveBtnText("лицо"); if (fac) c.face = { type: fac };
+        const gat = getActiveBtnText("походка"); if (gat) c.gait = { type: gat };
+        const nys = getActiveBtnText("нистагм"); if (nys) c.nystagmus = { type: nys };
+        const stu = getActiveBtnText("стул"); if (stu) c.defecatio = { type: stu };
+        const uri = getActiveBtnText("мочеиспускание"); if (uri) c.urinations = [{ type: uri }];
+        const liv = getActiveBtnText("печень"); if (liv) c.liver = { type: liv };
+        const alr = getActiveBtnText("аллергия"); if (alr) c.allergy = (alr === "ДА");
+        const lgt = getActiveBtnText("реакция на свет"); if (lgt) c.pupilsLight = (lgt === "ДА");
+        const rsh = getActiveBtnText("высыпания"); if (rsh) c.skinRashes = (rsh === "ДА");
+        const asc = getActiveBtnText("асцит"); if (asc) c.ascites = (asc === "ДА");
+        const edm = getActiveBtnText("периферические отеки"); if (edm) c.peripheralEdema = (edm === "ДА");
+        const prt = getActiveBtnText("симптомы раздражения брюшины"); if (prt) c.stomachSymptoms = (prt === "ДА");
+        const prs = getActiveBtnText("перистальтика"); if (prs) c.peristalsis = (prs === "ДА");
+
         const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
             .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
 
@@ -156,7 +258,6 @@
         }
     }
 
-    // Мгновенная проверка открытия карты через структуру табов Material-UI (без textContent и без reflow!)
     function isInsideCard() {
         return Boolean(document.querySelector('.MuiTabs-root, [role="tablist"]'));
     }
@@ -222,7 +323,6 @@ window.applyAutofill = async function(jsonStr) {
     if (window.b103IsApplying) return;
 
     const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
-    // Сканируем только реальные панели скролла, исключая тысячи лишних div
     const savedScrollContainers = Array.from(document.querySelectorAll('main, .MuiDialog-paper, [role="tabpanel"], .MuiContainer-root'))
         .filter(el => el.scrollTop > 0)
         .map(el => ({ el, top: el.scrollTop }));
@@ -254,9 +354,18 @@ window.applyAutofill = async function(jsonStr) {
         document.head.appendChild(hideStyle);
     }
 
+    function isElemVisible(el) {
+        if (!el || !el.isConnected) return false;
+        if (el.getAttribute('aria-hidden') === 'true') return false;
+        const st = window.getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }
+
     function getActivePopovers() {
         return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper'))
-            .filter(el => el.offsetParent !== null && el.getAttribute('aria-hidden') !== 'true');
+            .filter(isElemVisible);
     }
 
     async function closeAnyOpenMenu() {
@@ -310,15 +419,16 @@ window.applyAutofill = async function(jsonStr) {
             return s;
         }
 
-        function setVal(inp, val) {
+        function setVal(inp, val, allowEmpty = false) {
             if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
             const str = String(val).trim();
-            if (!str || inp.value.trim() === str) return;
+            if (!allowEmpty && !str) return;
+            if (inp.value.trim() === str) return;
             try {
                 const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                 if (setter) setter.call(inp, str); else inp.value = str;
-                if (inp._valueTracker) inp._valueTracker.setValue('');
+                if (inp._valueTracker) inp._valueTracker.setValue('__prev__');
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 inp.dispatchEvent(new Event('change', { bubbles: true }));
             } catch (e) { inp.value = str; }
@@ -379,12 +489,16 @@ window.applyAutofill = async function(jsonStr) {
             return res;
         }
 
-        const setAll = (kws, val, ex = false) => { if (val) findInputs(kws, ex).forEach(i => setVal(i, val)); };
+        const setAll = (kws, val, ex = false, allowEmpty = false) => {
+            if (val !== undefined && val !== null && (allowEmpty || String(val).trim() !== '')) {
+                findInputs(kws, ex).forEach(i => setVal(i, val, allowEmpty));
+            }
+        };
 
         function formatBirthDateAndCalcAge(rawDateStr) {
-            if (!rawDateStr) return { dateStr: "", ageStr: "" };
+            if (!rawDateStr) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
             let clean = String(rawDateStr).trim();
-            if (clean.startsWith("__")) return { dateStr: "", ageStr: "" };
+            if (clean.startsWith("__")) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
 
             let datePart = "", timePart = "00:00";
             if (clean.includes("-")) {
@@ -395,27 +509,48 @@ window.applyAutofill = async function(jsonStr) {
                 const p = clean.split("/"); datePart = p[0].trim();
                 if (p[1] && /^\d{2}:\d{2}/.test(p[1].trim())) timePart = p[1].trim().substring(0, 5);
             }
-            if (!datePart || datePart.includes("_")) return { dateStr: "", ageStr: "" };
+            if (!datePart || datePart.includes("_")) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
 
             const now = new Date();
             const todayStr = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;
-            let calcAge = "";
+            let calcAge = "", ageUnitGuess = "";
             const dp = datePart.split(".");
             if (dp.length === 3) {
-                const by = parseInt(dp[2], 10);
-                if (by > 1900 && by < now.getFullYear()) {
-                    let a = now.getFullYear() - by;
-                    if ((now.getMonth()+1) < parseInt(dp[1],10) || ((now.getMonth()+1) === parseInt(dp[1],10) && now.getDate() < parseInt(dp[0],10))) a--;
-                    if (a >= 0) calcAge = String(a);
+                const bd = parseInt(dp[0], 10), bm = parseInt(dp[1], 10), by = parseInt(dp[2], 10);
+                const bObj = new Date(by, bm - 1, bd);
+                if (by > 1900 && bObj <= now) {
+                    let yrs = now.getFullYear() - by;
+                    if ((now.getMonth() + 1) < bm || ((now.getMonth() + 1) === bm && now.getDate() < bd)) yrs--;
+                    if (yrs >= 1) {
+                        calcAge = String(yrs); ageUnitGuess = "Лет";
+                    } else {
+                        let mos = (now.getFullYear() - by) * 12 + ((now.getMonth() + 1) - bm);
+                        if (now.getDate() < bd) mos--;
+                        if (mos >= 1) {
+                            calcAge = String(mos); ageUnitGuess = "Месяцев";
+                        } else {
+                            const days = Math.floor((now - bObj) / 86400000);
+                            calcAge = String(Math.max(1, days)); ageUnitGuess = "Дней";
+                        }
+                    }
                 }
             }
-            return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge };
+            return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge, ageUnitGuess };
         }
 
-        async function selectDropdown(keywords, valStr, forceMulti = false) {
-            if (!valStr) return;
-            const vals = String(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-            if (vals.length === 0) return;
+        async function selectDropdown(keywords, valStr, forceMulti = false, allowClearMulti = false) {
+            const vals = String(valStr || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            if (!vals.length && !(forceMulti && allowClearMulti)) return;
+
+            const matchVal = (ot, v) => {
+                if (!ot || ot === 'не выбрано') return false;
+                if (ot === v || ot.includes(v) || v.includes(ot)) return true;
+                if (v.startsWith('месяц') && ot.startsWith('месяц')) return true;
+                if ((v === 'лет' || v.startsWith('год')) && (ot === 'лет' || ot.startsWith('год'))) return true;
+                if ((v.startsWith('дн') || v === 'день') && (ot.startsWith('дн') || ot === 'день')) return true;
+                if (v.startsWith('час') && ot.startsWith('час')) return true;
+                return false;
+            };
 
             const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
             const ctrls = [];
@@ -425,12 +560,13 @@ window.applyAutofill = async function(jsonStr) {
                     if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
                     const t = l.innerText.trim().toLowerCase();
                     if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
-                        let p = l.closest('.MuiFormControl-root, .MuiGrid-item') || l.parentElement;
+                        let p = l.closest('.MuiFormControl-root') || l.parentElement;
                         for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
-                            if (p.querySelector('.MuiSelect-root, [role="button"]')) {
+                            const selBtns = p.querySelectorAll('.MuiSelect-root, [role="button"]');
+                            if (selBtns.length === 1) {
                                 if (!ctrls.includes(p)) ctrls.push(p);
                                 break;
-                            }
+                            } else if (selBtns.length > 1) break;
                             p = p.parentElement;
                         }
                     }
@@ -443,45 +579,47 @@ window.applyAutofill = async function(jsonStr) {
 
                 const isMulti = forceMulti || btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                 const curText = (btn.innerText || '').trim().toLowerCase();
+                const curItems = (!curText || curText === 'не выбрано') ? [] : curText.split(',').map(s => s.trim()).filter(Boolean);
 
-                if (!isMulti && curText === vals[0]) continue;
-                if (isMulti && vals.every(v => curText.includes(v))) continue;
+                if (!isMulti && vals.length > 0 && matchVal(curText, vals[0])) continue;
+                if (isMulti && curItems.length === vals.length && vals.every(v => curItems.some(ci => matchVal(ci, v)))) continue;
 
                 await closeAnyOpenMenu();
 
-                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-                btn.click();
+                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 restoreScreenPosition();
-                await new Promise(r => setTimeout(r, 95));
+                await new Promise(r => setTimeout(r, 60));
+                if (getActivePopovers().length === 0) {
+                    btn.click();
+                    restoreScreenPosition();
+                }
 
-                const activePops = getActivePopovers();
-                const popover = activePops.length > 0 ? activePops[activePops.length - 1] : document;
-                const opts = Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root'));
+                let activePops = [];
+                for (let w = 0; w < 6; w++) {
+                    activePops = getActivePopovers();
+                    if (activePops.length > 0 && activePops[activePops.length - 1].querySelector('li[role="option"], .MuiMenuItem-root')) break;
+                    await new Promise(r => setTimeout(r, 55));
+                }
+
+                const popover = activePops.length > 0 ? activePops[activePops.length - 1] : null;
+                const opts = popover ? Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root')) : [];
 
                 if (opts.length > 0) {
                     const hasCheckboxes = opts.some(o => !!o.querySelector('input[type="checkbox"], .MuiCheckbox-root'));
                     const treatAsMulti = isMulti || hasCheckboxes;
 
                     if (!treatAsMulti) {
-                        const match = opts.find(o => {
-                            const ot = (o.innerText || '').trim().toLowerCase();
-                            return ot !== "не выбрано" && (ot === vals[0] || ot.includes(vals[0]) || vals[0].includes(ot));
-                        });
+                        const match = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), vals[0]));
                         if (match) {
                             match.click();
                             restoreScreenPosition();
                             await new Promise(r => setTimeout(r, 80));
-                            if (getActivePopovers().length > 0) await closeAnyOpenMenu();
-                        } else {
-                            await closeAnyOpenMenu();
                         }
+                        if (getActivePopovers().length > 0) await closeAnyOpenMenu();
                     } else {
                         const wanted = new Set();
                         for (let v of vals) {
-                            const m = opts.find(o => {
-                                const ot = (o.innerText || '').trim().toLowerCase();
-                                return ot !== "не выбрано" && (ot === v || ot.includes(v));
-                            });
+                            const m = opts.find(o => matchVal((o.innerText || '').trim().toLowerCase(), v));
                             if (m) wanted.add(m);
                         }
                         for (let o of opts) {
@@ -490,7 +628,7 @@ window.applyAutofill = async function(jsonStr) {
                             if (shouldBe !== isSel) {
                                 o.click();
                                 restoreScreenPosition();
-                                await new Promise(r => setTimeout(r, 30));
+                                await new Promise(r => setTimeout(r, 35));
                             }
                         }
                         await closeAnyOpenMenu();
@@ -510,34 +648,99 @@ window.applyAutofill = async function(jsonStr) {
             if (mkbInputs.length === 0) return;
             const inp = mkbInputs[0];
 
-            if (inp.value && inp.value.toUpperCase().includes(searchCode)) return;
+            if (inp.value && inp.value.toUpperCase().includes(`[${searchCode}]`)) return;
 
             await closeAnyOpenMenu();
 
-            const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.parentElement;
-            const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator, button') : null;
+            const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+            const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
 
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
             restoreScreenPosition();
             setVal(inp, searchCode);
-            if (popupBtn) popupBtn.click();
-            restoreScreenPosition();
-            await new Promise(r => setTimeout(r, 180));
+            await new Promise(r => setTimeout(r, 120));
+            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                popupBtn.click();
+                restoreScreenPosition();
+            }
 
-            // Ищем поппер строго связанный с данным полем (или последний открытый)
-            const popper = document.querySelector('.MuiAutocomplete-popper, .MuiPopover-root');
-            if (popper) {
-                const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'));
-                const targetOpt = opts.find(o => {
-                    const t = (o.innerText || '').toUpperCase();
-                    return t.includes(`[${searchCode}]`) || t.startsWith(searchCode) || t.includes(searchCode);
-                }) || opts[0];
-
-                if (targetOpt) {
-                    targetOpt.click();
-                    restoreScreenPosition();
-                    await new Promise(r => setTimeout(r, 70));
+            let targetOpt = null;
+            for (let w = 0; w < 12; w++) {
+                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                const popper = poppers[poppers.length - 1];
+                if (popper) {
+                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                        .filter(o => {
+                            const tx = (o.innerText || '').trim().toLowerCase();
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                        });
+                    if (opts.length > 0) {
+                        targetOpt = opts.find(o => (o.innerText || '').toUpperCase().includes(`[${searchCode}]`))
+                            || opts.find(o => (o.innerText || '').toUpperCase().startsWith(searchCode))
+                            || opts.find(o => (o.innerText || '').toUpperCase().includes(searchCode))
+                            || opts[0];
+                        if (targetOpt) break;
+                    }
                 }
+                await new Promise(r => setTimeout(r, 80));
+            }
+
+            if (targetOpt) {
+                targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                targetOpt.click();
+                restoreScreenPosition();
+                await new Promise(r => setTimeout(r, 80));
+            }
+            if (inp.blur) inp.blur();
+            await closeAnyOpenMenu();
+        }
+
+        async function fillSimpleAutocomplete(keywords, targetVal, skipIfFilled = false) {
+            if (!targetVal) return;
+            const inps = findInputs(keywords);
+            if (!inps.length) return;
+            const inp = inps[0];
+            const cur = (inp.value || '').trim();
+            if (skipIfFilled && cur) return;
+            if (cur.toLowerCase() === targetVal.trim().toLowerCase()) return;
+
+            await closeAnyOpenMenu();
+            const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+            const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
+            try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            restoreScreenPosition();
+            setVal(inp, targetVal);
+            await new Promise(r => setTimeout(r, 120));
+            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                popupBtn.click();
+                restoreScreenPosition();
+            }
+
+            const valL = targetVal.trim().toLowerCase();
+            let targetOpt = null;
+            for (let w = 0; w < 10; w++) {
+                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                const popper = poppers[poppers.length - 1];
+                if (popper) {
+                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                        .filter(o => {
+                            const tx = (o.innerText || '').trim().toLowerCase();
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                        });
+                    if (opts.length > 0) {
+                        targetOpt = opts.find(o => (o.innerText || '').trim().toLowerCase() === valL)
+                            || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(valL))
+                            || opts[0];
+                        if (targetOpt) break;
+                    }
+                }
+                await new Promise(r => setTimeout(r, 80));
+            }
+            if (targetOpt) {
+                targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                targetOpt.click();
+                restoreScreenPosition();
+                await new Promise(r => setTimeout(r, 80));
             }
             if (inp.blur) inp.blur();
             await closeAnyOpenMenu();
@@ -549,21 +752,21 @@ window.applyAutofill = async function(jsonStr) {
                 .map(c => String(c).trim().toUpperCase()).filter(Boolean);
             if (choices.length === 0) return;
 
-            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span'));
             for (let kw of rowKeywords) {
                 const kwL = kw.toLowerCase();
                 const targets = labels.filter(el => {
-                    if (!el.innerText || el.offsetParent === null || el.children.length > 3 || isInConclusion(el)) return false;
-                    const t = el.innerText.trim().toLowerCase();
+                    if (!el.textContent || el.offsetParent === null || el.children.length > 2 || isInConclusion(el)) return false;
+                    const t = el.textContent.trim().toLowerCase();
                     return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 35;
                 });
 
                 for (let target of targets) {
-                    let p = target.closest('.MuiFormControl-root, .MuiGrid-item') || target.parentElement;
+                    let p = target.closest('.MuiFormControl-root') || target.parentElement;
                     for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
                         const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => b.offsetParent !== null && !b.disabled && !isInConclusion(b));
                         const desired = btns.find(b => {
-                            const bt = (b.innerText || '').trim().toUpperCase();
+                            const bt = (b.innerText || b.textContent || '').trim().toUpperCase();
                             return choices.some(ch => bt === ch || (ch.includes("СИММЕТР") && ch.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ")));
                         });
                         if (desired) {
@@ -580,10 +783,10 @@ window.applyAutofill = async function(jsonStr) {
             }
         }
 
-        // Точный поиск строк давления строго по тексту "АД (мм" без сканирования '*'
-        function fillBP(isAd, raw) {
-            const str = normBp(raw); if (!str.includes('/')) return;
-            const p = str.split('/');
+        function fillBP(isAd, raw, allowEmpty = false) {
+            const str = normBp(raw);
+            if (!str.includes('/') && !allowEmpty) return;
+            const p = str.includes('/') ? str.split('/') : ['', ''];
             const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
                 .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
 
@@ -597,7 +800,9 @@ window.applyAutofill = async function(jsonStr) {
                             ? (tx.includes("адаптированное") && (tx.includes("ад") || tx.includes("давлен")))
                             : (!tx.includes("адаптированное") && (tx.includes("ад (мм") || tx.includes("артериальн")));
                         if (isMatch) {
-                            setVal(inps[0], p[0].trim()); setVal(inps[1], p[1].trim()); return;
+                            setVal(inps[0], p[0].trim(), allowEmpty);
+                            setVal(inps[1], p[1].trim(), allowEmpty);
+                            return;
                         }
                     }
                     pr = pr.parentElement;
@@ -612,6 +817,11 @@ window.applyAutofill = async function(jsonStr) {
             const gTarget = (gUp.startsWith("М") || gUp === "TRUE") ? ["МУЖЧИНА", "МУЖСКОЙ"] : ["ЖЕНЩИНА", "ЖЕНСКИЙ"];
             clickButtonInRow(["пол"], gTarget);
         }
+
+        const initAgeRaw = String(window.lastLoadedApiCard?.initialAge || "").trim();
+        const initAgeM = initAgeRaw.match(/^(\d+)\s+([А-Яа-яЁё]+)/);
+        let finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || (initAgeM ? initAgeM[1] : "");
+        let unitGuess = "";
 
         const bDateInps = findInputs(["дата рождения"]);
         if (bDateInps.length > 0) {
@@ -630,51 +840,60 @@ window.applyAutofill = async function(jsonStr) {
 
             const rawB = servB || archB || scrB;
             if (rawB) {
-                const { dateStr, ageStr } = formatBirthDateAndCalcAge(rawB);
-                if (dateStr) setVal(bDateInps[0], dateStr);
-                const finAge = data.age || (window.lastLoadedApiCard?.age ? String(window.lastLoadedApiCard.age) : "") || ageStr;
-                if (finAge) setAll(["возраст"], finAge, true);
-            } else if (data.age) {
-                setAll(["возраст"], data.age, true);
+                const parsed = formatBirthDateAndCalcAge(rawB);
+                if (parsed.dateStr) setVal(bDateInps[0], parsed.dateStr);
+                if (!finAge && parsed.ageStr) finAge = parsed.ageStr;
+                if (parsed.ageUnitGuess) unitGuess = parsed.ageUnitGuess;
             }
         }
 
-        const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || "Лет";
+        const unitVal = data.ageUnit || window.lastLoadedApiCard?.ageType?.type || (initAgeM ? initAgeM[2] : "") || unitGuess || "Лет";
         await selectDropdown(["возраст (ед.)"], unitVal, false);
+        if (finAge) setAll(["возраст"], finAge, true);
+
+        const ctzVal = data.citizenship || window.lastLoadedApiCard?.patient?.countryOfRegistration?.type || "Беларусь";
+        await fillSimpleAutocomplete(["гражданство"], ctzVal, !data.citizenship);
 
         if (data.address) setAll(["место жительства (пребывания)"], data.address);
         if (data.apo) await selectDropdown(["территориальная апо", "апо по месту жительства"], data.apo, false);
 
-        setAll(["жалобы"], data.complaints);
-        setAll(["анамнез заболевания"], data.anamnesis);
-        setAll(["перенесенные заболевания"], data.pastDiseases);
-        setAll(["предварительный диагноз"], data.diagnosis);
-        setAll(["локальный статус"], data.localStatus);
+        setAll(["жалобы"], data.complaints ?? "", false, true);
+        setAll(["анамнез заболевания"], data.anamnesis ?? "", false, true);
+        setAll(["перенесенные заболевания"], data.pastDiseases ?? "", false, true);
+        setAll(["предварительный диагноз"], data.diagnosis ?? "", false, true);
+        setAll(["локальный статус"], data.localStatus ?? "", false, true);
         if (data.mkb) await fillMkbAutocomplete(data.mkb);
 
-        if (data.bpAdapted) fillBP(true, data.bpAdapted);
-        if (data.bp) fillBP(false, data.bp);
-        if (data.pulse) setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse);
-        if (data.rr) setAll(["частота дыхания (в минуту)"], data.rr);
-        if (data.temp) setAll(["температура тела (°c)"], String(data.temp).replace(',', '.'));
-        if (data.saturation) setAll(["сатурация 1 (%)"], data.saturation);
-        if (data.glucose) setAll(["гликемия 1 (ммоль/л)"], String(data.glucose).replace(',', '.'));
+        fillBP(true, data.bpAdapted ?? "", true);
+        fillBP(false, data.bp ?? "", true);
+        setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse ?? "", false, true);
+        setAll(["частота дыхания (в минуту)"], data.rr ?? "", false, true);
+        setAll(["температура тела (°c)"], data.temp !== undefined && data.temp !== null && String(data.temp) !== "" ? String(data.temp).replace(',', '.') : "", false, true);
+        setAll(["сатурация 1 (%)"], data.saturation ?? "", false, true);
+        setAll(["гликемия 1 (ммоль/л)"], data.glucose !== undefined && data.glucose !== null && String(data.glucose) !== "" ? String(data.glucose).replace(',', '.') : "", false, true);
 
-        setAll(["экг до оказания"], data.ecgBefore);
-        setAll(["экг после оказания"], data.ecgAfter);
-        setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15");
-        setAll(["тонус мышц"], data.muscleTone || "Нормальный");
-        setAll(["патологические рефлексы"], data.pathologicalReflexes || "Отрицательные");
-        setAll(["менингиальные знаки"], data.meningealSymptoms || "Отрицательные");
-        setAll(["плегии, парезы"], data.plegia || "Нет");
-        setAll(["язык"], data.tongue || "Чистые");
-        setAll(["слизистые"], data.mucous || "Бледно-розовые");
+        setAll(["экг до оказания"], data.ecgBefore ?? "", false, true);
+        setAll(["экг после оказания"], data.ecgAfter ?? "", false, true);
+        setAll(["шкала комы глазго (баллы)"], data.glasgowScore || "15", false, true);
+        setAll(["тонус мышц"], data.muscleTone || "Нормальный", false, true);
+        setAll(["патологические рефлексы"], data.pathologicalReflexes || "Отрицательные", false, true);
+        setAll(["менингиальные знаки"], data.meningealSymptoms || "Отрицательные", false, true);
+        setAll(["плегии, парезы"], data.plegia || "Нет", false, true);
+        setAll(["язык"], data.tongue || "Чистые", false, true);
+        setAll(["слизистые"], data.mucous || "Бледно-розовые", false, true);
 
         clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
-        if (data.positionDescription) setAll(["комментарий (вынужденное)"], data.positionDescription);
-
         clickButtonInRow(["поведение"], data.behavior || "СПОКОЙНОЕ");
-        if (data.pupils) clickButtonInRow(["зрачки"], [data.pupils, data.pupils.replace("АНИЗОКОРИЯ", "АНИЗОКАРИЯ")]);
+        if (data.pupils) {
+            clickButtonInRow(["зрачки"], [data.pupils, data.pupils.replace("АНИЗОКОРИЯ", "АНИЗОКАРИЯ")]);
+        } else {
+            const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent.trim().toLowerCase() === 'зрачки' && e.offsetParent !== null && !isInConclusion(e));
+            if (pupLbl && pupLbl.parentElement) {
+                Array.from(pupLbl.parentElement.querySelectorAll('button'))
+                    .filter(b => b.className.includes('MuiButton-contained') && !b.disabled)
+                    .forEach(b => b.click());
+            }
+        }
         clickButtonInRow(["речь"], data.speech || "СОХРАНЕНА");
         clickButtonInRow(["лицо"], data.face || "СИММЕТРИЧНОЕ");
         clickButtonInRow(["походка"], data.gait || "СВОБОДНАЯ");
@@ -689,7 +908,6 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["пульс, ударов в минуту"], data.pulseExists || (data.pulse === "0" ? "НЕТ" : "ДА"));
         clickButtonInRow(["асцит"], data.ascites || "НЕТ");
         clickButtonInRow(["периферические отеки"], data.edema || "НЕТ");
-        if (data.edemaDescription) setAll(["комментарий (периферические отеки)"], data.edemaDescription);
 
         clickButtonInRow(["запах алкоголя"], data.alcohol || "НЕТ");
         clickButtonInRow(["запах ацетона"], data.acetone || "НЕТ");
@@ -697,14 +915,18 @@ window.applyAutofill = async function(jsonStr) {
         clickButtonInRow(["перистальтика"], data.peristalsis || "ДА");
         clickButtonInRow(["получено устное согласие на простое медицинское вмешательство", "получено устное согласие"], "ДА");
 
+        await new Promise(r => setTimeout(r, 50));
+        setAll(["комментарий (вынужденное)"], data.positionDescription ?? "", false, true);
+        setAll(["комментарий (периферические отеки)"], data.edemaDescription ?? "", false, true);
+
         await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
         await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
 
-        if (data.skin) await selectDropdown(["кожа"], data.skin, true);
-        if (data.heartSounds) await selectDropdown(["тоны сердца"], data.heartSounds, true);
-        if (data.lungs) await selectDropdown(["дыхание"], data.lungs, true);
-        if (data.percussion) await selectDropdown(["перкуссия легких"], data.percussion, true);
-        if (data.abdomen) await selectDropdown(["живот"], data.abdomen, true);
+        await selectDropdown(["кожа"], data.skin ?? "", true, true);
+        await selectDropdown(["тоны сердца"], data.heartSounds ?? "", true, true);
+        await selectDropdown(["дыхание"], data.lungs ?? "", true, true);
+        await selectDropdown(["перкуссия легких"], data.percussion ?? "", true, true);
+        await selectDropdown(["живот"], data.abdomen ?? "", true, true);
 
         await closeAnyOpenMenu();
         restoreScreenPosition();
@@ -752,7 +974,7 @@ window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
                     const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                     if (setter) setter.call(inp, finalVal); else inp.value = finalVal;
-                    if (inp._valueTracker) inp._valueTracker.setValue('');
+                    if (inp._valueTracker) inp._valueTracker.setValue('__prev__');
                     inp.dispatchEvent(new Event('input', { bubbles: true }));
                     inp.dispatchEvent(new Event('change', { bubbles: true }));
                     return true;

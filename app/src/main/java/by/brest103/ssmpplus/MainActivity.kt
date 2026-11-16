@@ -502,7 +502,7 @@ class MainActivity : AppCompatActivity() {
                 val j = try { JSONObject(itm.jsonData) } catch (_: Exception) { JSONObject() }
                 toTpl.setOnClickListener {
                     val inp = EditText(this@MainActivity).apply {
-                        setText(j.optString("diagnosis").ifEmpty { j.optString("callReason") }.take(45))
+                        setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
                         hint = "Название шаблона..."
                         setPadding(30, 20, 30, 20)
                         setTextColor(Color.BLACK)
@@ -544,10 +544,10 @@ class MainActivity : AppCompatActivity() {
                 })
                 val bp = cleanBpString(j.optString("bp")).ifEmpty { cleanBpString(j.optString("bpAdapted")) }
                 if (bp.isNotEmpty()) addB("❤️ $bp", "#E53935")
-                if (j.optString("pulse").isNotEmpty()) addB("💓 ${j.optString("pulse")}", "#D81B60")
-                if (j.optString("saturation").isNotEmpty()) addB("🫁 ${j.optString("saturation")}%", "#00897B")
-                if (j.optString("glucose").isNotEmpty()) addB("🩸 ${j.optString("glucose")}", "#8E24AA")
-                if (j.optString("glasgowScore").isNotEmpty()) addB("🧠 ${j.optString("glasgowScore")} б", "#3949AB")
+                if (cleanJsonVal(j.opt("pulse")).isNotEmpty()) addB("💓 ${cleanJsonVal(j.opt("pulse"))}", "#D81B60")
+                if (cleanJsonVal(j.opt("saturation")).isNotEmpty()) addB("🫁 ${cleanJsonVal(j.opt("saturation"))}%", "#00897B")
+                if (cleanJsonVal(j.opt("glucose")).isNotEmpty()) addB("🩸 ${cleanJsonVal(j.opt("glucose"))}", "#8E24AA")
+                if (cleanJsonVal(j.opt("glasgowScore")).isNotEmpty()) addB("🧠 ${cleanJsonVal(j.opt("glasgowScore"))} б", "#3949AB")
 
                 details.text = formatCardText(itm.jsonData)
                 sv.post { sv.scrollTo(0, 0) }
@@ -557,6 +557,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val dateInStringRegex = Regex("""\d{2}\.\d{2}\.\d{4}""")
+
+    private fun cleanJsonVal(v: Any?): String {
+        if (v == null || v == JSONObject.NULL) return ""
+        if (v is String) {
+            val s = v.trim()
+            return if (s == "null" || s.startsWith("[object") || s.startsWith("{")) "" else s
+        }
+        if (v is JSONObject) {
+            for (k in listOf("type", "name", "display", "title")) {
+                val s = v.optString(k).replace("null", "").trim()
+                if (s.isNotEmpty() && !s.startsWith("{")) return s
+            }
+            return ""
+        }
+        if (v is JSONArray) {
+            return (0 until v.length()).mapNotNull { i ->
+                val s = cleanJsonVal(v.opt(i))
+                if (s.isNotEmpty()) s else null
+            }.joinToString(", ")
+        }
+        return v.toString().replace("null", "").trim()
+    }
 
     private fun cleanBpString(raw: String): String {
         val s = raw.trim().replace("null", "")
@@ -583,46 +605,88 @@ class MainActivity : AppCompatActivity() {
     private fun formatCardText(jsonStr: String): String = try {
         val j = JSONObject(jsonStr)
         StringBuilder().apply {
-            fun add(label: String, key: String, suf: String = "") { val v = j.optString(key); if (v.isNotEmpty()) append("$label: $v$suf\n") }
-            add("🎂 Родился", "birthDate"); add("⏳ Возраст", "age", " ${j.optString("ageUnit")}".trimEnd())
-            add("⚧ Пол", "gender"); add("🌍 Гражданство", "citizenship"); add("📍 Адрес", "address"); add("🚨 Повод", "callReason"); add("🏥 АПО", "apo")
+            fun add(label: String, key: String, suf: String = "") {
+                val v = cleanJsonVal(j.opt(key))
+                if (v.isNotEmpty()) append("$label: $v$suf\n")
+            }
+            add("🎂 Родился", "birthDate")
+            add("⏳ Возраст", "age", " ${cleanJsonVal(j.opt("ageUnit"))}".trimEnd())
+            add("⚧ Пол", "gender")
+            add("🌍 Гражданство", "citizenship")
+            add("📍 Адрес", "address")
+            add("🚨 Повод", "callReason")
+            add("🏥 АПО", "apo")
 
-            append("\n📋 ДИАГНОЗ:\n• ${j.optString("diagnosis")}\n"); add("• Код МКБ", "mkb")
-            if (j.optString("recommendedTherapy").isNotEmpty()) append("\n💊 ПРОТОКОЛЬНАЯ ТЕРАПИЯ (подсказка):\n${j.optString("recommendedTherapy")}\n")
+            append("\n📋 ДИАГНОЗ:\n• ${cleanJsonVal(j.opt("diagnosis"))}\n")
+            add("• Код МКБ", "mkb")
+            val th = cleanJsonVal(j.opt("recommendedTherapy"))
+            if (th.isNotEmpty()) append("\n💊 ПРОТОКОЛЬНАЯ ТЕРАПИЯ (подсказка):\n$th\n")
 
-            if (j.optString("ecgBefore").isNotEmpty() || j.optString("ecgAfter").isNotEmpty()) {
-                append("\n📈 ЭКГ:\n"); add("• До помощи", "ecgBefore"); add("• После помощи", "ecgAfter")
+            if (cleanJsonVal(j.opt("ecgBefore")).isNotEmpty() || cleanJsonVal(j.opt("ecgAfter")).isNotEmpty()) {
+                append("\n📈 ЭКГ:\n")
+                add("• До помощи", "ecgBefore")
+                add("• После помощи", "ecgAfter")
             }
 
             append("\n🩺 ОБЪЕКТИВНО:\n")
-            add("• Состояние", "generalState"); add("• Сознание", "consciousness")
-            add("• Положение", "position", if (j.optString("positionDescription").isNotEmpty()) " (${j.optString("positionDescription")})" else "")
-            add("• Поведение", "behavior"); add("• Глазго", "glasgowScore", " б")
-            val bpAd = cleanBpString(j.optString("bpAdapted")); if (bpAd.isNotEmpty()) append("• Привычное АД: $bpAd\n")
-            val bp = cleanBpString(j.optString("bp")); if (bp.isNotEmpty()) append("• АД на вызове: $bp\n")
-            add("• Пульс", "pulse", " уд/мин"); add("• ЧДД", "rr", " в мин"); add("• SpO2", "saturation", "%")
-            add("• Сахар", "glucose", " ммоль/л"); add("• Температура", "temp", "°C")
-            add("• Тоны сердца", "heartSounds"); add("• Дыхание", "lungs"); add("• Перкуссия", "percussion")
-            add("• Живот", "abdomen"); add("• Асцит", "ascites"); add("• Кожа", "skin"); add("• Высыпания", "rash")
-            add("• Отеки", "edema", if (j.optString("edemaDescription").isNotEmpty()) " (${j.optString("edemaDescription")})" else "")
-            add("• Зрачки", "pupils"); add("• Реакция на свет", "lightReaction")
-            add("• Речь", "speech"); add("• Лицо", "face"); add("• Походка", "gait"); add("• Нистагм", "nystagmus")
-            add("• Тонус мышц", "muscleTone"); add("• Пат. рефлексы", "pathologicalReflexes")
-            add("• Менингеальные", "meningealSymptoms"); add("• Плегии/парезы", "plegia")
-            add("• Язык", "tongue"); add("• Слизистые", "mucous"); add("• Перистальтика", "peristalsis")
-            add("• Печень", "liver"); add("• Брюшина", "peritoneal"); add("• Мочеиспускание", "urination"); add("• Стул", "stool")
-            add("• Запах алкоголя", "alcohol"); add("• Запах ацетона", "acetone"); add("• Локально", "localStatus")
+            add("• Состояние", "generalState")
+            add("• Сознание", "consciousness")
+            val pDesc = cleanJsonVal(j.opt("positionDescription"))
+            add("• Положение", "position", if (pDesc.isNotEmpty()) " ($pDesc)" else "")
+            add("• Поведение", "behavior")
+            add("• Глазго", "glasgowScore", " б")
+            val bpAd = cleanBpString(j.optString("bpAdapted"))
+            if (bpAd.isNotEmpty()) append("• Привычное АД: $bpAd\n")
+            val bp = cleanBpString(j.optString("bp"))
+            if (bp.isNotEmpty()) append("• АД на вызове: $bp\n")
+            add("• Пульс", "pulse", " уд/мин")
+            add("• ЧДД", "rr", " в мин")
+            add("• SpO2", "saturation", "%")
+            add("• Сахар", "glucose", " ммоль/л")
+            add("• Температура", "temp", "°C")
+            add("• Тоны сердца", "heartSounds")
+            add("• Дыхание", "lungs")
+            add("• Перкуссия", "percussion")
+            add("• Живот", "abdomen")
+            add("• Асцит", "ascites")
+            add("• Кожа", "skin")
+            add("• Высыпания", "rash")
+            val eDesc = cleanJsonVal(j.opt("edemaDescription"))
+            add("• Отеки", "edema", if (eDesc.isNotEmpty()) " ($eDesc)" else "")
+            add("• Зрачки", "pupils")
+            add("• Реакция на свет", "lightReaction")
+            add("• Речь", "speech")
+            add("• Лицо", "face")
+            add("• Походка", "gait")
+            add("• Нистагм", "nystagmus")
+            add("• Тонус мышц", "muscleTone")
+            add("• Пат. рефлексы", "pathologicalReflexes")
+            add("• Менингеальные", "meningealSymptoms")
+            add("• Плегии/парезы", "plegia")
+            add("• Язык", "tongue")
+            add("• Слизистые", "mucous")
+            add("• Перистальтика", "peristalsis")
+            add("• Печень", "liver")
+            add("• Брюшина", "peritoneal")
+            add("• Мочеиспускание", "urination")
+            add("• Стул", "stool")
+            add("• Запах алкоголя", "alcohol")
+            add("• Запах ацетона", "acetone")
+            add("• Локально", "localStatus")
 
-            if (j.optString("complaints").isNotEmpty()) append("\n🗣️ Жалобы:\n${j.optString("complaints")}\n")
-            if (j.optString("anamnesis").isNotEmpty()) append("\n📖 Анамнез:\n${j.optString("anamnesis")}\n")
-            if (j.optString("pastDiseases").isNotEmpty()) append("\n🩹 Перенесенные: ${j.optString("pastDiseases")}\n")
+            if (cleanJsonVal(j.opt("complaints")).isNotEmpty()) append("\n🗣️ Жалобы:\n${cleanJsonVal(j.opt("complaints"))}\n")
+            if (cleanJsonVal(j.opt("anamnesis")).isNotEmpty()) append("\n📖 Анамнез:\n${cleanJsonVal(j.opt("anamnesis"))}\n")
+            if (cleanJsonVal(j.opt("pastDiseases")).isNotEmpty()) append("\n🩹 Перенесенные: ${cleanJsonVal(j.opt("pastDiseases"))}\n")
             add("⚠️ Аллергия", "allergy")
 
             val meds = cleanMedicationsString(j.optString("medications"))
-            if (meds.isNotEmpty() || j.optString("attack").isNotEmpty() || j.optString("therapyEffect").isNotEmpty() || j.optString("callResult").isNotEmpty()) {
-                append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n"); add("• Помощь", "medHelp")
+            if (meds.isNotEmpty() || cleanJsonVal(j.opt("attack")).isNotEmpty() || cleanJsonVal(j.opt("therapyEffect")).isNotEmpty() || cleanJsonVal(j.opt("callResult")).isNotEmpty()) {
+                append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
+                add("• Помощь", "medHelp")
                 if (meds.isNotEmpty()) append("• Препараты:\n• $meds\n")
-                add("• Приступ", "attack"); add("• Эффект", "therapyEffect"); add("• Итог", "callResult")
+                add("• Приступ", "attack")
+                add("• Эффект", "therapyEffect")
+                add("• Итог", "callResult")
             }
         }.toString()
     } catch (_: Exception) { "Ошибка чтения данных" }
@@ -654,11 +718,11 @@ class MainActivity : AppCompatActivity() {
     private fun parseServerCardJson(jsonStr: String): Triple<String, String, Pair<Int, JSONObject>>? = try {
         val raw = JSONObject(jsonStr)
         val p = raw.optJSONObject("patient") ?: JSONObject()
-        val fio = p.optString("fullName").ifEmpty { raw.optString("initialFullName") }.trim()
+        val fio = cleanJsonVal(p.opt("fullName")).ifEmpty { cleanJsonVal(raw.opt("initialFullName")) }.trim()
         if (fio.isEmpty()) null else {
             val regDateOnly = raw.optString("dateOfRegistration").substringBefore("T")
             val rawBDate = p.optString("birthDate").replace("null", "")
-            val ageUnit = raw.optJSONObject("ageType")?.optString("type") ?: raw.optString("ageType").replace("null", "")
+            val ageUnit = raw.optJSONObject("ageType")?.optString("type")?.ifEmpty { raw.optString("ageType") } ?: raw.optString("ageType")
             var bDate = ""
             if (rawBDate.contains("-")) {
                 val bDateOnly = rawBDate.substringBefore("T")
@@ -683,9 +747,9 @@ class MainActivity : AppCompatActivity() {
                 }.joinToString(";\n• ")
             }
 
-            val complaints = raw.optString("complaints").replace("null", "")
-            val anamnesis = raw.optString("anamnesis").replace("null", "")
-            val diag = raw.optString("diagnosis").replace("null", "")
+            val complaints = cleanJsonVal(raw.opt("complaints"))
+            val anamnesis = cleanJsonVal(raw.opt("anamnesis"))
+            val diag = cleanJsonVal(raw.opt("diagnosis"))
             val meds = parseMeds()
             val bp = cleanBpString(raw.optString("arterialPressure"))
             val bpAd = cleanBpString(raw.optString("arterialPressureAdaptive"))
@@ -705,46 +769,49 @@ class MainActivity : AppCompatActivity() {
                     if (v is Boolean) {
                         if (v) "КУПИРОВАН" else "НЕ КУПИРОВАН"
                     } else {
-                        v.toString().trim().uppercase()
+                        v.toString().trim().uppercase().replace("NULL", "")
                     }
                 }
                 else -> ""
             }
 
-            val citizenship = raw.optString("citizenship").ifEmpty {
-                p.optJSONObject("countryOfRegistration")?.optString("type")
-            }?.replace("null", "")?.trim() ?: ""
+            val citizenship = cleanJsonVal(raw.opt("citizenship")).ifEmpty {
+                cleanJsonVal(p.opt("countryOfRegistration"))
+            }
 
-            val settlement = raw.optString("settlement").ifEmpty {
-                p.optJSONObject("settlement")?.optString("type") ?: raw.optJSONObject("settlement")?.optString("type")
-            }?.replace("null", "")?.trim() ?: ""
+            val settlement = cleanJsonVal(raw.opt("settlement")).ifEmpty {
+                cleanJsonVal(p.opt("settlement"))
+            }
 
-            val street = raw.optString("street").ifEmpty {
-                p.optJSONObject("street")?.optString("type") ?: raw.optJSONObject("street")?.optString("type")
-            }?.replace("null", "")?.trim() ?: ""
+            val street = cleanJsonVal(raw.opt("street")).ifEmpty {
+                cleanJsonVal(p.opt("street"))
+            }
 
-            val building = raw.optString("building").ifEmpty {
-                p.optString("building")
-            }.replace("null", "").trim()
+            val building = cleanJsonVal(raw.opt("building")).ifEmpty {
+                cleanJsonVal(p.opt("building"))
+            }
 
-            val flat = raw.optString("flat").ifEmpty {
-                p.optString("flat")
-            }.replace("null", "").trim()
+            val flat = cleanJsonVal(raw.opt("flat")).ifEmpty {
+                cleanJsonVal(p.opt("flat"))
+            }
 
-            val clarificationAddress = raw.optString("clarificationAddress").ifEmpty {
-                p.optString("clarificationAddress")
-            }.replace("null", "").trim()
+            val clarificationAddress = cleanJsonVal(raw.opt("clarificationAddress")).ifEmpty {
+                cleanJsonVal(p.opt("clarificationAddress"))
+            }
 
-            val address = raw.optString("address").ifEmpty {
-                p.optString("placeOfRegistration")
-            }.replace("null", "").trim()
+            val address = cleanJsonVal(raw.opt("address")).ifEmpty {
+                cleanJsonVal(p.opt("placeOfRegistration"))
+            }
 
-            val apo = raw.optString("apo").ifEmpty {
-                p.optJSONObject("territorialMedicalFacility")?.optString("type")
-            }?.replace("null", "")?.trim() ?: ""
+            val apo = cleanJsonVal(raw.opt("apo")).ifEmpty {
+                cleanJsonVal(p.opt("territorialMedicalFacility"))
+            }
 
             val card = JSONObject().apply {
-                put("fio", fio); put("birthDate", bDate); put("age", raw.optString("age").replace("null", "")); put("ageUnit", ageUnit)
+                put("fio", fio)
+                put("birthDate", bDate)
+                put("age", cleanJsonVal(raw.opt("age")))
+                put("ageUnit", cleanJsonVal(ageUnit))
                 put("citizenship", citizenship)
                 put("settlement", settlement)
                 put("street", street)
@@ -753,49 +820,61 @@ class MainActivity : AppCompatActivity() {
                 put("clarificationAddress", clarificationAddress)
                 put("address", address)
                 put("apo", apo)
-                put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
+                put("callReason", cleanJsonVal(raw.optJSONObject("reasonToCall")?.opt("type")))
                 put("gender", if (p.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")
-                put("complaints", complaints); put("anamnesis", anamnesis); put("pastDiseases", raw.optString("pastIllnesses").replace("null", ""))
+                put("complaints", complaints)
+                put("anamnesis", anamnesis)
+                put("pastDiseases", cleanJsonVal(raw.opt("pastIllnesses")))
                 put("allergy", if (raw.optBoolean("allergy", false)) "ДА" else "НЕТ")
-                put("generalState", raw.optJSONObject("generalState")?.optString("type") ?: "")
-                put("consciousness", raw.optJSONObject("consciousness")?.optString("type") ?: "")
-                put("position", raw.optJSONObject("position")?.optString("type")?.uppercase() ?: "")
-                put("positionDescription", raw.optString("positionDescription").replace("null", ""))
-                put("behavior", raw.optJSONObject("behavior")?.optString("type")?.uppercase() ?: "")
-                put("glasgowScore", raw.optString("comaScale").replace("null", ""))
-                put("bp", bp); put("bpAdapted", bpAd)
-                put("pulse", raw.optString("pulse").replace("null", "")); put("rr", raw.optString("breathCount").replace("null", ""))
-                put("temp", raw.optString("skinTemp").replace("null", "")); put("saturation", raw.optString("saturation1").replace("null", ""))
-                put("glucose", raw.optString("glycemia1").replace("null", ""))
-                put("heartSounds", jArr("heartSounds")); put("lungs", jArr("breaths")); put("percussion", jArr("percussionOfLungs"))
-                put("abdomen", jArr("stomachs")); put("skin", jArr("skins")); put("urination", jArr("urinations").uppercase())
-                put("stool", raw.optJSONObject("defecatio")?.optString("type")?.uppercase() ?: "")
+                put("generalState", cleanJsonVal(raw.optJSONObject("generalState")?.opt("type")))
+                put("consciousness", cleanJsonVal(raw.optJSONObject("consciousness")?.opt("type")))
+                put("position", cleanJsonVal(raw.optJSONObject("position")?.opt("type")).uppercase())
+                put("positionDescription", cleanJsonVal(raw.opt("positionDescription")))
+                put("behavior", cleanJsonVal(raw.optJSONObject("behavior")?.opt("type")).uppercase())
+                put("glasgowScore", cleanJsonVal(raw.opt("comaScale")).ifEmpty { "15" })
+                put("bp", bp)
+                put("bpAdapted", bpAd)
+                put("pulse", cleanJsonVal(raw.opt("pulse")))
+                put("rr", cleanJsonVal(raw.opt("breathCount")))
+                put("temp", cleanJsonVal(raw.opt("skinTemp")))
+                put("saturation", cleanJsonVal(raw.opt("saturation1")))
+                put("glucose", cleanJsonVal(raw.opt("glycemia1")))
+                put("heartSounds", jArr("heartSounds"))
+                put("lungs", jArr("breaths"))
+                put("percussion", jArr("percussionOfLungs"))
+                put("abdomen", jArr("stomachs"))
+                put("skin", jArr("skins"))
+                put("urination", jArr("urinations").uppercase())
+                put("stool", cleanJsonVal(raw.optJSONObject("defecatio")?.opt("type")).uppercase())
                 put("edema", if (raw.optBoolean("peripheralEdema", false)) "ДА" else "НЕТ")
-                put("edemaDescription", raw.optString("peripheralEdemaDescription").replace("null", ""))
+                put("edemaDescription", cleanJsonVal(raw.opt("peripheralEdemaDescription")))
                 put("rash", if (raw.optBoolean("skinRashes", false)) "ДА" else "НЕТ")
                 put("ascites", if (raw.optBoolean("ascites", false)) "ДА" else "НЕТ")
                 put("peritoneal", if (raw.optBoolean("stomachSymptoms", false)) "ДА" else "НЕТ")
-                put("medHelp", jArr("medicalAssistanceProvided")); put("medications", meds)
-                put("pupils", raw.optJSONObject("pupils")?.optString("type")?.uppercase() ?: "")
+                put("medHelp", jArr("medicalAssistanceProvided"))
+                put("medications", meds)
+                put("pupils", cleanJsonVal(raw.optJSONObject("pupils")?.opt("type")).uppercase())
                 put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")
-                put("speech", raw.optJSONObject("speech")?.optString("type")?.uppercase() ?: "")
-                put("gait", raw.optJSONObject("gait")?.optString("type")?.uppercase() ?: "")
-                put("face", raw.optJSONObject("face")?.optString("type")?.uppercase() ?: "")
-                put("nystagmus", raw.optJSONObject("nystagmus")?.optString("type")?.uppercase() ?: "")
-                put("muscleTone", raw.optString("muscleTone").replace("null", ""))
-                put("pathologicalReflexes", raw.optString("pathologicalReflexes").replace("null", ""))
-                put("meningealSymptoms", raw.optString("meningealSymptoms").replace("null", ""))
-                put("plegia", raw.optString("plegia").replace("null", ""))
-                put("tongue", raw.optString("tongue").replace("null", "")); put("mucous", raw.optString("mucosa").replace("null", ""))
+                put("speech", cleanJsonVal(raw.optJSONObject("speech")?.opt("type")).uppercase())
+                put("gait", cleanJsonVal(raw.optJSONObject("gait")?.opt("type")).uppercase())
+                put("face", cleanJsonVal(raw.optJSONObject("face")?.opt("type")).uppercase())
+                put("nystagmus", cleanJsonVal(raw.optJSONObject("nystagmus")?.opt("type")).uppercase())
+                put("muscleTone", cleanJsonVal(raw.opt("muscleTone")).ifEmpty { "Нормальный" })
+                put("pathologicalReflexes", cleanJsonVal(raw.opt("pathologicalReflexes")).ifEmpty { "Отрицательные" })
+                put("meningealSymptoms", cleanJsonVal(raw.opt("meningealSymptoms")).ifEmpty { "Отрицательные" })
+                put("plegia", cleanJsonVal(raw.opt("plegia")).ifEmpty { "Нет" })
+                put("tongue", cleanJsonVal(raw.opt("tongue")).ifEmpty { "Чистые" })
+                put("mucous", cleanJsonVal(raw.opt("mucosa")).ifEmpty { "Бледно-розовые" })
                 put("liver", liverVal)
                 put("peristalsis", if (raw.optBoolean("peristalsis", true)) "ДА" else "НЕТ")
-                put("localStatus", raw.optString("localStatus").replace("null", ""))
-                put("ecgBefore", raw.optString("electrocardiogramBefore").replace("null", ""))
-                put("ecgAfter", raw.optString("electrocardiogramAfter").replace("null", ""))
-                put("diagnosis", diag); put("mkb", if (icd != null) "[${icd.optString("code")}] ${icd.optString("type").ifEmpty { icd.optString("name") }}".trim() else "")
+                put("localStatus", cleanJsonVal(raw.opt("localStatus")))
+                put("ecgBefore", cleanJsonVal(raw.opt("electrocardiogramBefore")))
+                put("ecgAfter", cleanJsonVal(raw.opt("electrocardiogramAfter")))
+                put("diagnosis", diag)
+                put("mkb", if (icd != null) "[${icd.optString("code")}] ${icd.optString("type").ifEmpty { icd.optString("name") }}".trim() else "")
                 put("attack", attackVal)
-                put("therapyEffect", raw.optJSONObject("result")?.optString("type")?.uppercase() ?: "")
-                put("callResult", raw.optJSONObject("resultDeparture")?.optString("type")?.uppercase() ?: "")
+                put("therapyEffect", cleanJsonVal(raw.optJSONObject("result")?.opt("type")).uppercase())
+                put("callResult", cleanJsonVal(raw.optJSONObject("resultDeparture")?.opt("type")).uppercase())
             }
             Triple(fio, bDate, Pair(score, card))
         }

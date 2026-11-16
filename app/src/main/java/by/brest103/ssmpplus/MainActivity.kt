@@ -303,7 +303,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Без синхронного чтения SQLite в UI-потоке
         val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
         var showT = true
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
@@ -404,7 +403,6 @@ class MainActivity : AppCompatActivity() {
         qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) = filter(); override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })
         renderChips(); filter(); bs.show()
 
-        // Дожидаемся фоновой загрузки МКБ-10 без гонки
         if (fullMkbList.isEmpty() && mkbLoadJob?.isActive == true) {
             lifecycleScope.launch {
                 mkbLoadJob?.join()
@@ -587,7 +585,7 @@ class MainActivity : AppCompatActivity() {
         StringBuilder().apply {
             fun add(label: String, key: String, suf: String = "") { val v = j.optString(key); if (v.isNotEmpty()) append("$label: $v$suf\n") }
             add("🎂 Родился", "birthDate"); add("⏳ Возраст", "age", " ${j.optString("ageUnit")}".trimEnd())
-            add("⚧ Пол", "gender"); add("📍 Адрес", "address"); add("🚨 Повод", "callReason"); add("🏥 АПО", "apo")
+            add("⚧ Пол", "gender"); add("🌍 Гражданство", "citizenship"); add("📍 Адрес", "address"); add("🚨 Повод", "callReason"); add("🏥 АПО", "apo")
 
             append("\n📋 ДИАГНОЗ:\n• ${j.optString("diagnosis")}\n"); add("• Код МКБ", "mkb")
             if (j.optString("recommendedTherapy").isNotEmpty()) append("\n💊 ПРОТОКОЛЬНАЯ ТЕРАПИЯ (подсказка):\n${j.optString("recommendedTherapy")}\n")
@@ -662,7 +660,7 @@ class MainActivity : AppCompatActivity() {
             val rawBDate = p.optString("birthDate").replace("null", "")
             val ageUnit = raw.optJSONObject("ageType")?.optString("type") ?: ""
             var bDate = ""
-            if (rawBDate.contains("-")) {
+            if (rawBDate.includes("-")) {
                 val bDateOnly = rawBDate.substringBefore("T")
                 if (bDateOnly != regDateOnly || ageUnit in listOf("Дней", "Часов")) {
                     val sp = bDateOnly.split("-"); if (sp.size == 3) bDate = "${sp[2]}.${sp[1]}.${sp[0]} / 00:00"
@@ -700,7 +698,6 @@ class MainActivity : AppCompatActivity() {
                 else -> "НЕ УВЕЛИЧЕНА"
             }
 
-            // Исправлена мертвая ветка postAttack: проверяем JSONObject первым, затем Boolean
             val attackVal = when {
                 raw.optJSONObject("postAttack") != null -> raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: ""
                 raw.has("postAttack") && !raw.isNull("postAttack") -> {
@@ -716,7 +713,13 @@ class MainActivity : AppCompatActivity() {
 
             val card = JSONObject().apply {
                 put("fio", fio); put("birthDate", bDate); put("age", raw.optString("age").replace("null", "")); put("ageUnit", ageUnit)
-                put("address", p.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", ""))
+                put("citizenship", p.optJSONObject("countryOfRegistration")?.optString("type")?.replace("null", "") ?: "")
+                put("settlement", p.optJSONObject("settlement")?.optString("type")?.ifEmpty { raw.optString("settlement") }?.replace("null", "")?.trim() ?: "")
+                put("street", p.optJSONObject("street")?.optString("type")?.ifEmpty { raw.optString("street") }?.replace("null", "")?.trim() ?: "")
+                put("building", p.optString("building").ifEmpty { raw.optString("building") }.replace("null", "").trim())
+                put("flat", p.optString("flat").ifEmpty { raw.optString("flat") }.replace("null", "").trim())
+                put("clarificationAddress", p.optString("clarificationAddress").replace("null", "").trim())
+                put("address", p.optString("placeOfRegistration").ifEmpty { raw.optString("address") }.replace("null", "").trim())
                 put("apo", p.optJSONObject("territorialMedicalFacility")?.optString("type") ?: "")
                 put("callReason", raw.optJSONObject("reasonToCall")?.optString("type") ?: "")
                 put("gender", if (p.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА")

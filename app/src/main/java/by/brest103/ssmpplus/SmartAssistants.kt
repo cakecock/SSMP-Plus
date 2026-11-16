@@ -1,6 +1,8 @@
 package by.brest103.ssmpplus
 
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
@@ -29,6 +31,8 @@ object SmartAssistants {
     private var cprAdrCount = 0
     private var cprAmioCount = 0
     private var cprShockCount = 0
+    private var nextRhythmSec = 120
+    private var nextAdrSec = 180
     private val cprLogEntries = mutableListOf<String>()
 
     private fun getCurrentCprElapsedSec(): Int {
@@ -46,11 +50,14 @@ object SmartAssistants {
         cprAdrCount = 0
         cprAmioCount = 0
         cprShockCount = 0
+        nextRhythmSec = 120
+        nextAdrSec = 180
         cprLogEntries.clear()
     }
 
     private fun insertToWebField(context: Context, webView: WebView, fieldKw: String, text: String, append: Boolean = false) {
-        MedicalTools.copyToClipboard(context, fieldKw, text)
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(fieldKw, text))
         val js = "window.insertIntoCardField && window.insertIntoCardField(${JSONObject.quote(fieldKw)}, ${JSONObject.quote(text)}, $append);"
         webView.evaluateJavascript(js, null)
         Toast.makeText(context, "⚡ Вставлено в «$fieldKw» (и скопировано)!", Toast.LENGTH_SHORT).show()
@@ -234,7 +241,7 @@ object SmartAssistants {
     }
 
     // =========================================================
-    // 2. РЕАНИМАЦИОННЫЙ ТАЙМЕР-ЛОГГЕР СЛР (ПО ЧАСАМ ПРОЦЕССОРА)
+    // 2. РЕАНИМАЦИОННЫЙ ТАЙМЕР-ЛОГГЕР СЛР (ПОРОГОВЫЕ СИГНАЛЫ)
     // =========================================================
     fun showCprTimerSheet(context: Context, webView: WebView) {
         val (bs, root) = MedicalTools.createBaseSheet(context, "⏱️ Реанимационный таймер и логгер СЛР", "#D32F2F")
@@ -275,11 +282,14 @@ object SmartAssistants {
             val totalSec = getCurrentCprElapsedSec()
             val m = totalSec / 60
             val s = totalSec % 60
-            val cycleSec = totalSec % 120
-            val isRhythmTime = (cycleSec == 0 && totalSec > 0)
-            val isAdrTime = (totalSec % 180 == 0 && totalSec > 0)
 
-            // Пункт 3 ревью: объединение подсказок на 6-й, 12-й, 18-й минутах
+            // Пороговая логика (не пропускает уведомления при задержках потока или фоновом режиме)
+            while (totalSec >= nextRhythmSec + 12) nextRhythmSec += 120
+            while (totalSec >= nextAdrSec + 12) nextAdrSec += 180
+
+            val isRhythmTime = totalSec >= nextRhythmSec && totalSec < nextRhythmSec + 12
+            val isAdrTime = totalSec >= nextAdrSec && totalSec < nextAdrSec + 12
+
             val hint = when {
                 totalSec >= 1800 -> "⚠️ Прошло 30 минут СЛР! Оценить целесообразность / констатацию"
                 isRhythmTime && isAdrTime -> "🔔 2 МИН: Контроль ритма на ЭКГ! + 💉 Адреналин 1 мг в/в!"
@@ -295,7 +305,6 @@ object SmartAssistants {
             timerBanner.text = String.format(Locale.US, "⏱️ СЛР: %02d:%02d  (Адр: %d | Разряд: %d)\n%s", m, s, cprAdrCount, cprShockCount, hint)
         }
 
-        // Пункт 2 ревью: отсчет по SystemClock.elapsedRealtime() без дрейфа
         val tickerRunnable = object : Runnable {
             override fun run() {
                 if (isCprRunning) {
@@ -413,13 +422,11 @@ object SmartAssistants {
             setOnClickListener {
                 val summary = "Хронология СЛР:\n" + cprLogEntries.joinToString("; ")
                 insertToWebField(context, webView, "анамнез заболевания", summary, true)
-                // Шторка закрывается, но таймер в объекте SmartAssistants продолжает жить!
                 bs.dismiss()
             }
         })
         root.addView(insertRow)
 
-        // При закрытии шторки отключаем только перерисовку UI, сам таймер продолжает идти в фоне!
         bs.setOnDismissListener {
             handler.removeCallbacksAndMessages(null)
         }

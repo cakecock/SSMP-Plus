@@ -582,22 +582,119 @@
 
     function scrapeCache() {
         const c = window.b103ScreenCache;
-        const setValIfFound = (kw, fieldName) => {
-            const v = findInputByKw([kw])?.value?.trim();
-            if (v) c[fieldName] = v;
+        const setValIfFound = (kw, fieldName, exact = false) => {
+            const v = findInputByKw(Array.isArray(kw) ? kw : [kw], exact)?.value?.trim();
+            if (v && !v.startsWith('__')) c[fieldName] = v;
         };
         setValIfFound('экг до оказания', 'electrocardiogramBefore');
         setValIfFound('экг после оказания', 'electrocardiogramAfter');
         setValIfFound('предварительный диагноз', 'diagnosis');
         setValIfFound('жалобы', 'complaints');
         setValIfFound('анамнез заболевания', 'anamnesis');
+        setValIfFound('перенесенные заболевания', 'pastIllnesses');
         setValIfFound('локальный статус', 'localStatus');
+        setValIfFound('возраст', 'age', true);
+        setValIfFound(['комментарий (пульс', 'пульс, ударов в минуту'], 'pulse');
+        setValIfFound('частота дыхания (в минуту)', 'breathCount');
+        setValIfFound('температура тела (°c)', 'skinTemp');
+        setValIfFound('сатурация 1 (%)', 'saturation1');
+        setValIfFound('гликемия 1 (ммоль/л)', 'glycemia1');
+        setValIfFound('шкала комы глазго (баллы)', 'comaScale');
+        setValIfFound('тонус мышц', 'muscleTone');
+        setValIfFound('патологические рефлексы', 'pathologicalReflexes');
+        setValIfFound('менингиальные знаки', 'meningealSymptoms');
+        setValIfFound('плегии, парезы', 'plegia');
+        setValIfFound('язык', 'tongue');
+        setValIfFound('слизистые', 'mucosa');
+        setValIfFound('комментарий (вынужденное)', 'positionDescription');
+        setValIfFound('комментарий (периферические отеки)', 'peripheralEdemaDescription');
 
-        const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent.trim().toLowerCase() === 'зрачки' && !isInConclusion(e));
-        if (pupLbl && pupLbl.parentElement) {
-            const actPup = Array.from(pupLbl.parentElement.querySelectorAll('button')).find(b => b.className.includes('MuiButton-contained'));
-            c.pupils = actPup ? { type: (actPup.innerText || actPup.textContent || '').trim().toUpperCase() } : null;
+        const mkbVal = findInputByKw(['код по мкб'])?.value?.trim();
+        if (mkbVal) {
+            const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
+            if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
         }
+
+        const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+            .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+        for (const sl of slashNodes) {
+            let pr = sl.parentElement;
+            for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
+                const inps = getRealInputs(pr);
+                if (inps.length === 2) {
+                    const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
+                    const s = inps[0].value.trim(), d = inps[1].value.trim();
+                    if (s || d) {
+                        if (tx.includes('адаптированное')) c.arterialPressureAdaptive = { sys: s, dia: d };
+                        else if (tx.includes('ад (мм') || tx.includes('артериальн')) c.arterialPressure = { sys: s, dia: d };
+                    }
+                    break;
+                }
+                pr = pr.parentElement;
+            }
+        }
+
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+        const getSelectText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return '';
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                const b = p.querySelector('.MuiSelect-root, [role="button"]');
+                if (b) {
+                    const t = (b.innerText || '').trim();
+                    return (t && t.toLowerCase() !== 'не выбрано') ? t : '';
+                }
+                p = p.parentElement;
+            }
+            return '';
+        };
+        const gs = getSelectText('общее состояние'); if (gs) c.generalState = { type: gs };
+        const cs = getSelectText('сознание'); if (cs) c.consciousness = { type: cs };
+        const au = getSelectText('возраст (ед.)'); if (au) c.ageType = { type: au };
+        const toArr = (kw, key) => {
+            const v = getSelectText(kw);
+            if (v) c[key] = v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type);
+        };
+        toArr('кожа', 'skins');
+        toArr('тоны сердца', 'heartSounds');
+        toArr('дыхание', 'breaths');
+        toArr('перкуссия легких', 'percussionOfLungs');
+        toArr('живот', 'stomachs');
+
+        const getActiveBtnText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return null;
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                const btns = Array.from(p.querySelectorAll('button')).filter(b => !isInConclusion(b));
+                if (btns.length >= 2 && btns.length <= 6) {
+                    const act = btns.find(b => b.className.includes('MuiButton-contained'));
+                    return act ? (act.innerText || act.textContent || '').trim().toUpperCase() : '';
+                }
+                p = p.parentElement;
+            }
+            return null;
+        };
+        const pup = getActiveBtnText('зрачки'); if (pup !== null) c.pupils = pup ? { type: pup } : null;
+        const pos = getActiveBtnText('положение'); if (pos) c.position = { type: pos };
+        const beh = getActiveBtnText('поведение'); if (beh) c.behavior = { type: beh };
+        const spc = getActiveBtnText('речь'); if (spc) c.speech = { type: spc };
+        const fac = getActiveBtnText('лицо'); if (fac) c.face = { type: fac };
+        const gat = getActiveBtnText('походка'); if (gat) c.gait = { type: gat };
+        const nys = getActiveBtnText('нистагм'); if (nys) c.nystagmus = { type: nys };
+        const stu = getActiveBtnText('стул'); if (stu) c.defecatio = { type: stu };
+        const uri = getActiveBtnText('мочеиспускание'); if (uri) c.urinations = [{ type: uri }];
+        const liv = getActiveBtnText('печень'); if (liv) c.liver = { type: liv };
+        const alr = getActiveBtnText('аллергия'); if (alr) c.allergy = (alr === 'ДА');
+        const lgt = getActiveBtnText('реакция на свет'); if (lgt) c.pupilsLight = (lgt === 'ДА');
+        const rsh = getActiveBtnText('высыпания'); if (rsh) c.skinRashes = (rsh === 'ДА');
+        const asc = getActiveBtnText('асцит'); if (asc) c.ascites = (asc === 'ДА');
+        const edm = getActiveBtnText('периферические отеки'); if (edm) c.peripheralEdema = (edm === 'ДА');
+        const prt = getActiveBtnText('симптомы раздражения брюшины'); if (prt) c.stomachSymptoms = (prt === 'ДА');
+        const prs = getActiveBtnText('перистальтика'); if (prs) c.peristalsis = (prs === 'ДА');
 
         const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
             .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes('Количество:'));
@@ -873,8 +970,9 @@
                     if (!btn || btn.offsetParent === null || btn.classList.contains('Mui-disabled') || isInConclusion(btn)) continue;
                     const isMulti = forceMulti || btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
                     const curText = (btn.innerText || '').trim().toLowerCase();
+                    const curItems = (!curText || curText === 'не выбрано') ? [] : curText.split(',').map(s => s.trim()).filter(Boolean);
                     if (!isMulti && matchVal(curText, vals[0])) continue;
-                    if (isMulti && vals.every(v => curText.includes(v))) continue;
+                    if (isMulti && curItems.length === vals.length && vals.every(v => curItems.some(ci => matchVal(ci, v)))) continue;
 
                     await closeAnyOpenMenu();
                     btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
@@ -1141,7 +1239,6 @@
             setAll(['слизистые'], data.mucous || 'Бледно-розовые');
 
             clickButtonInRow(['положение'], data.position || 'АКТИВНОЕ');
-            if (data.positionDescription) setAll(['комментарий (вынужденное)'], data.positionDescription);
             clickButtonInRow(['поведение'], data.behavior || 'СПОКОЙНОЕ');
             if (data.pupils) {
                 clickButtonInRow(['зрачки'], [data.pupils, data.pupils.replace('АНИЗОКОРИЯ', 'АНИЗОКАРИЯ')]);
@@ -1167,11 +1264,17 @@
             clickButtonInRow(['пульс, ударов в минуту'], data.pulseExists || (data.pulse === '0' ? 'НЕТ' : 'ДА'));
             clickButtonInRow(['асцит'], data.ascites || 'НЕТ');
             clickButtonInRow(['периферические отеки'], data.edema || 'НЕТ');
-            if (data.edemaDescription) setAll(['комментарий (периферические отеки)'], data.edemaDescription);
             clickButtonInRow(['запах алкоголя'], data.alcohol || 'НЕТ');
             clickButtonInRow(['запах ацетона'], data.acetone || 'НЕТ');
             clickButtonInRow(['симптомы раздражения брюшины'], data.peritoneal || 'НЕТ');
             clickButtonInRow(['перистальтика'], data.peristalsis || 'ДА');
+            clickButtonInRow(['получено устное согласие на простое медицинское вмешательство', 'получено устное согласие'], 'ДА');
+
+            if (data.positionDescription || data.edemaDescription) {
+                await new Promise(r => setTimeout(r, 50));
+                if (data.positionDescription) setAll(['комментарий (вынужденное)'], data.positionDescription);
+                if (data.edemaDescription) setAll(['комментарий (периферические отеки)'], data.edemaDescription);
+            }
             clickButtonInRow(['получено устное согласие на простое медицинское вмешательство', 'получено устное согласие'], 'ДА');
 
             await selectDropdown(['общее состояние'], data.generalState || 'Удовлетворительное', false);

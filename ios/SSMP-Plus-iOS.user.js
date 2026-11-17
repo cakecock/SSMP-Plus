@@ -1644,10 +1644,13 @@ function formatCardText(jsonStr) {
     function openSearchSheet(isBest) {
         openIosSheet(isBest ? `⭐ Образцы карт (${BUILTIN_TEMPLATES.length} шаблонов)` : '📂 Общий архив вызовов', isBest ? '#E65100' : '#004D40', (body, close, titleEl) => {
             body.innerHTML = `
+                ${isBest ? '<button id="srch-create-tpl-btn" style="width:100%;padding:11px;border:1.5px dashed #E65100;border-radius:11px;background:#FFF8E1;color:#E65100;font-weight:700;font-size:13px;margin-bottom:10px;cursor:pointer;">➕ СОЗДАТЬ СВОЙ ШАБЛОН</button>' : ''}
                 <input id="srch-inp" type="text" placeholder="${isBest ? 'Поиск по диагнозу или СЛР...' : 'Поиск по фамилии...'}" style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1.5px solid ${isBest ? '#FFE082' : '#B0BEC5'};background:${isBest ? '#FFF8E1' : '#F0F4F4'};color:#111;font-size:14px;margin-bottom:10px;outline:none;">
                 <div id="srch-list" style="display:flex;flex-direction:column;gap:8px;"></div>
             `;
             const inp = body.querySelector('#srch-inp'), list = body.querySelector('#srch-list');
+            const createBtn = body.querySelector('#srch-create-tpl-btn');
+            if (createBtn) createBtn.onclick = () => { close(); openCreateTemplateSheet(); };
             function render() {
                 const q = inp.value.trim().toLowerCase();
                 list.innerHTML = '';
@@ -1789,6 +1792,108 @@ function formatCardText(jsonStr) {
         });
     }
 
+    function openCreateTemplateSheet(prefill = null) {
+        openIosSheet('➕ Новый клинический шаблон', '#00796B', (body, close) => {
+            body.innerHTML = `
+                <button id="ct-pull-btn" style="width:100%;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:13px;margin-bottom:12px;cursor:pointer;">📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ</button>
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Название шаблона (обязательно):</div>
+                <input id="ct-title" type="text" placeholder="Напр. ГК с тошнотой / ОКС с блокадой" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid #80CBC4;background:#E0F2F1;color:#111;font-size:13.5px;font-weight:700;margin-bottom:10px;outline:none;">
+
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <div style="flex:1;">
+                        <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Код по МКБ-10:</div>
+                        <input id="ct-mkb" type="text" placeholder="Напр. [I10]" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;outline:none;">
+                    </div>
+                </div>
+
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Предварительный диагноз:</div>
+                <textarea id="ct-diag" rows="2" placeholder="Клинический диагноз..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
+
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Жалобы:</div>
+                <textarea id="ct-comp" rows="2" placeholder="Жалобы пациента..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
+
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Анамнез заболевания:</div>
+                <textarea id="ct-anam" rows="3" placeholder="Хронология, обстоятельства..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
+
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Локальный статус:</div>
+                <textarea id="ct-loc" rows="2" placeholder="Локальный статус при травме, ранах..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
+
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Рекомендованная терапия / протокол:</div>
+                <textarea id="ct-ther" rows="2" placeholder="Препараты по протоколу..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:14px;outline:none;"></textarea>
+
+                <button id="ct-save-btn" style="width:100%;padding:14px;border:none;border-radius:12px;background:#00796B;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ</button>
+            `;
+
+            let baseCard = prefill || {};
+            const titleInp = body.querySelector('#ct-title');
+            const mkbInp = body.querySelector('#ct-mkb');
+            const diagInp = body.querySelector('#ct-diag');
+            const compInp = body.querySelector('#ct-comp');
+            const anamInp = body.querySelector('#ct-anam');
+            const locInp = body.querySelector('#ct-loc');
+            const therInp = body.querySelector('#ct-ther');
+
+            const applyDataToInputs = (d) => {
+                if (d.diagnosis) diagInp.value = cleanVal(d.diagnosis);
+                if (d.mkb) mkbInp.value = cleanVal(d.mkb);
+                if (d.complaints) compInp.value = cleanVal(d.complaints);
+                if (d.anamnesis) anamInp.value = cleanVal(d.anamnesis);
+                if (d.localStatus) locInp.value = cleanVal(d.localStatus);
+                if (d.recommendedTherapy) therInp.value = cleanVal(d.recommendedTherapy);
+                if (!titleInp.value.trim()) titleInp.value = cleanVal(d.diagnosis || d.callReason || '').slice(0, 45);
+            };
+
+            if (prefill) applyDataToInputs(prefill);
+
+            body.querySelector('#ct-pull-btn').onclick = () => {
+                scrapeCache();
+                if (!window.lastLoadedApiCard) { showToast('Откройте карту для считывания!'); return; }
+                const merged = Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache);
+                const internal = parseServerCardToInternal(merged);
+                if (internal && internal.json_data) {
+                    try {
+                        baseCard = JSON.parse(internal.json_data);
+                        applyDataToInputs(baseCard);
+                        showToast('📥 Данные подтянуты из карты!');
+                    } catch (e) {}
+                }
+            };
+
+            body.querySelector('#ct-save-btn').onclick = () => {
+                const title = titleInp.value.trim();
+                if (!title) { alert('Введите название шаблона!'); titleInp.focus(); return; }
+
+                const finalData = Object.assign({
+                    pastDiseases: 'ИБС, АГ', allergy: 'НЕТ', generalState: 'Удовлетворительное', consciousness: 'Ясное',
+                    position: 'АКТИВНОЕ', behavior: 'СПОКОЙНОЕ', glasgowScore: '15',
+                    bp: '130/80', bpAdapted: '120/80', pulse: '78', pulseExists: 'ДА', rr: '16', temp: '36.6',
+                    saturation: '98', glucose: '5.4', heartSounds: 'Ритмичные, Ясные', lungs: 'Свободное, Везикулярное',
+                    percussion: 'Ясный легочный звук', abdomen: 'Участвует в акте дыхания, Мягкий, Безболезненный',
+                    skin: 'Теплая, Сухая, Нормальная', tongue: 'Чистые', mucous: 'Бледно-розовые',
+                    pupils: '', lightReaction: 'ДА', speech: 'СОХРАНЕНА', face: 'СИММЕТРИЧНОЕ', gait: 'СВОБОДНАЯ',
+                    nystagmus: 'НЕТ', muscleTone: 'Нормальный', pathologicalReflexes: 'Отрицательные',
+                    meningealSymptoms: 'Отрицательные', plegia: 'Нет', rash: 'НЕТ', ascites: 'НЕТ',
+                    edema: 'НЕТ', alcohol: 'НЕТ', acetone: 'НЕТ', peritoneal: 'НЕТ',
+                    liver: 'НЕ УВЕЛИЧЕНА', peristalsis: 'ДА', urination: 'НЕ НАРУШЕНО', stool: 'НЕ НАРУШЕН',
+                    attack: 'КУПИРОВАН', therapyEffect: 'УЛУЧШЕНИЕ', callResult: 'ОСТАВЛЕН НА МЕСТЕ'
+                }, baseCard, {
+                    diagnosis: diagInp.value.trim(),
+                    mkb: mkbInp.value.trim(),
+                    complaints: compInp.value.trim(),
+                    anamnesis: anamInp.value.trim(),
+                    localStatus: locInp.value.trim(),
+                    recommendedTherapy: therInp.value.trim()
+                });
+
+                ['fio', 'birthDate', 'age', 'ageUnit', 'address', 'apo', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress'].forEach(k => delete finalData[k]);
+
+                saveCustomTemplate(title, JSON.stringify(finalData));
+                showToast(`📌 Шаблон «${title}» сохранен!`);
+                close();
+            };
+        });
+    }
+
     function openAutofillSheet() {
         const currentFio = (findInputByKw(['фио'], true)?.value || '').trim();
         const exactCardJson = currentFio.length >= 3 ? getBestCardForPatient(currentFio) : null;
@@ -1801,6 +1906,7 @@ function formatCardText(jsonStr) {
                     <button id="tab-tpl" style="flex:1;padding:11px;border:none;border-radius:11px;background:#00796B;color:#fff;font-weight:700;font-size:13px;">⭐ Образцы (${BUILTIN_TEMPLATES.length})</button>
                     <button id="tab-arch" style="flex:1;padding:11px;border:none;border-radius:11px;background:#E0F2F1;color:#004D40;font-weight:600;font-size:13px;">📂 Мой архив</button>
                 </div>
+                <button id="ios-create-tpl-btn" style="width:100%;padding:11px;border:1.5px dashed #00897B;border-radius:11px;background:#E0F2F1;color:#004D40;font-weight:700;font-size:13px;margin-bottom:10px;cursor:pointer;">➕ СОЗДАТЬ СВОЙ ШАБЛОН</button>
                 <input id="ios-search-inp" type="text" placeholder="Поиск (СЛР, диагноз, фамилия)..." style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1.5px solid #90CAF9;background:#F0F8FF;color:#111;font-size:14px;margin-bottom:10px;outline:none;">
                 <div id="ios-list-box" style="display:flex;flex-direction:column;gap:8px;"></div>
             `;
@@ -1809,6 +1915,7 @@ function formatCardText(jsonStr) {
             const tTpl = body.querySelector('#tab-tpl'), tArch = body.querySelector('#tab-arch');
 
             body.querySelector('#ios-open-helper').onclick = () => { close(); openHelperMenuSheet(); };
+            body.querySelector('#ios-create-tpl-btn').onclick = () => { close(); openCreateTemplateSheet(); };
             if (exactCardJson) {
                 body.querySelector('#ios-exact-fill').onclick = () => {
                     close();

@@ -443,7 +443,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        }
         t1.setOnClickListener { showT = true; update(qInp.text.toString()) }
         t2.setOnClickListener { showT = false; update(qInp.text.toString()) }
         qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) = update(s.toString()); override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })

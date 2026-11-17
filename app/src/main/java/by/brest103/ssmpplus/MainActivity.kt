@@ -302,7 +302,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        
+    };
         private fun showCreateTemplateDialog(prefillJson: String? = null) {
         val (bs, root) = createSheet("➕ Новый клинический шаблон", "#00796B")
         val scroll = NestedScrollView(this).apply {

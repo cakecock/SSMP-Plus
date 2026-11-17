@@ -69,11 +69,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         if (cleanTitle.isEmpty()) return
         val cleanedJson = try {
             JSONObject(rawJsonData).apply {
-                listOf(
-                    "fio", "birthDate", "age", "ageUnit", "citizenship",
-                    "settlement", "street", "building", "flat",
-                    "clarificationAddress", "address", "apo"
-                ).forEach { remove(it) }
+                remove("fio"); remove("birthDate"); remove("age"); remove("ageUnit"); remove("address"); remove("apo")
             }.toString()
         } catch (_: Exception) { rawJsonData }
 

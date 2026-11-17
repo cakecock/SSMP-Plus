@@ -302,6 +302,94 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        
+        private fun showCreateTemplateDialog(prefillJson: String? = null) {
+        val (bs, root) = createSheet("➕ Новый клинический шаблон", "#00796B")
+        val scroll = NestedScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+            isFillViewport = true
+            isNestedScrollingEnabled = true
+        }
+        val lay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 4, 0, 20)
+        }
+        scroll.addView(lay)
+        root.addView(scroll)
+
+        fun field(lbl: String, hintTxt: String, rows: Int = 1): EditText {
+            lay.addView(TextView(this).apply {
+                text = lbl; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor("#004D40")); setPadding(6, 6, 0, 4)
+            })
+            val et = EditText(this).apply {
+                hint = hintTxt
+                setPadding(26, 18, 26, 18)
+                if (rows > 1) {
+                    minLines = rows
+                    gravity = Gravity.TOP or Gravity.START
+                }
+                MedicalTools.styleEditText(this, "#F0F8FF", "#B0BEC5", 14f)
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            }
+            lay.addView(et)
+            return et
+        }
+
+        val titleInp = field("Название шаблона (обязательно):", "Напр. ГК с тошнотой / ОКС с блокадой")
+        val mkbInp = field("Код по МКБ-10:", "Напр. [I10] или [I20.0]")
+        val diagInp = field("Предварительный диагноз:", "Клинический диагноз...", 2)
+        val compInp = field("Жалобы:", "Жалобы пациента...", 2)
+        val anamInp = field("Анамнез заболевания:", "Хронология, обстоятельства...", 3)
+        val locInp = field("Локальный статус:", "Локальный статус при травме, ранах...", 2)
+        val therInp = field("Рекомендованная терапия / протокол:", "Препараты по протоколу...", 2)
+
+        prefillJson?.let {
+            try {
+                val j = JSONObject(it)
+                diagInp.setText(cleanJsonVal(j.opt("diagnosis")))
+                mkbInp.setText(cleanJsonVal(j.opt("mkb")))
+                compInp.setText(cleanJsonVal(j.opt("complaints")))
+                anamInp.setText(cleanJsonVal(j.opt("anamnesis")))
+                locInp.setText(cleanJsonVal(j.opt("localStatus")))
+                therInp.setText(cleanJsonVal(j.opt("recommendedTherapy")))
+                titleInp.setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
+            } catch (_: Exception) {}
+        }
+
+        lay.addView(TextView(this).apply {
+            text = "💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ"
+            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 20, 20, 20); background = roundBg("#00796B", 14f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 12 }
+            setOnClickListener {
+                val t = titleInp.text.toString().trim()
+                if (t.isEmpty()) {
+                    toast("Введите название шаблона!")
+                    titleInp.requestFocus()
+                    return@setOnClickListener
+                }
+                val base = try { prefillJson?.let { JSONObject(it) } ?: JSONObject() } catch (_: Exception) { JSONObject() }
+                base.apply {
+                    put("diagnosis", diagInp.text.toString().trim())
+                    put("mkb", mkbInp.text.toString().trim())
+                    put("complaints", compInp.text.toString().trim())
+                    put("anamnesis", anamInp.text.toString().trim())
+                    put("localStatus", locInp.text.toString().trim())
+                    put("recommendedTherapy", therInp.text.toString().trim())
+                }
+                lifecycleScope.launch(Dispatchers.IO) {
+                    dbHelper.saveCustomTemplate(t, base.toString())
+                    withContext(Dispatchers.Main) {
+                        toast("📌 Шаблон «$t» сохранен!")
+                        bs.dismiss()
+                    }
+                }
+            }
+        })
+
+        bs.show()
+    }
 
         val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
         var showT = true
@@ -309,6 +397,17 @@ class MainActivity : AppCompatActivity() {
         val t1 = TextView(this).apply { text = "⭐ Образцы ($builtinCount)"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
         val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
+
+        root.addView(TextView(this).apply {
+            text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
+            setPadding(16, 14, 16, 14); background = roundBg("#E0F2F1", 14f, "#80CBC4")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+            setOnClickListener {
+                bs.dismiss()
+                showCreateTemplateDialog(null)
+            }
+        })
 
         val qInp = EditText(this).apply {
             hint = "Поиск (СЛР, диагноз, фамилия)..."
@@ -418,6 +517,19 @@ class MainActivity : AppCompatActivity() {
         val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
         val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($builtinCount шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
         val titleTv = root.getChildAt(1) as? TextView
+
+        if (isBest) {
+            root.addView(TextView(this).apply {
+                text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
+                textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER
+                setPadding(16, 14, 16, 14); background = roundBg("#FFF8E1", 14f, "#FFE082")
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+                setOnClickListener {
+                    bs.dismiss()
+                    showCreateTemplateDialog(null)
+                }
+            })
+        }
 
         val qInp = EditText(this).apply {
             hint = if (isBest) "Поиск по диагнозу или СЛР..." else "Поиск по фамилии..."

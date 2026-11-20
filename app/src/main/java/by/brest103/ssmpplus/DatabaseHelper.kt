@@ -64,24 +64,35 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         else db.insert("cards", null, values)
     }
 
+    private fun cleanTemplateJson(rawJsonData: String): String = try {
+        JSONObject(rawJsonData).apply {
+            listOf(
+                "fio", "birthDate", "age", "ageUnit", "gender",
+                "citizenship", "settlement", "street", "building", "flat",
+                "clarificationAddress", "address", "apo", "callReason"
+            ).forEach { remove(it) }
+        }.toString()
+    } catch (_: Exception) { rawJsonData }
+
     fun saveCustomTemplate(title: String, rawJsonData: String) {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return
-        val cleanedJson = try {
-            JSONObject(rawJsonData).apply {
-                listOf(
-                    "fio", "birthDate", "age", "ageUnit", "gender",
-                    "citizenship", "settlement", "street", "building", "flat",
-                    "clarificationAddress", "address", "apo", "callReason"
-                ).forEach { remove(it) }
-            }.toString()
-        } catch (_: Exception) { rawJsonData }
-
         val values = ContentValues().apply {
             put("fio", cleanTitle); put("birth_date", ""); put("timestamp", System.currentTimeMillis())
-            put("score", 100); put("json_data", cleanedJson); put("is_builtin", 2)
+            put("score", 100); put("json_data", cleanTemplateJson(rawJsonData)); put("is_builtin", 2)
         }
         writableDatabase.insert("cards", null, values)
+    }
+
+    fun updateCustomTemplate(templateId: Long, title: String, rawJsonData: String): Boolean {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return false
+        val values = ContentValues().apply {
+            put("fio", cleanTitle)
+            put("timestamp", System.currentTimeMillis())
+            put("json_data", cleanTemplateJson(rawJsonData))
+        }
+        return writableDatabase.update("cards", values, "id = ? AND is_builtin = 2", arrayOf(templateId.toString())) > 0
     }
 
     fun deleteCustomTemplate(templateId: Long): Boolean =

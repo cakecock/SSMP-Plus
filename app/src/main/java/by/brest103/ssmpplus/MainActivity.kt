@@ -175,8 +175,10 @@ class MainActivity : AppCompatActivity() {
         try { webView.evaluateJavascript(assets.open("injector.js").bufferedReader().use { it.readText() }, null) } catch (_: Exception) {}
     }
 
-    private fun createSheet(title: String, titleColor: String): Pair<BottomSheetDialog, LinearLayout> {
+    @Suppress("DEPRECATION")
+    private fun createSheet(title: String, titleColor: String, fixedHeightRatio: Float? = null): Pair<BottomSheetDialog, LinearLayout> {
         val bs = BottomSheetDialog(this)
+        bs.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 18, 36, 24); setBackgroundColor(Color.WHITE) }
         root.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(8) }
@@ -186,7 +188,12 @@ class MainActivity : AppCompatActivity() {
             text = title; textSize = 18.5f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(titleColor)); setPadding(0, 0, 0, 12)
         })
-        bs.setContentView(root)
+        if (fixedHeightRatio != null) {
+            val h = (resources.displayMetrics.heightPixels * fixedHeightRatio).toInt()
+            bs.setContentView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h))
+        } else {
+            bs.setContentView(root)
+        }
         bs.behavior.apply {
             state = BottomSheetBehavior.STATE_EXPANDED
             skipCollapsed = true
@@ -275,8 +282,66 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
     }
 
-    private fun showCreateTemplateDialog(prefillJson: String? = null) {
-        val (bs, root) = createSheet("➕ Новый клинический шаблон", "#00796B")
+    private fun defaultTemplateJson(): JSONObject = JSONObject().apply {
+        put("pastDiseases", "ИБС, АГ")
+        put("allergy", "НЕТ")
+        put("generalState", "Удовлетворительное")
+        put("consciousness", "Ясное")
+        put("position", "АКТИВНОЕ")
+        put("behavior", "СПОКОЙНОЕ")
+        put("glasgowScore", "15")
+        put("bp", "130/80")
+        put("bpAdapted", "120/80")
+        put("pulse", "78")
+        put("pulseExists", "ДА")
+        put("rr", "16")
+        put("temp", "36.6")
+        put("saturation", "98")
+        put("glucose", "5.4")
+        put("heartSounds", "Ритмичные, Ясные")
+        put("lungs", "Свободное, Везикулярное")
+        put("percussion", "Ясный легочный звук")
+        put("abdomen", "Участвует в акте дыхания, Мягкий, Безболезненный")
+        put("skin", "Теплая, Сухая, Нормальная")
+        put("tongue", "Чистые")
+        put("mucous", "Бледно-розовые")
+        put("pupils", "")
+        put("lightReaction", "ДА")
+        put("speech", "СОХРАНЕНА")
+        put("face", "СИММЕТРИЧНОЕ")
+        put("gait", "СВОБОДНАЯ")
+        put("nystagmus", "НЕТ")
+        put("muscleTone", "Нормальный")
+        put("pathologicalReflexes", "Отрицательные")
+        put("meningealSymptoms", "Отрицательные")
+        put("plegia", "Нет")
+        put("rash", "НЕТ")
+        put("ascites", "НЕТ")
+        put("edema", "НЕТ")
+        put("alcohol", "НЕТ")
+        put("acetone", "НЕТ")
+        put("peritoneal", "НЕТ")
+        put("liver", "НЕ УВЕЛИЧЕНА")
+        put("peristalsis", "ДА")
+        put("urination", "НЕ НАРУШЕНО")
+        put("stool", "НЕ НАРУШЕН")
+        put("attack", "КУПИРОВАН")
+        put("therapyEffect", "УЛУЧШЕНИЕ")
+        put("callResult", "ОСТАВЛЕН НА МЕСТЕ")
+    }
+
+    private fun showCreateTemplateDialog(prefillJson: String? = null, onSaved: (() -> Unit)? = null) {
+        val (bs, root) = createSheet("➕ Новый клинический шаблон", "#00796B", fixedHeightRatio = 0.86f)
+        var baseCard: JSONObject? = try { prefillJson?.let { JSONObject(it) } } catch (_: Exception) { null }
+
+        val pullBtn = TextView(this).apply {
+            text = "📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ"
+            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(18, 16, 18, 16); background = roundBg("#0288D1", 12f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        root.addView(pullBtn)
+
         val scroll = NestedScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
             isFillViewport = true
@@ -284,31 +349,31 @@ class MainActivity : AppCompatActivity() {
         }
         val lay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 4, 0, 20)
+            setPadding(0, 4, 0, 16)
         }
         scroll.addView(lay)
         root.addView(scroll)
 
-        fun field(lbl: String, hintTxt: String, rows: Int = 1): EditText {
+        fun field(lbl: String, hintTxt: String, rows: Int = 1, bgHex: String = "#F5F7F8", strokeHex: String = "#B0BEC5"): EditText {
             lay.addView(TextView(this).apply {
                 text = lbl; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
                 setTextColor(Color.parseColor("#004D40")); setPadding(6, 6, 0, 4)
             })
             val et = EditText(this).apply {
                 hint = hintTxt
-                setPadding(26, 18, 26, 18)
+                setPadding(26, 16, 26, 16)
                 if (rows > 1) {
                     minLines = rows
                     gravity = Gravity.TOP or Gravity.START
                 }
-                MedicalTools.styleEditText(this, "#F0F8FF", "#B0BEC5", 14f)
+                MedicalTools.styleEditText(this, bgHex, strokeHex, 12f)
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
             }
             lay.addView(et)
             return et
         }
 
-        val titleInp = field("Название шаблона (обязательно):", "Напр. ГК с тошнотой / ОКС с блокадой")
+        val titleInp = field("Название шаблона (обязательно):", "Напр. ГК с тошнотой / ОКС с блокадой", 1, "#E0F2F1", "#80CBC4")
         val mkbInp = field("Код по МКБ-10:", "Напр. [I10] или [I20.0]")
         val diagInp = field("Предварительный диагноз:", "Клинический диагноз...", 2)
         val compInp = field("Жалобы:", "Жалобы пациента...", 2)
@@ -316,24 +381,54 @@ class MainActivity : AppCompatActivity() {
         val locInp = field("Локальный статус:", "Локальный статус при травме, ранах...", 2)
         val therInp = field("Рекомендованная терапия / протокол:", "Препараты по протоколу...", 2)
 
-        prefillJson?.let {
-            try {
-                val j = JSONObject(it)
-                diagInp.setText(cleanJsonVal(j.opt("diagnosis")))
-                mkbInp.setText(cleanJsonVal(j.opt("mkb")))
-                compInp.setText(cleanJsonVal(j.opt("complaints")))
-                anamInp.setText(cleanJsonVal(j.opt("anamnesis")))
-                locInp.setText(cleanJsonVal(j.opt("localStatus")))
-                therInp.setText(cleanJsonVal(j.opt("recommendedTherapy")))
+        fun applyObjToFields(j: JSONObject) {
+            diagInp.setText(cleanJsonVal(j.opt("diagnosis")))
+            mkbInp.setText(cleanJsonVal(j.opt("mkb")))
+            compInp.setText(cleanJsonVal(j.opt("complaints")))
+            anamInp.setText(cleanJsonVal(j.opt("anamnesis")))
+            locInp.setText(cleanJsonVal(j.opt("localStatus")))
+            therInp.setText(cleanJsonVal(j.opt("recommendedTherapy")))
+            if (titleInp.text.toString().trim().isEmpty()) {
                 titleInp.setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
-            } catch (_: Exception) {}
+            }
         }
 
-        lay.addView(TextView(this).apply {
+        baseCard?.let { applyObjToFields(it) }
+
+        pullBtn.setOnClickListener {
+            val js = """
+                (function() {
+                    if (typeof window.getCurrentCardRawJson === 'function') return window.getCurrentCardRawJson();
+                    if (window.lastLoadedApiCard) return JSON.stringify(Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache || {}));
+                    return '';
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js) { rawRes ->
+                val unwrapped = try {
+                    if (rawRes.isNullOrBlank() || rawRes == "null") ""
+                    else (JSONTokener(rawRes).nextValue() as? String) ?: ""
+                } catch (_: Exception) { "" }
+
+                if (unwrapped.isBlank()) {
+                    toast("Откройте карту для считывания!")
+                    return@evaluateJavascript
+                }
+                val parsed = parseServerCardJson(unwrapped)
+                if (parsed == null) {
+                    toast("Не удалось считать данные карты")
+                    return@evaluateJavascript
+                }
+                baseCard = parsed.third.second
+                applyObjToFields(parsed.third.second)
+                toast("📥 Данные подтянуты из карты!")
+            }
+        }
+
+        val saveBtn = TextView(this).apply {
             text = "💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ"
             textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setPadding(20, 20, 20, 20); background = roundBg("#00796B", 14f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 12 }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10 }
             setOnClickListener {
                 val t = titleInp.text.toString().trim()
                 if (t.isEmpty()) {
@@ -341,8 +436,15 @@ class MainActivity : AppCompatActivity() {
                     titleInp.requestFocus()
                     return@setOnClickListener
                 }
-                val base = try { prefillJson?.let { JSONObject(it) } ?: JSONObject() } catch (_: Exception) { JSONObject() }
-                base.apply {
+                val finalData = defaultTemplateJson()
+                baseCard?.let { src ->
+                    val it = src.keys()
+                    while (it.hasNext()) {
+                        val k = it.next()
+                        finalData.put(k, src.opt(k))
+                    }
+                }
+                finalData.apply {
                     put("diagnosis", diagInp.text.toString().trim())
                     put("mkb", mkbInp.text.toString().trim())
                     put("complaints", compInp.text.toString().trim())
@@ -351,15 +453,16 @@ class MainActivity : AppCompatActivity() {
                     put("recommendedTherapy", therInp.text.toString().trim())
                 }
                 lifecycleScope.launch(Dispatchers.IO) {
-                    dbHelper.saveCustomTemplate(t, base.toString())
+                    dbHelper.saveCustomTemplate(t, finalData.toString())
                     withContext(Dispatchers.Main) {
                         toast("📌 Шаблон «$t» сохранен!")
                         bs.dismiss()
+                        onSaved?.invoke()
                     }
                 }
             }
-        })
-
+        }
+        root.addView(saveBtn)
         bs.show()
     }
 
@@ -393,19 +496,19 @@ class MainActivity : AppCompatActivity() {
 
         val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
         var showT = true
-        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 10) }
         val t1 = TextView(this).apply { text = "⭐ Образцы ($builtinCount)"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
         val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
 
         root.addView(TextView(this).apply {
             text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
-            setPadding(16, 14, 16, 14); background = roundBg("#E0F2F1", 14f, "#80CBC4")
+            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
+            setPadding(16, 16, 16, 16); background = roundBg("#E0F2F1", 14f, "#00897B")
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
             setOnClickListener {
                 bs.dismiss()
-                showCreateTemplateDialog(null)
+                showCreateTemplateDialog(null) { showAutofillPickerSheet(currentFio) }
             }
         })
 
@@ -521,12 +624,12 @@ class MainActivity : AppCompatActivity() {
         if (isBest) {
             root.addView(TextView(this).apply {
                 text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
-                textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER
-                setPadding(16, 14, 16, 14); background = roundBg("#FFF8E1", 14f, "#FFE082")
+                textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER
+                setPadding(16, 16, 16, 16); background = roundBg("#FFF8E1", 14f, "#E65100")
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
                 setOnClickListener {
                     bs.dismiss()
-                    showCreateTemplateDialog(null)
+                    showCreateTemplateDialog(null) { openSearchSheet(true) }
                 }
             })
         }

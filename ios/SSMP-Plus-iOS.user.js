@@ -6,6 +6,7 @@
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
 // @run-at       document-start
+// @inject-into  page
 // @grant        none
 // ==/UserScript==
 

@@ -39,6 +39,8 @@ class MainActivity : AppCompatActivity() {
     private var fullMkbList: List<MkbCodeItem> = emptyList()
 
     private val targetHost = "soft.103brest.by"
+    private val prefsName = "ssmp_plus_prefs"
+    private val keyMedCatalog = "med_catalog_json"
 
     private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let {
@@ -68,6 +70,39 @@ class MainActivity : AppCompatActivity() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun roundBg(hex: String, r: Float, strokeHex: String? = null) = GradientDrawable().apply {
         setColor(Color.parseColor(hex)); cornerRadius = r; strokeHex?.let { setStroke(2, Color.parseColor(it)) }
+    }
+
+    private fun saveCachedMedCatalog(jsonStr: String) {
+        try {
+            getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().putString(keyMedCatalog, jsonStr).apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun parseMedCatalogJson(raw: String): Pair<List<Pair<String, String>>, List<String>> {
+        val meds = mutableListOf<Pair<String, String>>()
+        val routes = mutableListOf<String>()
+        try {
+            val o = JSONObject(raw)
+            val ma = o.optJSONArray("meds") ?: JSONArray()
+            for (i in 0 until ma.length()) {
+                val it = ma.optJSONObject(i) ?: continue
+                val n = it.optString("n").trim()
+                val u = it.optString("u").trim()
+                if (n.isNotEmpty()) meds.add(n to u)
+            }
+            val ra = o.optJSONArray("routes") ?: JSONArray()
+            for (i in 0 until ra.length()) {
+                val r = ra.optString(i).trim()
+                if (r.isNotEmpty()) routes.add(r)
+            }
+        } catch (_: Exception) {}
+        return meds to routes
+    }
+
+    private fun loadCachedMedCatalog(): Pair<List<Pair<String, String>>, List<String>> {
+        val raw = getSharedPreferences(prefsName, Context.MODE_PRIVATE).getString(keyMedCatalog, null)
+            ?: return emptyList<Pair<String, String>>() to emptyList()
+        return parseMedCatalogJson(raw)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -313,14 +348,23 @@ class MainActivity : AppCompatActivity() {
         fun run(q: String) = lifecycleScope.launch(Dispatchers.IO) {
             val list = dbHelper.searchMedPresets(q)
             withContext(Dispatchers.Main) {
-                setupAdapter(
-                    lv,
-                    list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n💊 ${it.itemsSummary.ifEmpty { "Пустой набор" }}" },
-                    "#FAF5FF",
-                    "#E1BEE7"
-                ) { pos ->
-                    bs.dismiss()
-                    showMedPresetPreview(list[pos])
+                if (list.isEmpty()) {
+                    setupAdapter(
+                        lv,
+                        listOf("📭 Своих наборов пока нет.\nНажмите «➕ СОЗДАТЬ НАБОР ПРЕПАРАТОВ» — можно подтянуть позиции из открытой карты или выбрать из справочника сайта."),
+                        "#FAFAFA",
+                        "#E0E0E0"
+                    ) {}
+                } else {
+                    setupAdapter(
+                        lv,
+                        list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n💊 ${it.itemsSummary.ifEmpty { "Пустой набор" }}" },
+                        "#FAF5FF",
+                        "#E1BEE7"
+                    ) { pos ->
+                        bs.dismiss()
+                        showMedPresetPreview(list[pos])
+                    }
                 }
             }
         }
@@ -421,6 +465,8 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }
 
+        var (catalogMeds, catalogRoutes) = loadCachedMedCatalog()
+
         val pullBtn = TextView(this).apply {
             text = "📥 ПОДТЯНУТЬ ПРЕПАРАТЫ ИЗ ОТКРЫТОЙ КАРТЫ"
             textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
@@ -463,7 +509,7 @@ class MainActivity : AppCompatActivity() {
         }
         lay.addView(itemsListLay)
 
-        // Форма добавления одной позиции в набор
+        // Форма добавления одной позиции в набор + живой выпадающий список из базы сайта
         val addBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 16, 20, 16)
@@ -472,20 +518,43 @@ class MainActivity : AppCompatActivity() {
         }
         addBox.addView(TextView(this).apply {
             text = "➕ Добавить позицию в набор:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#263238")); setPadding(0, 0, 0, 8)
+            setTextColor(Color.parseColor("#263238")); setPadding(0, 0, 0, 4)
         })
+        val catalogStatusTv = TextView(this).apply {
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#546E7A"))
+            setPadding(0, 0, 0, 8)
+        }
+        addBox.addView(catalogStatusTv)
 
+        val nameRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 4 }
+        }
         val nameInp = EditText(this).apply {
-            hint = "Наименование (напр. Перчатки н/ст или Кеторолак 3%-1,0)"
+            hint = "Начните ввод препарата (или ▼)..."
             setPadding(20, 14, 20, 14)
             MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 6 }
         }
-        addBox.addView(nameInp)
+        val dropToggleBtn = TextView(this).apply {
+            text = "▼"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#4A148C")); gravity = Gravity.CENTER
+            setPadding(18, 14, 18, 14); background = roundBg("#EDE7F6", 10f, "#CE93D8")
+        }
+        nameRow.addView(nameInp); nameRow.addView(dropToggleBtn)
+        addBox.addView(nameRow)
+
+        val suggestionsLay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, 4, 0, 6)
+        }
+        addBox.addView(suggestionsLay)
 
         val qtyRouteRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 4; bottomMargin = 8 }
         }
         val qtyInp = EditText(this).apply {
             hint = "Кол-во"
@@ -506,22 +575,6 @@ class MainActivity : AppCompatActivity() {
 
         val routeChipsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 8) }
         val routeChipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(
-            "не определен" to "путь введения не определен",
-            "в/в" to "внутривенный",
-            "в/м" to "внутримышечный",
-            "п/к" to "подкожный",
-            "внутрь" to "внутрь",
-            "сублингв." to "сублингвальный",
-            "ингал." to "ингаляционный"
-        ).forEach { (shortLbl, fullVal) ->
-            routeChipsLay.addView(TextView(this).apply {
-                text = shortLbl; textSize = 11.5f; setTextColor(Color.parseColor("#4A148C"))
-                setPadding(16, 8, 16, 8); background = roundBg("#EDE7F6", 12f)
-                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
-                setOnClickListener { routeInp.setText(fullVal) }
-            })
-        }
         routeChipsScroll.addView(routeChipsLay)
         addBox.addView(routeChipsScroll)
 
@@ -540,11 +593,122 @@ class MainActivity : AppCompatActivity() {
         addBox.addView(addPosBtn)
         lay.addView(addBox)
 
+        fun normX(s: String) = s.trim().lowercase().replace('x', 'х')
+        var suppressSug = false
+
+        fun renderSuggestions(forceOpen: Boolean = false) {
+            suggestionsLay.removeAllViews()
+            if (suppressSug || catalogMeds.isEmpty()) {
+                suggestionsLay.visibility = View.GONE
+                return
+            }
+            val rawQ = nameInp.text.toString().trim()
+            if (!forceOpen && rawQ.isEmpty()) {
+                suggestionsLay.visibility = View.GONE
+                return
+            }
+            val qn = normX(rawQ)
+            val matches = catalogMeds.filter { (n, _) -> qn.isEmpty() || normX(n).contains(qn) }.take(12)
+            if (matches.isEmpty()) {
+                suggestionsLay.visibility = View.GONE
+                return
+            }
+            suggestionsLay.visibility = View.VISIBLE
+            matches.forEach { (medName, unit) ->
+                val display = if (unit.isNotEmpty()) "$medName  [$unit]" else medName
+                suggestionsLay.addView(TextView(this).apply {
+                    text = display; textSize = 13f; setTextColor(Color.parseColor("#263238"))
+                    setPadding(18, 12, 18, 12); background = roundBg("#FFFFFF", 8f, "#CE93D8")
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 4 }
+                    setOnClickListener {
+                        suppressSug = true
+                        nameInp.setText(medName)
+                        nameInp.setSelection(medName.length)
+                        suppressSug = false
+                        suggestionsLay.visibility = View.GONE
+                        qtyInp.requestFocus()
+                        qtyInp.selectAll()
+                    }
+                })
+            }
+        }
+
+        fun renderRouteChips() {
+            routeChipsLay.removeAllViews()
+            val merged = LinkedHashSet<String>().apply {
+                add("путь введения не определен")
+                add("внутривенный")
+                add("внутримышечный")
+                add("подкожный")
+                add("внутрь")
+                add("сублингвальный")
+                add("ингаляционный")
+                catalogRoutes.forEach { if (it.isNotBlank()) add(it) }
+            }
+            merged.forEach { fullVal ->
+                val shortLbl = when {
+                    fullVal.contains("не определен") -> "не определен"
+                    fullVal.startsWith("внутривенн") -> "в/в"
+                    fullVal.startsWith("внутримышечн") -> "в/м"
+                    fullVal.startsWith("подкожн") -> "п/к"
+                    else -> fullVal
+                }
+                routeChipsLay.addView(TextView(this).apply {
+                    text = shortLbl; textSize = 11.5f; setTextColor(Color.parseColor("#4A148C"))
+                    setPadding(16, 8, 16, 8); background = roundBg("#EDE7F6", 12f)
+                    layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
+                    setOnClickListener { routeInp.setText(fullVal) }
+                })
+            }
+        }
+
+        fun updateCatalogStatus() {
+            catalogStatusTv.text = if (catalogMeds.isNotEmpty()) {
+                "📚 Справочник сайта загружен (${catalogMeds.size} поз.) — выберите из списка ниже"
+            } else {
+                "💡 Откройте 1 раз окно «Добавить» на сайте, чтобы кэшировать весь справочник препаратов"
+            }
+            renderRouteChips()
+        }
+
+        updateCatalogStatus()
+
+        webView.evaluateJavascript("window.getMedCatalogJson ? window.getMedCatalogJson() : '';") { rawRes ->
+            val unwrapped = try {
+                if (rawRes.isNullOrBlank() || rawRes == "null") ""
+                else (JSONTokener(rawRes).nextValue() as? String) ?: ""
+            } catch (_: Exception) { "" }
+            if (unwrapped.isNotBlank()) {
+                val (m, r) = parseMedCatalogJson(unwrapped)
+                if (m.size >= catalogMeds.size) {
+                    catalogMeds = m
+                    if (r.isNotEmpty()) catalogRoutes = r
+                    saveCachedMedCatalog(unwrapped)
+                    updateCatalogStatus()
+                }
+            }
+        }
+
+        nameInp.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) = renderSuggestions(false)
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+        })
+        dropToggleBtn.setOnClickListener {
+            if (catalogMeds.isEmpty()) {
+                toast("Справочник ещё пуст — откройте 1 раз «Добавить» в карте на сайте")
+            } else if (suggestionsLay.visibility == View.VISIBLE) {
+                suggestionsLay.visibility = View.GONE
+            } else {
+                renderSuggestions(true)
+            }
+        }
+
         fun renderItems() {
             itemsListLay.removeAllViews()
             if (items.isEmpty()) {
                 itemsListLay.addView(TextView(this).apply {
-                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или добавьте позиции ниже."
+                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или выберите позиции из списка ниже."
                     textSize = 12.8f; setTextColor(Color.parseColor("#607D8B"))
                     setPadding(16, 14, 16, 14); background = roundBg("#FAFAFA", 10f, "#E0E0E0")
                 })
@@ -565,7 +729,10 @@ class MainActivity : AppCompatActivity() {
                     textSize = 13f; setTextColor(Color.parseColor("#263238"))
                     layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                     setOnClickListener {
+                        suppressSug = true
                         nameInp.setText(nm)
+                        suppressSug = false
+                        suggestionsLay.visibility = View.GONE
                         qtyInp.setText(qt)
                         routeInp.setText(rt)
                         noteInp.setText(obj.optString("note"))
@@ -584,14 +751,18 @@ class MainActivity : AppCompatActivity() {
 
         addPosBtn.setOnClickListener {
             val nm = nameInp.text.toString().trim()
-            if (nm.isEmpty()) { toast("Введите наименование препарата!"); nameInp.requestFocus(); return@setOnClickListener }
+            if (nm.isEmpty()) { toast("Введите или выберите препарат!"); nameInp.requestFocus(); return@setOnClickListener }
             val qt = qtyInp.text.toString().replace(",", ".").trim().ifEmpty { "1" }
             val rt = routeInp.text.toString().trim()
             val nt = noteInp.text.toString().trim()
             items.add(JSONObject().apply {
                 put("name", nm); put("qty", qt); put("route", rt); put("note", nt)
             })
-            nameInp.setText(""); qtyInp.setText("1"); routeInp.setText(""); noteInp.setText("")
+            suppressSug = true
+            nameInp.setText("")
+            suppressSug = false
+            suggestionsLay.visibility = View.GONE
+            qtyInp.setText("1"); routeInp.setText(""); noteInp.setText("")
             renderItems()
         }
 
@@ -1786,6 +1957,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet("") }
         @JavascriptInterface fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
         @JavascriptInterface fun requestAutofill(fio: String) = runOnUiThread { showAutofillPickerSheet(fio) }
+        @JavascriptInterface fun cacheMedCatalog(jsonStr: String) = saveCachedMedCatalog(jsonStr)
 
         @JavascriptInterface
         fun saveApiCardForced(jsonStr: String) = lifecycleScope.launch(Dispatchers.IO) {

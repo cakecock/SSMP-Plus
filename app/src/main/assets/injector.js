@@ -125,7 +125,7 @@
     }
 
     // ==========================================
-    // 2. DOM-СБОР КЭША С ЭКРАНА (💾, ШАБЛОНЫ И АУДИТ)
+    // 2. DOM-СБОР КЭША С ЭКРАНА (💾, ШАБЛОНЫ, ПРЕПАРАТЫ И АУДИТ)
     // ==========================================
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
@@ -156,6 +156,43 @@
             }
         }
         return null;
+    }
+
+    function findMedicationsSection() {
+        const lbl = Array.from(document.querySelectorAll('label'))
+            .find(e => e.textContent && e.textContent.trim().toLowerCase() === 'лекарственные средства' && !isInConclusion(e));
+        return lbl ? lbl.parentElement : null;
+    }
+
+    function cleanQtyNum(raw) {
+        const m = String(raw || '').replace(',', '.').match(/\d+(?:\.\d+)?/);
+        if (!m) return '';
+        const n = parseFloat(m[0]);
+        return Number.isNaN(n) ? m[0] : String(n);
+    }
+
+    function scrapeScreenMedications() {
+        const sec = findMedicationsSection();
+        if (!sec) return [];
+        const cards = Array.from(sec.querySelectorAll('.MuiCard-root'));
+        const items = [];
+        for (const card of cards) {
+            const name = cleanVal(card.querySelector('.MuiCardHeader-title')?.innerText);
+            if (!name) continue;
+            let qty = '';
+            let route = '';
+            const spans = Array.from(card.querySelectorAll('span, p'));
+            for (let i = 0; i < spans.length; i++) {
+                const t = (spans[i].innerText || spans[i].textContent || '').trim();
+                if (t === 'Количество:' && spans[i].nextElementSibling) {
+                    qty = cleanQtyNum(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
+                } else if (t === 'Путь введения:' && spans[i].nextElementSibling) {
+                    route = cleanVal(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
+                }
+            }
+            items.push({ name, qty: qty || '1', route, note: '' });
+        }
+        return items;
     }
 
     function scrapeCache() {
@@ -299,27 +336,12 @@
         const cns = getActiveBtnText("получено устное согласие на простое медицинское вмешательство") ?? getActiveBtnText("получено устное согласие");
         if (cns !== null) c.acceptsSimpleMedProcedure = (cns === "ДА");
 
-        const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
-            .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
-
-        if (qtyNodes.length > 0) {
-            const meds = [];
-            for (let q of qtyNodes) {
-                let card = q.parentElement;
-                while (card && card !== document.body) {
-                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-                    const qi = lines.findIndex(l => l.includes("Количество:"));
-                    if (qi > 0) {
-                        const nm = lines[0], qt = lines[qi].replace(/Количество:\s*/i, '').trim();
-                        const rt = (lines.find(l => l.includes("Путь введения:")) || "").replace(/Путь введения:\s*/i, '').trim();
-                        const rtStr = (rt && !rt.includes("не определен")) ? ` [${rt}]` : '';
-                        if (nm && !nm.includes("Лекарственные") && !nm.includes("ДОБАВИТЬ")) meds.push(`${nm} — ${qt}${rtStr}`);
-                        break;
-                    }
-                    card = card.parentElement;
-                }
-            }
-            if (meds.length > 0) c._domMedications = Array.from(new Set(meds)).join(";\n• ");
+        const medItems = scrapeScreenMedications();
+        if (medItems.length > 0) {
+            c._domMedications = medItems.map(m => {
+                const rtStr = (m.route && !m.route.includes('не определен')) ? ` [${m.route}]` : '';
+                return `${m.name} — ${m.qty}${rtStr}`;
+            }).join(";\n• ");
         }
     }
 
@@ -333,6 +355,26 @@
             scrapeCache();
             if (!window.lastLoadedApiCard && Object.keys(window.b103ScreenCache).length === 0) return '';
             return JSON.stringify(Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache));
+        } catch (e) {
+            return '';
+        }
+    };
+
+    window.getCurrentMedicationsJson = function() {
+        try {
+            if (!isInsideCard()) return '';
+            let items = scrapeScreenMedications();
+            if (!items.length && Array.isArray(window.lastLoadedApiCard?.medications)) {
+                items = window.lastLoadedApiCard.medications.map(m => {
+                    const name = cleanVal(m?.medication?.name || m?.medication || m?.name);
+                    if (!name) return null;
+                    const qty = cleanQtyNum(m.number || m.count || m.amount || m.quantity || '1') || '1';
+                    const route = cleanVal(m?.routeDict?.display || m?.wayOfAdministration?.type || m?.way);
+                    const note = cleanVal(m?.route);
+                    return { name, qty, route, note };
+                }).filter(Boolean);
+            }
+            return items.length ? JSON.stringify({ items }) : '';
         } catch (e) {
             return '';
         }
@@ -1226,6 +1268,218 @@
             setTimeout(restoreScreenPosition, 40);
 
             document.getElementById('b103-hide-menus')?.remove();
+            if (fillBtn) fillBtn.innerText = "⚡";
+            setTimeout(() => { window.b103IsApplying = false; }, 150);
+        }
+    };
+
+    // ==========================================
+    // 3.5 АВТОПИЛОТ ДОБАВЛЕНИЯ ПРЕПАРАТОВ И РАСХОДНИКОВ
+    // ==========================================
+    window.applyMedicationsPreset = async function(jsonStr) {
+        if (window.b103IsApplying) return;
+        const sec = findMedicationsSection();
+        if (!sec) {
+            window.AndroidBridge?.notifyUser("Раздел «Лекарственные средства» не найден на экране");
+            return;
+        }
+        const addBtn = Array.from(sec.querySelectorAll('button'))
+            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ');
+        if (!addBtn) {
+            window.AndroidBridge?.notifyUser("Кнопка «Добавить» в препаратах не найдена");
+            return;
+        }
+
+        let items = [];
+        try {
+            const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+            items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : []);
+        } catch (e) { return; }
+        items = items.filter(it => it && cleanVal(it.name));
+        if (!items.length) return;
+
+        window.b103IsApplying = true;
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = "⏳";
+
+        let hideStyle = document.getElementById('b103-hide-meds');
+        if (!hideStyle) {
+            hideStyle = document.createElement('style');
+            hideStyle.id = 'b103-hide-meds';
+            hideStyle.textContent = '.MuiDialog-root, .MuiAutocomplete-popper { opacity: 0 !important; transition: none !important; }';
+            document.head.appendChild(hideStyle);
+        }
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const setReactVal = (inp, val) => {
+            if (!inp) return;
+            const str = String(val ?? '');
+            const prev = String(inp.value ?? '');
+            if (prev === str) return;
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(inp, str); else inp.value = str;
+            if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        const isPopVis = (el) => {
+            if (!el || !el.isConnected || el.getAttribute('aria-hidden') === 'true') return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+
+        async function pickAutocomplete(autoRoot, searchStr) {
+            const inp = autoRoot?.querySelector('input');
+            const cleanTarget = cleanVal(searchStr);
+            if (!inp || !cleanTarget) return false;
+            const targetL = cleanTarget.toLowerCase();
+            const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
+            const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
+
+            try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            if (inp.value && clearBtn) {
+                clearBtn.click();
+                await sleep(45);
+            }
+            setReactVal(inp, cleanTarget);
+            await sleep(140);
+            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) {
+                popupBtn.click();
+            }
+
+            let targetOpt = null;
+            for (let w = 0; w < 15; w++) {
+                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
+                const popper = poppers[poppers.length - 1];
+                if (popper) {
+                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                        .filter(o => {
+                            const tx = cleanVal(o.innerText).toLowerCase();
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                        });
+                    if (opts.length > 0) {
+                        targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === targetL)
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(targetL))
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(targetL))
+                            || opts[0];
+                        if (targetOpt) break;
+                    }
+                }
+                await sleep(80);
+            }
+            if (targetOpt) {
+                targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                targetOpt.click();
+                await sleep(90);
+                return true;
+            }
+            return false;
+        }
+
+        function findOpenMedDialog() {
+            const dialogs = Array.from(document.querySelectorAll('.MuiDialog-root'));
+            for (let i = dialogs.length - 1; i >= 0; i--) {
+                const d = dialogs[i];
+                if (d.querySelector('input[name="number"]') && (d.querySelector('h2')?.innerText || '').toLowerCase().includes('добавить')) {
+                    return d;
+                }
+            }
+            return null;
+        }
+
+        let added = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        try {
+            const existingNames = new Set(scrapeScreenMedications().map(m => m.name.trim().toLowerCase()));
+
+            for (const item of items) {
+                const itemName = cleanVal(item.name);
+                if (!itemName) continue;
+                if (existingNames.has(itemName.toLowerCase())) {
+                    skipped++;
+                    continue;
+                }
+
+                addBtn.click();
+                let dlg = null;
+                for (let w = 0; w < 15; w++) {
+                    dlg = findOpenMedDialog();
+                    if (dlg) break;
+                    await sleep(60);
+                }
+                if (!dlg) { failed++; continue; }
+
+                const autos = Array.from(dlg.querySelectorAll('.MuiAutocomplete-root'));
+                const medAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('лекарственные')) || autos[0];
+                const routeAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('путь введения')) || autos[1];
+
+                const pickedMed = await pickAutocomplete(medAuto, itemName);
+                if (!pickedMed) {
+                    const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                        .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                    cancelBtn?.click();
+                    await sleep(140);
+                    failed++;
+                    continue;
+                }
+
+                const qtyInp = dlg.querySelector('input[name="number"]');
+                const qtyVal = cleanQtyNum(item.qty) || '1';
+                setReactVal(qtyInp, qtyVal);
+                await sleep(50);
+
+                const routeStr = cleanVal(item.route);
+                if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
+                    await pickAutocomplete(routeAuto, routeStr);
+                }
+
+                const noteInp = dlg.querySelector('input[name="route"]');
+                if (noteInp && cleanVal(item.note)) {
+                    setReactVal(noteInp, cleanVal(item.note));
+                }
+
+                const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                    .find(b => (b.innerText || '').toLowerCase().includes('сохранить'));
+                if (saveBtn && !saveBtn.disabled) {
+                    saveBtn.click();
+                    let closed = false;
+                    for (let w = 0; w < 20; w++) {
+                        await sleep(90);
+                        if (!findOpenMedDialog()) { closed = true; break; }
+                    }
+                    if (closed) {
+                        added++;
+                        existingNames.add(itemName.toLowerCase());
+                    } else {
+                        const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                            .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                        cancelBtn?.click();
+                        await sleep(120);
+                        failed++;
+                    }
+                } else {
+                    const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                        .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                    cancelBtn?.click();
+                    await sleep(120);
+                    failed++;
+                }
+                await sleep(100);
+            }
+
+            const msg = `💊 Добавлено: ${added}` +
+                (skipped ? `, уже в карте: ${skipped}` : '') +
+                (failed ? `, не найдено: ${failed}` : '');
+            window.AndroidBridge?.notifyUser(msg);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            document.getElementById('b103-hide-meds')?.remove();
             if (fillBtn) fillBtn.innerText = "⚡";
             setTimeout(() => { window.b103IsApplying = false; }, 150);
         }

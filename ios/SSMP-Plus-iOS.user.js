@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.7.0
+// @version      3.8.0
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, история пациентов, МКБ-10, 11 модулей Помощника СМП (ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -196,6 +196,73 @@
         const idx = db.findIndex(x => x && ((itemRef.id && x.id === itemRef.id) || (x.fio === itemRef.fio && x.timestamp === itemRef.timestamp && x.is_builtin === itemRef.is_builtin)));
         if (idx >= 0) { db.splice(idx, 1); saveDb(db); return true; }
         return false;
+    }
+
+    const BUILTIN_MED_PRESETS = [
+        {
+            id: -1001, title: '🧤 База на вызов (ЭКГ + гигиена)', isCustom: false,
+            jsonData: JSON.stringify({
+                items: [
+                    { name: 'Перчатки н/ст', qty: '2', route: 'путь введения не определен', note: '' },
+                    { name: 'Септоцид Р плюс', qty: '15', route: 'путь введения не определен', note: '' },
+                    { name: 'Лента диаграмная 110*140', qty: '1', route: 'путь введения не определен', note: '' }
+                ]
+            })
+        },
+        {
+            id: -1002, title: '🩹 Обработка раны / перевязка', isCustom: false,
+            jsonData: JSON.stringify({
+                items: [
+                    { name: 'Перчатки н/ст', qty: '2', route: 'путь введения не определен', note: '' },
+                    { name: 'Маска мед.о/р', qty: '2', route: 'путь введения не определен', note: '' },
+                    { name: 'Перекись водорода 3%-200,0', qty: '50', route: 'путь введения не определен', note: '' },
+                    { name: 'Салфетки стер. 10х10 №5', qty: '1', route: 'путь введения не определен', note: '' },
+                    { name: 'Бинт 5х10 н/ст', qty: '1', route: 'путь введения не определен', note: '' },
+                    { name: 'Вата медицинская н/ст', qty: '5', route: 'путь введения не определен', note: '' }
+                ]
+            })
+        }
+    ];
+
+    function summarizeMedPresetJson(jsonStr) {
+        try {
+            const arr = JSON.parse(jsonStr || '{}').items || [];
+            return arr.map(o => o && o.name ? (o.qty ? `${o.name} (${o.qty})` : o.name) : '').filter(Boolean).join(', ');
+        } catch (e) { return ''; }
+    }
+
+    function saveMedPreset(title, jsonData) {
+        const cleanTitle = String(title || '').trim();
+        if (!cleanTitle) return;
+        const db = loadDb();
+        db.unshift({ id: genId(), fio: cleanTitle, birth_date: '', timestamp: Date.now(), score: 100, json_data: jsonData, is_builtin: 3 });
+        saveDb(db);
+    }
+
+    function updateMedPreset(itemRef, title, jsonData) {
+        const cleanTitle = String(title || '').trim();
+        if (!cleanTitle) return false;
+        const db = loadDb();
+        const idx = db.findIndex(x => x && x.is_builtin === 3 && ((itemRef.id && x.id === itemRef.id) || (x.fio === itemRef.title && x.timestamp === itemRef.timestamp)));
+        if (idx < 0) return false;
+        db[idx].fio = cleanTitle;
+        db[idx].timestamp = Date.now();
+        db[idx].json_data = jsonData;
+        saveDb(db);
+        return true;
+    }
+
+    function searchMedPresets(query) {
+        const q = String(query || '').trim().toLowerCase();
+        const custom = loadDb()
+            .filter(x => x && x.is_builtin === 3)
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            .map(x => ({
+                id: x.id, timestamp: x.timestamp, title: x.fio || 'Набор',
+                itemsSummary: summarizeMedPresetJson(x.json_data), jsonData: x.json_data || '{"items":[]}', isCustom: true
+            }));
+        const built = BUILTIN_MED_PRESETS.map(p => Object.assign({}, p, { itemsSummary: summarizeMedPresetJson(p.jsonData) }));
+        return [...custom, ...built].filter(p => !q || p.title.toLowerCase().includes(q) || p.itemsSummary.toLowerCase().includes(q));
     }
 
     // ==========================================
@@ -789,26 +856,217 @@ function formatCardText(jsonStr) {
         const cns = getActiveBtnText('получено устное согласие на простое медицинское вмешательство') ?? getActiveBtnText('получено устное согласие');
         if (cns !== null) c.acceptsSimpleMedProcedure = (cns === 'ДА');
 
-        const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
-            .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes('Количество:'));
-        if (qtyNodes.length > 0) {
-            const meds = [];
-            for (const q of qtyNodes) {
-                let card = q.parentElement;
-                while (card && card !== document.body) {
-                    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-                    const qi = lines.findIndex(l => l.includes('Количество:'));
-                    if (qi > 0) {
-                        const nm = lines[0], qt = lines[qi].replace(/Количество:\s*/i, '').trim();
-                        const rt = (lines.find(l => l.includes('Путь введения:')) || '').replace(/Путь введения:\s*/i, '').trim();
-                        const rtStr = (rt && !rt.includes('не определен')) ? ` [${rt}]` : '';
-                        if (nm && !nm.includes('Лекарственные') && !nm.includes('ДОБАВИТЬ')) meds.push(`${nm} — ${qt}${rtStr}`);
-                        break;
-                    }
-                    card = card.parentElement;
+       const medItems = scrapeScreenMedications();
+        if (medItems.length > 0) {
+            c._domMedications = medItems.map(m => {
+                const rtStr = (m.route && !m.route.includes('не определен')) ? ` [${m.route}]` : '';
+                return `${m.name} — ${m.qty}${rtStr}`;
+            }).join(';\n• ');
+        }
+    }
+
+    function findMedicationsSection() {
+        const lbl = Array.from(document.querySelectorAll('label'))
+            .find(e => e.textContent && e.textContent.trim().toLowerCase() === 'лекарственные средства' && !isInConclusion(e));
+        return lbl ? lbl.parentElement : null;
+    }
+
+    function cleanQtyNum(raw) {
+        const m = String(raw || '').replace(',', '.').match(/\d+(?:\.\d+)?/);
+        if (!m) return '';
+        const n = parseFloat(m[0]);
+        return Number.isNaN(n) ? m[0] : String(n);
+    }
+
+    function scrapeScreenMedications() {
+        const sec = findMedicationsSection();
+        if (!sec) return [];
+        const cards = Array.from(sec.querySelectorAll('.MuiCard-root'));
+        const items = [];
+        for (const card of cards) {
+            const name = cleanVal(card.querySelector('.MuiCardHeader-title')?.innerText);
+            if (!name) continue;
+            let qty = '', route = '';
+            const spans = Array.from(card.querySelectorAll('span, p'));
+            for (let i = 0; i < spans.length; i++) {
+                const t = (spans[i].innerText || spans[i].textContent || '').trim();
+                if (t === 'Количество:' && spans[i].nextElementSibling) {
+                    qty = cleanQtyNum(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
+                } else if (t === 'Путь введения:' && spans[i].nextElementSibling) {
+                    route = cleanVal(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
                 }
             }
-            if (meds.length > 0) c._domMedications = Array.from(new Set(meds)).join(';\n• ');
+            items.push({ name, qty: qty || '1', route, note: '' });
+        }
+        return items;
+    }
+
+    function getCurrentMedicationsItems() {
+        if (!isInsideCard()) return [];
+        let items = scrapeScreenMedications();
+        if (!items.length && Array.isArray(window.lastLoadedApiCard?.medications)) {
+            items = window.lastLoadedApiCard.medications.map(m => {
+                const name = cleanVal(m?.medication?.name || m?.medication || m?.name);
+                if (!name) return null;
+                const qty = cleanQtyNum(m.number || m.count || m.amount || m.quantity || '1') || '1';
+                const route = cleanVal(m?.routeDict?.display || m?.wayOfAdministration?.type || m?.way);
+                const note = cleanVal(m?.route);
+                return { name, qty, route, note };
+            }).filter(Boolean);
+        }
+        return items;
+    }
+
+    async function applyMedicationsPresetIos(jsonStr) {
+        if (window.b103IsApplying) return;
+        const sec = findMedicationsSection();
+        if (!sec) { showToast('Раздел «Лекарственные средства» не найден на экране'); return; }
+        const addBtn = Array.from(sec.querySelectorAll('button'))
+            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ');
+        if (!addBtn) { showToast('Кнопка «Добавить» в препаратах не найдена'); return; }
+
+        let items = [];
+        try {
+            const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+            items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : []);
+        } catch (e) { return; }
+        items = items.filter(it => it && cleanVal(it.name));
+        if (!items.length) return;
+
+        window.b103IsApplying = true;
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = '⏳';
+
+        let hideStyle = document.getElementById('b103-hide-meds');
+        if (!hideStyle) {
+            hideStyle = document.createElement('style');
+            hideStyle.id = 'b103-hide-meds';
+            hideStyle.textContent = '.MuiDialog-root, .MuiAutocomplete-popper { opacity: 0 !important; transition: none !important; }';
+            document.head.appendChild(hideStyle);
+        }
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const setReactVal = (inp, val) => {
+            if (!inp) return;
+            const str = String(val ?? ''), prev = String(inp.value ?? '');
+            if (prev === str) return;
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(inp, str); else inp.value = str;
+            if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const isPopVis = (el) => {
+            if (!el || !el.isConnected || el.getAttribute('aria-hidden') === 'true') return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+
+        async function pickAutocomplete(autoRoot, searchStr) {
+            const inp = autoRoot?.querySelector('input');
+            const cleanTarget = cleanVal(searchStr);
+            if (!inp || !cleanTarget) return false;
+            const targetL = cleanTarget.toLowerCase();
+            const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
+            const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
+            try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            if (inp.value && clearBtn) { clearBtn.click(); await sleep(45); }
+            setReactVal(inp, cleanTarget);
+            await sleep(140);
+            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) popupBtn.click();
+
+            let targetOpt = null;
+            for (let w = 0; w < 15; w++) {
+                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
+                const popper = poppers[poppers.length - 1];
+                if (popper) {
+                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                        .filter(o => { const tx = cleanVal(o.innerText).toLowerCase(); return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов'); });
+                    if (opts.length > 0) {
+                        targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === targetL)
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(targetL))
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(targetL))
+                            || opts[0];
+                        if (targetOpt) break;
+                    }
+                }
+                await sleep(80);
+            }
+            if (targetOpt) {
+                targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                targetOpt.click();
+                await sleep(90);
+                return true;
+            }
+            return false;
+        }
+
+        function findOpenMedDialog() {
+            const dialogs = Array.from(document.querySelectorAll('.MuiDialog-root'));
+            for (let i = dialogs.length - 1; i >= 0; i--) {
+                const d = dialogs[i];
+                if (d.querySelector('input[name="number"]') && (d.querySelector('h2')?.innerText || '').toLowerCase().includes('добавить')) return d;
+            }
+            return null;
+        }
+
+        let added = 0, skipped = 0, failed = 0;
+        try {
+            const existingNames = new Set(scrapeScreenMedications().map(m => m.name.trim().toLowerCase()));
+            for (const item of items) {
+                const itemName = cleanVal(item.name);
+                if (!itemName) continue;
+                if (existingNames.has(itemName.toLowerCase())) { skipped++; continue; }
+
+                addBtn.click();
+                let dlg = null;
+                for (let w = 0; w < 15; w++) { dlg = findOpenMedDialog(); if (dlg) break; await sleep(60); }
+                if (!dlg) { failed++; continue; }
+
+                const autos = Array.from(dlg.querySelectorAll('.MuiAutocomplete-root'));
+                const medAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('лекарственные')) || autos[0];
+                const routeAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('путь введения')) || autos[1];
+
+                const pickedMed = await pickAutocomplete(medAuto, itemName);
+                if (!pickedMed) {
+                    Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
+                    await sleep(140); failed++; continue;
+                }
+
+                setReactVal(dlg.querySelector('input[name="number"]'), cleanQtyNum(item.qty) || '1');
+                await sleep(50);
+
+                const routeStr = cleanVal(item.route);
+                if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
+                    await pickAutocomplete(routeAuto, routeStr);
+                }
+                const noteInp = dlg.querySelector('input[name="route"]');
+                if (noteInp && cleanVal(item.note)) setReactVal(noteInp, cleanVal(item.note));
+
+                const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                    .find(b => (b.innerText || '').toLowerCase().includes('сохранить'));
+                if (saveBtn && !saveBtn.disabled) {
+                    saveBtn.click();
+                    let closed = false;
+                    for (let w = 0; w < 20; w++) { await sleep(90); if (!findOpenMedDialog()) { closed = true; break; } }
+                    if (closed) { added++; existingNames.add(itemName.toLowerCase()); }
+                    else {
+                        Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
+                        await sleep(120); failed++;
+                    }
+                } else {
+                    Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
+                    await sleep(120); failed++;
+                }
+                await sleep(100);
+            }
+            showToast(`💊 Добавлено: ${added}` + (skipped ? `, уже в карте: ${skipped}` : '') + (failed ? `, не найдено: ${failed}` : ''));
+        } catch (e) { console.error(e); } finally {
+            document.getElementById('b103-hide-meds')?.remove();
+            if (fillBtn) fillBtn.innerText = '⚡';
+            setTimeout(() => { window.b103IsApplying = false; }, 150);
         }
     }
 
@@ -1618,12 +1876,189 @@ function formatCardText(jsonStr) {
     // ==========================================
     // 7. ГЛАВНОЕ МЕНЮ, ПОИСК, ШАБЛОНЫ И ИСТОРИЯ ПАЦИЕНТА
     // ==========================================
+    function openMedPresetsSheetIos() {
+        openIosSheet('💊 Шаблоны препаратов', '#6A1B9A', (body, close) => {
+            body.innerHTML = `
+                <button id="mp-create-btn" style="width:100%;padding:12px;border:1.5px solid #8E24AA;border-radius:12px;background:#F3E5F5;color:#6A1B9A;font-weight:700;font-size:13px;margin-bottom:10px;cursor:pointer;">➕ СОЗДАТЬ НАБОР ПРЕПАРАТОВ</button>
+                <input id="mp-srch" type="text" placeholder="Поиск набора или препарата (перчатки, рана, ГК)..." style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1.5px solid #CE93D8;background:#F3E5F5;color:#111;font-size:14px;margin-bottom:10px;outline:none;">
+                <div id="mp-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+            `;
+            const inp = body.querySelector('#mp-srch'), list = body.querySelector('#mp-list');
+            body.querySelector('#mp-create-btn').onclick = () => { close(); openCreateMedPresetSheetIos(null, null, () => openMedPresetsSheetIos()); };
+            function render() {
+                list.innerHTML = '';
+                searchMedPresets(inp.value).forEach(item => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'padding:13px 15px;border-radius:13px;background:#FAF5FF;border:1.5px solid #E1BEE7;color:#263238;font-size:13.8px;cursor:pointer;';
+                    row.innerHTML = `<b>${item.isCustom ? '📌' : '⭐'} ${escapeHtml(item.title)}</b><br><span style="color:#546E7A;font-size:12.5px;">💊 ${escapeHtml(item.itemsSummary || 'Пустой набор')}</span>`;
+                    row.onclick = () => { close(); showMedPresetPreviewIos(item); };
+                    list.appendChild(row);
+                });
+            }
+            inp.oninput = render; render();
+        });
+    }
+
+    function showMedPresetPreviewIos(preset) {
+        openIosSheet(`${preset.isCustom ? '📌' : '⭐'} ${preset.title}`, '#6A1B9A', (body, close) => {
+            let formatted = 'Ошибка чтения набора';
+            try {
+                const arr = JSON.parse(preset.jsonData || '{}').items || [];
+                formatted = !arr.length ? 'Список препаратов пуст.' : arr.map((o, i) => {
+                    const rt = (o.route && !o.route.includes('не определен')) ? ` | Путь: ${o.route}` : '';
+                    const nt = o.note ? `\n   • Примечание: ${o.note}` : '';
+                    return `${i + 1}. ${o.name}\n   • Количество: ${o.qty || '1'}${rt}${nt}`;
+                }).join('\n\n');
+            } catch (e) {}
+
+            body.innerHTML = `
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button id="mpp-fill" style="flex:1;padding:12px;border:none;border-radius:12px;background:#6A1B9A;color:#fff;font-weight:700;font-size:13.5px;cursor:pointer;">💊 Вставить в карту</button>
+                    ${preset.isCustom ? '<button id="mpp-edit" style="padding:12px 15px;border:1.5px solid #FFB74D;border-radius:12px;background:#FFF3E0;color:#E65100;font-weight:700;font-size:15px;cursor:pointer;">✏️</button>' : ''}
+                    ${preset.isCustom ? '<button id="mpp-del" style="padding:12px 15px;border:none;border-radius:12px;background:#FFEBEE;color:#C62828;font-weight:700;font-size:14px;cursor:pointer;">🗑️</button>' : ''}
+                </div>
+                <div style="font-size:14.2px;line-height:1.5;color:#263238;white-space:pre-line;user-select:text;">${escapeHtml(formatted)}</div>
+            `;
+            body.querySelector('#mpp-fill').onclick = () => {
+                close();
+                showToast('⏳ Добавляю препараты в карту...');
+                applyMedicationsPresetIos(preset.jsonData);
+            };
+            const editBtn = body.querySelector('#mpp-edit');
+            if (editBtn) editBtn.onclick = () => {
+                close();
+                openCreateMedPresetSheetIos(preset.jsonData, preset, () => openMedPresetsSheetIos());
+            };
+            const delBtn = body.querySelector('#mpp-del');
+            if (delBtn) delBtn.onclick = () => {
+                if (confirm('Удалить набор препаратов?')) {
+                    if (deleteRecordFromDb({ id: preset.id, fio: preset.title, timestamp: preset.timestamp, is_builtin: 3 })) {
+                        showToast('Удалено'); close(); openMedPresetsSheetIos();
+                    }
+                }
+            };
+        });
+    }
+
+    function openCreateMedPresetSheetIos(prefillJson = null, editingItem = null, onSaved = null) {
+        const isEdit = Boolean(editingItem);
+        const items = [];
+        if (prefillJson) {
+            try {
+                const arr = JSON.parse(prefillJson).items || [];
+                arr.forEach(x => { if (x && x.name) items.push(Object.assign({}, x)); });
+            } catch (e) {}
+        }
+
+        openIosSheet(isEdit ? '✏️ Редактировать набор препаратов' : '💊 Новый набор препаратов', '#6A1B9A', (body, close) => {
+            body.innerHTML = `
+                <button id="cmp-pull" style="width:100%;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:12.5px;margin-bottom:10px;cursor:pointer;">📥 ПОДТЯНУТЬ ПРЕПАРАТЫ ИЗ ОТКРЫТОЙ КАРТЫ</button>
+                <div style="font-size:12px;font-weight:700;color:#4A148C;margin-bottom:4px;">Название набора (обязательно):</div>
+                <input id="cmp-title" type="text" placeholder="Напр. ГК стандарт / ОКС / Обработка раны" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid #CE93D8;background:#F3E5F5;color:#111;font-size:13.5px;font-weight:700;margin-bottom:10px;outline:none;">
+
+                <div style="font-size:12px;font-weight:700;color:#4A148C;margin-bottom:4px;">Состав набора:</div>
+                <div id="cmp-items" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;"></div>
+
+                <div style="padding:12px;border-radius:12px;background:#F5F7F8;border:1px solid #CFD8DC;margin-bottom:12px;">
+                    <div style="font-size:12.5px;font-weight:700;color:#263238;margin-bottom:8px;">➕ Добавить позицию в набор:</div>
+                    <input id="cmp-name" type="text" placeholder="Наименование (напр. Перчатки н/ст)" style="width:100%;box-sizing:border-box;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;margin-bottom:8px;outline:none;">
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <input id="cmp-qty" type="number" step="0.1" value="1" placeholder="Кол-во" style="width:32%;box-sizing:border-box;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
+                        <input id="cmp-route" type="text" placeholder="Путь введения (или пусто)" style="flex:1;box-sizing:border-box;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
+                    </div>
+                    <div id="cmp-rchips" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;"></div>
+                    <input id="cmp-note" type="text" placeholder="Примечание (необязательно)" style="width:100%;box-sizing:border-box;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;margin-bottom:8px;outline:none;">
+                    <button id="cmp-addpos" style="width:100%;padding:10px;border:1px solid #B39DDB;border-radius:9px;background:#EDE7F6;color:#4A148C;font-weight:700;font-size:12.5px;cursor:pointer;">➕ ДОБАВИТЬ В СПИСОК</button>
+                </div>
+
+                <button id="cmp-save" style="width:100%;padding:14px;border:none;border-radius:12px;background:#6A1B9A;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">${isEdit ? '💾 СОХРАНИТЬ ИЗМЕНЕНИЯ' : '💾 СОХРАНИТЬ НАБОР ПРЕПАРАТОВ'}</button>
+            `;
+
+            const titleInp = body.querySelector('#cmp-title');
+            const itemsEl = body.querySelector('#cmp-items');
+            const nameInp = body.querySelector('#cmp-name');
+            const qtyInp = body.querySelector('#cmp-qty');
+            const routeInp = body.querySelector('#cmp-route');
+            const noteInp = body.querySelector('#cmp-note');
+            const rChips = body.querySelector('#cmp-rchips');
+
+            if (editingItem && editingItem.title) titleInp.value = editingItem.title;
+
+            [['не определен', 'путь введения не определен'], ['в/в', 'внутривенный'], ['в/м', 'внутримышечный'], ['п/к', 'подкожный'], ['внутрь', 'внутрь'], ['сублингв.', 'сублингвальный'], ['ингал.', 'ингаляционный']].forEach(([s, v]) => {
+                const c = document.createElement('span');
+                c.style.cssText = 'white-space:nowrap;padding:6px 10px;border-radius:10px;background:#EDE7F6;color:#4A148C;font-size:11.5px;cursor:pointer;';
+                c.innerText = s; c.onclick = () => { routeInp.value = v; };
+                rChips.appendChild(c);
+            });
+
+            function renderItems() {
+                itemsEl.innerHTML = '';
+                if (!items.length) {
+                    itemsEl.innerHTML = '<div style="padding:10px 12px;border-radius:10px;background:#FAFAFA;border:1px solid #E0E0E0;color:#607D8B;font-size:12.5px;">Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или добавьте позиции ниже.</div>';
+                    return;
+                }
+                items.forEach((obj, idx) => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;background:#FAF5FF;border:1px solid #E1BEE7;';
+                    const rtShow = (obj.route && !obj.route.includes('не определен')) ? ` • ${obj.route}` : '';
+                    const txt = document.createElement('div');
+                    txt.style.cssText = 'flex:1;font-size:13px;color:#263238;cursor:pointer;';
+                    txt.innerText = `${idx + 1}. ${obj.name} — ${obj.qty || '1'}${rtShow}`;
+                    txt.onclick = () => {
+                        nameInp.value = obj.name || ''; qtyInp.value = obj.qty || '1';
+                        routeInp.value = obj.route || ''; noteInp.value = obj.note || '';
+                        items.splice(idx, 1); renderItems();
+                    };
+                    const del = document.createElement('span');
+                    del.style.cssText = 'color:#C62828;font-weight:700;font-size:15px;padding:4px 8px;cursor:pointer;';
+                    del.innerText = '✕'; del.onclick = () => { items.splice(idx, 1); renderItems(); };
+                    row.appendChild(txt); row.appendChild(del); itemsEl.appendChild(row);
+                });
+            }
+
+            body.querySelector('#cmp-addpos').onclick = () => {
+                const nm = nameInp.value.trim();
+                if (!nm) { showToast('Введите наименование препарата!'); nameInp.focus(); return; }
+                items.push({ name: nm, qty: qtyInp.value.replace(',', '.').trim() || '1', route: routeInp.value.trim(), note: noteInp.value.trim() });
+                nameInp.value = ''; qtyInp.value = '1'; routeInp.value = ''; noteInp.value = '';
+                renderItems();
+            };
+
+            body.querySelector('#cmp-pull').onclick = () => {
+                const pulled = getCurrentMedicationsItems();
+                if (!pulled.length) { showToast('В открытой карте нет добавленных препаратов'); return; }
+                items.length = 0; pulled.forEach(x => items.push(x));
+                renderItems();
+                showToast(`📥 Подтянуто позиций: ${items.length}`);
+            };
+
+            body.querySelector('#cmp-save').onclick = () => {
+                const t = titleInp.value.trim();
+                if (!t) { alert('Введите название набора!'); titleInp.focus(); return; }
+                if (!items.length) { alert('Добавьте хотя бы один препарат!'); return; }
+                const payload = JSON.stringify({ items });
+                if (isEdit) {
+                    updateMedPreset(editingItem, t, payload);
+                    showToast(`✏️ Набор «${t}» обновлён!`);
+                } else {
+                    saveMedPreset(t, payload);
+                    showToast(`💊 Набор «${t}» сохранён!`);
+                }
+                close();
+                if (typeof onSaved === 'function') onSaved();
+            };
+
+            renderItems();
+        });
+    }
+
     function openMainMenuIos() {
         openIosSheet('Меню SSMP Plus (iOS)', '#008577', (body, close) => {
             body.innerHTML = `
                 <button id="m-samples" style="width:100%;padding:15px;border:none;border-radius:12px;background:#008577;color:#fff;font-weight:700;font-size:14px;margin-bottom:10px;">⭐ ОБРАЗЦЫ КАРТ (${BUILTIN_TEMPLATES.length}+)</button>
+                <button id="m-meds" style="width:100%;padding:15px;border:none;border-radius:12px;background:#6A1B9A;color:#fff;font-weight:700;font-size:14px;margin-bottom:10px;">💊 ШАБЛОНЫ ПРЕПАРАТОВ</button>
                 <button id="m-arch" style="width:100%;padding:15px;border:none;border-radius:12px;background:#008577;color:#fff;font-weight:700;font-size:14px;margin-bottom:10px;">📂 ОБЩИЙ АРХИВ ВЫЗОВОВ</button>
-                <button id="m-helper" style="width:100%;padding:15px;border:none;border-radius:12px;background:#0277BD;color:#fff;font-weight:700;font-size:14px;margin-bottom:10px;">🧰 ПОМОЩНИК СМП (11 МОДУЛЕЙ)</button>
+                <button id="m-helper" style="width:100%;padding:15px;border:none;border-radius:12px;background:#0277BD;color:#fff;font-weight:700;font-size:14px;margin-bottom:10px;">🧰 ПОМОЩНИК СМП (12 МОДУЛЕЙ)</button>
                 <div style="display:flex;gap:10px;">
                     <button id="m-imp" style="flex:1;padding:14px;border:none;border-radius:12px;background:#00695C;color:#fff;font-weight:700;font-size:13.5px;">📥 ИМПОРТ JSON</button>
                     <button id="m-exp" style="flex:1;padding:14px;border:none;border-radius:12px;background:#00695C;color:#fff;font-weight:700;font-size:13.5px;">📤 ЭКСПОРТ JSON</button>
@@ -1631,10 +2066,11 @@ function formatCardText(jsonStr) {
                 <input id="ios-file-inp" type="file" accept=".json,application/json" style="display:none;">
             `;
             body.querySelector('#m-samples').onclick = () => { close(); openSearchSheet(true); };
+            body.querySelector('#m-meds').onclick = () => { close(); openMedPresetsSheetIos(); };
             body.querySelector('#m-arch').onclick = () => { close(); openSearchSheet(false); };
             body.querySelector('#m-helper').onclick = () => { close(); openHelperMenuSheet(); };
             body.querySelector('#m-exp').onclick = () => {
-                const exportArr = loadDb().filter(x => x && (x.is_builtin === 0 || x.is_builtin === 2)).map(x => ({
+                const exportArr = loadDb().filter(x => x && (x.is_builtin === 0 || x.is_builtin === 2 || x.is_builtin === 3)).map(x => ({
                     fio: x.fio, birth_date: x.birth_date || '', timestamp: x.timestamp, score: x.score || 80, json_data: x.json_data, is_builtin: x.is_builtin
                 }));
                 const blob = new Blob([JSON.stringify(exportArr)], { type: 'application/json' });
@@ -1657,14 +2093,19 @@ function formatCardText(jsonStr) {
                         const parsed = JSON.parse(reader.result);
                         if (!Array.isArray(parsed)) throw new Error('Not array');
                         const cur = loadDb();
-                        const getSig = (isB, f, ts) => isB === 2 ? `tpl_${String(f || '').trim().toLowerCase()}` : `card_${String(f || '').trim().toLowerCase()}_${ts || 0}`;
+                        const getSig = (isB, f, ts) => {
+                            const fl = String(f || '').trim().toLowerCase();
+                            if (isB === 2) return `tpl_${fl}`;
+                            if (isB === 3) return `med_${fl}`;
+                            return `card_${fl}_${ts || 0}`;
+                        };
                         const existing = new Set(cur.map(c => getSig(c.is_builtin, c.fio, c.timestamp)));
                         let importedCount = 0;
                         parsed.forEach(item => {
                             if (!item || typeof item !== 'object') return;
-                            const isB = item.is_builtin === 2 ? 2 : 0;
+                            const isB = item.is_builtin === 2 ? 2 : (item.is_builtin === 3 ? 3 : 0);
                             const fRaw = String(item.fio || '').trim();
-                            const f = isB === 2 ? fRaw : fRaw.toLowerCase();
+                            const f = (isB === 2 || isB === 3) ? fRaw : fRaw.toLowerCase();
                             const jd = String(item.json_data || '').trim();
                             const ts = item.timestamp || Date.now();
                             if (!f || !jd) return;
@@ -2096,7 +2537,10 @@ function formatCardText(jsonStr) {
                     <button id="tab-tpl" style="flex:1;padding:11px;border:none;border-radius:11px;background:#00796B;color:#fff;font-weight:700;font-size:13px;">⭐ Образцы (${BUILTIN_TEMPLATES.length})</button>
                     <button id="tab-arch" style="flex:1;padding:11px;border:none;border-radius:11px;background:#E0F2F1;color:#004D40;font-weight:600;font-size:13px;">📂 Мой архив</button>
                 </div>
-                <button id="ios-create-tpl-btn" style="width:100%;padding:11px;border:1.5px dashed #00897B;border-radius:11px;background:#E0F2F1;color:#004D40;font-weight:700;font-size:13px;margin-bottom:10px;cursor:pointer;">➕ СОЗДАТЬ СВОЙ ШАБЛОН</button>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button id="ios-create-tpl-btn" style="flex:1;padding:11px 8px;border:1.5px solid #00897B;border-radius:11px;background:#E0F2F1;color:#004D40;font-weight:700;font-size:12.5px;cursor:pointer;">➕ СВОЙ ШАБЛОН</button>
+                    <button id="ios-med-presets-btn" style="flex:1;padding:11px 8px;border:1.5px solid #8E24AA;border-radius:11px;background:#F3E5F5;color:#6A1B9A;font-weight:700;font-size:12.5px;cursor:pointer;">💊 ПРЕПАРАТЫ</button>
+                </div>
                 <input id="ios-search-inp" type="text" placeholder="Поиск (СЛР, диагноз, фамилия)..." style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1.5px solid #90CAF9;background:#F0F8FF;color:#111;font-size:14px;margin-bottom:10px;outline:none;">
                 <div id="ios-list-box" style="display:flex;flex-direction:column;gap:8px;"></div>
             `;
@@ -2107,6 +2551,7 @@ function formatCardText(jsonStr) {
             body.querySelector('#ios-open-helper').onclick = () => { close(); openHelperMenuSheet(); };
             body.querySelector('#ios-open-audit').onclick = () => { close(); runCardAuditIos(); };
             body.querySelector('#ios-create-tpl-btn').onclick = () => { close(); openCreateTemplateSheet(); };
+            body.querySelector('#ios-med-presets-btn').onclick = () => { close(); openMedPresetsSheetIos(); };
             if (exactCardJson) {
                 body.querySelector('#ios-exact-fill').onclick = () => {
                     close();

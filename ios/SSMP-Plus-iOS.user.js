@@ -5,12 +5,21 @@
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, история пациентов, МКБ-10, 11 модулей Помощника СМП (ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
 (function() {
     'use strict';
+    if (typeof window.Notification === 'undefined') {
+        function MockNotification(t, o) { this.title = t; this.options = o; this.close = function() {}; }
+        MockNotification.permission = 'granted';
+        MockNotification.requestPermission = function(cb) {
+            if (typeof cb === 'function') cb('granted');
+            return Promise.resolve('granted');
+        };
+        window.Notification = MockNotification;
+    }
     if (window.b103IosInitialized) return;
     window.b103IosInitialized = true;
 
@@ -3217,7 +3226,11 @@ function formatCardText(jsonStr) {
         }
     }
 
-    ensureToolbar();
-    updateVisibility();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => { ensureToolbar(); updateVisibility(); });
+    } else {
+        ensureToolbar();
+        updateVisibility();
+    }
     setInterval(updateVisibility, 400);
 })();

@@ -6,6 +6,24 @@
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
 
+    const MED_CATALOG_KEY = 'b103_med_catalog_v1';
+    const ROUTE_CATALOG_KEY = 'b103_route_catalog_v1';
+
+    function loadJsonStore(key, defVal) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return defVal;
+            const p = JSON.parse(raw);
+            return Array.isArray(p) ? p : defVal;
+        } catch (e) { return defVal; }
+    }
+    function saveJsonStore(key, val) {
+        try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+    }
+
+    window.b103MedCatalog = window.b103MedCatalog || loadJsonStore(MED_CATALOG_KEY, []);
+    window.b103RouteCatalog = window.b103RouteCatalog || loadJsonStore(ROUTE_CATALOG_KEY, []);
+
     // ==========================================
     // 0. БАЗОВЫЕ УТИЛИТЫ И ГРАНИЦА «ЗАКЛЮЧЕНИЕ»
     // ==========================================
@@ -41,6 +59,114 @@
         return (str.includes('ул.') || /\d{2}\.\d{2}\.\d{4}/.test(str)) ? '' : str;
     }
 
+    function mergeMedCatalog(newMeds, newRoutes) {
+        let medsChanged = false;
+        let routesChanged = false;
+
+        if (Array.isArray(newMeds) && newMeds.length > 0) {
+            const map = new Map();
+            for (const item of window.b103MedCatalog) {
+                if (item && item.n) map.set(item.n.toLowerCase(), item);
+            }
+            for (const m of newMeds) {
+                if (!m || !m.n) continue;
+                const k = m.n.toLowerCase();
+                const ex = map.get(k);
+                if (!ex || (!ex.u && m.u)) {
+                    map.set(k, { n: m.n, u: m.u || '' });
+                    medsChanged = true;
+                }
+            }
+            if (medsChanged) {
+                window.b103MedCatalog = Array.from(map.values()).sort((a, b) => a.n.localeCompare(b.n, 'ru'));
+                saveJsonStore(MED_CATALOG_KEY, window.b103MedCatalog);
+            }
+        }
+
+        if (Array.isArray(newRoutes) && newRoutes.length > 0) {
+            const set = new Set(window.b103RouteCatalog.map(r => String(r).trim()).filter(Boolean));
+            const before = set.size;
+            for (const r of newRoutes) {
+                const s = String(r || '').trim();
+                if (s && s.length > 1) set.add(s);
+            }
+            if (set.size !== before) {
+                window.b103RouteCatalog = Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
+                saveJsonStore(ROUTE_CATALOG_KEY, window.b103RouteCatalog);
+                routesChanged = true;
+            }
+        }
+
+        if ((medsChanged || routesChanged) && window.AndroidBridge?.cacheMedCatalog) {
+            try {
+                window.AndroidBridge.cacheMedCatalog(JSON.stringify({
+                    meds: window.b103MedCatalog,
+                    routes: window.b103RouteCatalog
+                }));
+            } catch (e) {}
+        }
+    }
+
+    function harvestCatalogFromPayload(data) {
+        if (!data || typeof data !== 'object') return;
+        const foundMeds = [];
+        const foundRoutes = [];
+
+        // 1. Препараты и пути внутри открытой карты
+        if (Array.isArray(data.medications)) {
+            for (const m of data.medications) {
+                if (!m || typeof m !== 'object') continue;
+                const medObj = m.medication;
+                if (medObj && typeof medObj.name === 'string' && medObj.name.trim()) {
+                    foundMeds.push({ n: medObj.name.trim(), u: cleanVal(medObj.type?.name || medObj.unitsType?.name) });
+                }
+                const rd = cleanVal(m.routeDict?.display);
+                if (rd) foundRoutes.push(rd);
+            }
+        }
+
+        // 2. Справочники (массив или Spring Page { content: [...] })
+        const arr = Array.isArray(data)
+            ? data
+            : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
+
+        if (arr && arr.length > 0) {
+            const sample = arr.find(x => x && typeof x === 'object');
+            if (sample) {
+                const isMedDict = typeof sample.name === 'string' &&
+                    ('isMedicalSupplies' in sample || 'isNarcotic' in sample || 'isAccountable' in sample || 'activeIngredient' in sample);
+                if (isMedDict) {
+                    for (const x of arr) {
+                        if (x && typeof x.name === 'string' && x.name.trim() && x.active !== false) {
+                            foundMeds.push({ n: x.name.trim(), u: cleanVal(x.type?.name || x.unitsType?.name) });
+                        }
+                    }
+                }
+                const isRouteDict = typeof sample.display === 'string' && typeof sample.code === 'string';
+                if (isRouteDict) {
+                    for (const x of arr) {
+                        if (x && typeof x.display === 'string' && x.display.trim()) {
+                            foundRoutes.push(x.display.trim());
+                        }
+                    }
+                }
+            }
+        }
+
+        if (foundMeds.length || foundRoutes.length) {
+            mergeMedCatalog(foundMeds, foundRoutes);
+        }
+    }
+
+    if ((window.b103MedCatalog.length || window.b103RouteCatalog.length) && window.AndroidBridge?.cacheMedCatalog) {
+        try {
+            window.AndroidBridge.cacheMedCatalog(JSON.stringify({
+                meds: window.b103MedCatalog,
+                routes: window.b103RouteCatalog
+            }));
+        } catch (e) {}
+    }
+
     let cachedAnchor = null;
     let anchorTime = 0;
     function getConclusionAnchor() {
@@ -67,7 +193,7 @@
     window.b103IsInConclusion = isInConclusion;
 
     // ==========================================
-    // 1. СЕТЕВОЙ ПЕРЕХВАТЧИК КАРТЫ СЕРВЕРА
+    // 1. СЕТЕВОЙ ПЕРЕХВАТЧИК КАРТЫ И СПРАВОЧНИКОВ СЕРВЕРА
     // ==========================================
     if (!window.b103NetHooked) {
         window.b103NetHooked = true;
@@ -83,9 +209,11 @@
             const res = await origFetch.apply(this, args);
             try {
                 const url = typeof args[0] === 'string' ? args[0] : (args[0] ? args[0].url : '');
-                if (url && url.includes('/api/card/') && !url.includes('/short')) {
+                if (url && url.includes('/api/')) {
                     res.clone().json().then(d => {
-                        if (d && d.patient) {
+                        if (!d) return;
+                        harvestCatalogFromPayload(d);
+                        if (url.includes('/api/card/') && !url.includes('/short') && d.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                                 window.activeAutofillData = null; window.b103ScreenCache = {};
                             }
@@ -109,9 +237,11 @@
             } catch (e) {}
             this.addEventListener('load', function() {
                 try {
-                    if (this._url && this._url.includes('/api/card/') && !this._url.includes('/short')) {
+                    if (this._url && this._url.includes('/api/') && this.responseText && (this.responseText[0] === '{' || this.responseText[0] === '[')) {
                         const d = JSON.parse(this.responseText);
-                        if (d && d.patient) {
+                        if (!d) return;
+                        harvestCatalogFromPayload(d);
+                        if (this._url.includes('/api/card/') && !this._url.includes('/short') && d.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                                 window.activeAutofillData = null; window.b103ScreenCache = {};
                             }
@@ -176,21 +306,31 @@
         if (!sec) return [];
         const cards = Array.from(sec.querySelectorAll('.MuiCard-root'));
         const items = [];
+        const discoveredMeds = [];
+        const discoveredRoutes = [];
         for (const card of cards) {
             const name = cleanVal(card.querySelector('.MuiCardHeader-title')?.innerText);
             if (!name) continue;
             let qty = '';
+            let unit = '';
             let route = '';
             const spans = Array.from(card.querySelectorAll('span, p'));
             for (let i = 0; i < spans.length; i++) {
                 const t = (spans[i].innerText || spans[i].textContent || '').trim();
                 if (t === 'Количество:' && spans[i].nextElementSibling) {
-                    qty = cleanQtyNum(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
+                    const rawQ = (spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent || '').trim();
+                    qty = cleanQtyNum(rawQ);
+                    unit = rawQ.replace(/^[\d.,\s]+/, '').trim();
                 } else if (t === 'Путь введения:' && spans[i].nextElementSibling) {
                     route = cleanVal(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
                 }
             }
+            discoveredMeds.push({ n: name, u: unit });
+            if (route) discoveredRoutes.push(route);
             items.push({ name, qty: qty || '1', route, note: '' });
+        }
+        if (discoveredMeds.length || discoveredRoutes.length) {
+            mergeMedCatalog(discoveredMeds, discoveredRoutes);
         }
         return items;
     }
@@ -377,6 +517,17 @@
             return items.length ? JSON.stringify({ items }) : '';
         } catch (e) {
             return '';
+        }
+    };
+
+    window.getMedCatalogJson = function() {
+        try {
+            return JSON.stringify({
+                meds: window.b103MedCatalog || [],
+                routes: window.b103RouteCatalog || []
+            });
+        } catch (e) {
+            return '{"meds":[],"routes":[]}';
         }
     };
 
@@ -1311,6 +1462,7 @@
         }
 
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х');
         const setReactVal = (inp, val) => {
             if (!inp) return;
             const str = String(val ?? '');
@@ -1331,11 +1483,9 @@
             return r.width > 0 && r.height > 0;
         };
 
-        async function pickAutocomplete(autoRoot, searchStr) {
+        async function tryPickOnce(autoRoot, queryText, fullTargetNorm) {
             const inp = autoRoot?.querySelector('input');
-            const cleanTarget = cleanVal(searchStr);
-            if (!inp || !cleanTarget) return false;
-            const targetL = cleanTarget.toLowerCase();
+            if (!inp) return false;
             const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
 
@@ -1344,14 +1494,14 @@
                 clearBtn.click();
                 await sleep(45);
             }
-            setReactVal(inp, cleanTarget);
+            setReactVal(inp, queryText);
             await sleep(140);
             if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) {
                 popupBtn.click();
             }
 
             let targetOpt = null;
-            for (let w = 0; w < 15; w++) {
+            for (let w = 0; w < 12; w++) {
                 const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
                 if (popper) {
@@ -1361,20 +1511,38 @@
                             return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
                         });
                     if (opts.length > 0) {
-                        targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === targetL)
-                            || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(targetL))
-                            || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(targetL))
+                        const qNorm = normX(queryText);
+                        targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
+                            || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
+                            || opts.find(o => normX(o.innerText).includes(fullTargetNorm))
+                            || opts.find(o => normX(o.innerText).includes(qNorm))
                             || opts[0];
                         if (targetOpt) break;
                     }
                 }
-                await sleep(80);
+                await sleep(75);
             }
             if (targetOpt) {
                 targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 targetOpt.click();
                 await sleep(90);
                 return true;
+            }
+            return false;
+        }
+
+        async function pickAutocomplete(autoRoot, searchStr) {
+            const cleanTarget = cleanVal(searchStr);
+            if (!autoRoot || !cleanTarget) return false;
+            const fullNorm = normX(cleanTarget);
+            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm)) return true;
+            const swapped = /[xX]/.test(cleanTarget)
+                ? cleanTarget.replace(/[xX]/g, 'х')
+                : cleanTarget.replace(/[хХ]/g, 'x');
+            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm)) return true;
+            const firstWord = cleanTarget.split(/\s+/)[0];
+            if (firstWord && firstWord.length >= 3 && firstWord !== cleanTarget) {
+                return await tryPickOnce(autoRoot, firstWord, fullNorm);
             }
             return false;
         }
@@ -1395,12 +1563,12 @@
         let failed = 0;
 
         try {
-            const existingNames = new Set(scrapeScreenMedications().map(m => m.name.trim().toLowerCase()));
+            const existingNames = new Set(scrapeScreenMedications().map(m => normX(m.name)));
 
             for (const item of items) {
                 const itemName = cleanVal(item.name);
                 if (!itemName) continue;
-                if (existingNames.has(itemName.toLowerCase())) {
+                if (existingNames.has(normX(itemName))) {
                     skipped++;
                     continue;
                 }
@@ -1454,7 +1622,7 @@
                     }
                     if (closed) {
                         added++;
-                        existingNames.add(itemName.toLowerCase());
+                        existingNames.add(normX(itemName));
                     } else {
                         const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                             .find(b => (b.innerText || '').toLowerCase().includes('отмен'));

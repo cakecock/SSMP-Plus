@@ -180,27 +180,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return MedPresetSample(id, title, summarizeMedPresetJson(jd), jd, isCustom = false)
     }
 
-    private val builtInMedPresets: List<MedPresetSample> by lazy {
-        listOf(
-            makeMedPreset(
-                1001,
-                "🧤 База на вызов (гигиена)",
-                Triple("Перчатки н/ст", "2", "путь введения не определен"),
-                Triple("Септоцид Р плюс", "15", "путь введения не определен"),
-                Triple("Вата медицинская н/ст", "6", "путь введения не определен")
-            ),
-            makeMedPreset(
-                1002,
-                "🩹 Обработка раны / перевязка",
-                Triple("Перчатки н/ст", "2", "путь введения не определен"),
-                Triple("Маска мед.о/р", "2", "путь введения не определен"),
-                Triple("Перекись водорода 3%-200,0", "50", "путь введения не определен"),
-                Triple("Салфетки стер. 10х10 №5", "1", "путь введения не определен"),
-                Triple("Бинт 5х10 н/ст", "1", "путь введения не определен"),
-                Triple("Вата медицинская н/ст", "5", "путь введения не определен")
-            )
-        )
-    }
+    private val builtInMedPresets: List<MedPresetSample> = emptyList()
 
     fun deleteCard(cardId: Long): Boolean =
         writableDatabase.delete("cards", "id = ? AND is_builtin = 0", arrayOf(cardId.toString())) > 0

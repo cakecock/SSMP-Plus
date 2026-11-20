@@ -9,6 +9,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.view.*
 import android.webkit.*
@@ -243,6 +244,7 @@ class MainActivity : AppCompatActivity() {
     // ГЛАВНОЕ МЕНЮ
     private fun showMainModalMenu() = showMenuDialog("Меню SSMP Plus") { d, card ->
         addDialogBtn(d, card, "⭐ ОБРАЗЦЫ КАРТ") { openSearchSheet(true) }
+        addDialogBtn(d, card, "💊 ШАБЛОНЫ ПРЕПАРАТОВ", "#6A1B9A") { openMedPresetsSheet() }
         addDialogBtn(d, card, "📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
         addDialogBtn(d, card, "🧰 ПОМОЩНИК СМП", "#0277BD") { showHelperSubMenu() }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2) }
@@ -281,6 +283,372 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
         addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
         addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
+    }
+
+    // ==========================================
+    // ОТДЕЛЬНОЕ МЕНЮ: ШАБЛОНЫ ПРЕПАРАТОВ И РАСХОДНИКОВ
+    // ==========================================
+    private fun openMedPresetsSheet() {
+        val (bs, root) = createSheet("💊 Шаблоны препаратов", "#6A1B9A")
+
+        root.addView(TextView(this).apply {
+            text = "➕ СОЗДАТЬ НАБОР ПРЕПАРАТОВ"
+            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#6A1B9A")); gravity = Gravity.CENTER
+            setPadding(16, 16, 16, 16); background = roundBg("#F3E5F5", 14f, "#8E24AA")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+            setOnClickListener {
+                bs.dismiss()
+                showCreateMedPresetDialog(null) { openMedPresetsSheet() }
+            }
+        })
+
+        val qInp = EditText(this).apply {
+            hint = "Поиск набора или препарата (перчатки, рана, ГК)..."
+            setPadding(30, 22, 30, 22)
+            MedicalTools.styleEditText(this, "#F3E5F5", "#CE93D8", 18f)
+        }
+        root.addView(qInp)
+        val lv = makeListView(root)
+
+        fun run(q: String) = lifecycleScope.launch(Dispatchers.IO) {
+            val list = dbHelper.searchMedPresets(q)
+            withContext(Dispatchers.Main) {
+                setupAdapter(
+                    lv,
+                    list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n💊 ${it.itemsSummary.ifEmpty { "Пустой набор" }}" },
+                    "#FAF5FF",
+                    "#E1BEE7"
+                ) { pos ->
+                    bs.dismiss()
+                    showMedPresetPreview(list[pos])
+                }
+            }
+        }
+        qInp.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { run(s.toString()) }
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+        })
+        bs.show()
+        run("")
+    }
+
+    private fun showMedPresetPreview(preset: MedPresetSample) {
+        val (bs, root) = createSheet("${if (preset.isCustom) "📌" else "⭐"} ${preset.title}", "#6A1B9A")
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
+
+        bar.addView(TextView(this).apply {
+            text = "💊 Вставить в карту"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(24, 16, 24, 16); background = roundBg("#6A1B9A", 16f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = if (preset.isCustom) 8 else 0 }
+            setOnClickListener {
+                bs.dismiss()
+                toast("⏳ Добавляю препараты в карту...")
+                webView.evaluateJavascript("window.applyMedicationsPreset && window.applyMedicationsPreset(${JSONObject.quote(preset.jsonData)});", null)
+            }
+        })
+
+        if (preset.isCustom) {
+            bar.addView(TextView(this).apply {
+                text = "✏️"; textSize = 17f; gravity = Gravity.CENTER
+                setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 16f, "#FFB74D")
+                layoutParams = LinearLayout.LayoutParams(-2, -1).apply { rightMargin = 8 }
+                setOnClickListener {
+                    bs.dismiss()
+                    showCreateMedPresetDialog(
+                        prefillJson = preset.jsonData,
+                        editingId = preset.id,
+                        initialTitle = preset.title
+                    ) { openMedPresetsSheet() }
+                }
+            })
+            bar.addView(ImageButton(this).apply {
+                contentDescription = "Удалить набор"
+                setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 16f); setPadding(18, 16, 18, 16)
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity).setTitle("Удалить набор препаратов?").setPositiveButton("Удалить") { _, _ ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            if (dbHelper.deleteMedPreset(preset.id)) {
+                                withContext(Dispatchers.Main) { toast("Удалено"); bs.dismiss(); openMedPresetsSheet() }
+                            }
+                        }
+                    }.setNegativeButton("Отмена", null).show()
+                }
+            })
+        }
+        root.addView(bar)
+
+        val formatted = try {
+            val arr = JSONObject(preset.jsonData).optJSONArray("items") ?: JSONArray()
+            if (arr.length() == 0) "Список препаратов пуст." else (0 until arr.length()).joinToString("\n\n") { i ->
+                val o = arr.getJSONObject(i)
+                val nm = o.optString("name")
+                val qt = o.optString("qty").ifEmpty { "1" }
+                val rt = o.optString("route")
+                val nt = o.optString("note")
+                buildString {
+                    append("${i + 1}. $nm\n   • Количество: $qt")
+                    if (rt.isNotEmpty() && !rt.contains("не определен")) append(" | Путь: $rt")
+                    if (nt.isNotEmpty()) append("\n   • Примечание: $nt")
+                }
+            }
+        } catch (_: Exception) { "Ошибка чтения набора" }
+
+        val sv = NestedScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isFillViewport = true; isNestedScrollingEnabled = true }
+        sv.addView(TextView(this).apply { textSize = 14.5f; setTextIsSelectable(true); setTextColor(Color.parseColor("#263238")); setLineSpacing(6f, 1.15f); text = formatted })
+        root.addView(sv)
+        bs.show()
+    }
+
+    private fun showCreateMedPresetDialog(
+        prefillJson: String? = null,
+        editingId: Long? = null,
+        initialTitle: String = "",
+        onSaved: (() -> Unit)? = null
+    ) {
+        val isEdit = editingId != null
+        val (bs, root) = createSheet(
+            title = if (isEdit) "✏️ Редактировать набор препаратов" else "💊 Новый набор препаратов",
+            titleColor = "#6A1B9A",
+            fixedHeightRatio = 0.88f
+        )
+
+        val items = mutableListOf<JSONObject>()
+        if (prefillJson != null) {
+            try {
+                val arr = JSONObject(prefillJson).optJSONArray("items") ?: JSONArray()
+                for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { items.add(it) }
+            } catch (_: Exception) {}
+        }
+
+        val pullBtn = TextView(this).apply {
+            text = "📥 ПОДТЯНУТЬ ПРЕПАРАТЫ ИЗ ОТКРЫТОЙ КАРТЫ"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(18, 16, 18, 16); background = roundBg("#0288D1", 12f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        root.addView(pullBtn)
+
+        val scroll = NestedScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+            isFillViewport = true
+            isNestedScrollingEnabled = true
+        }
+        val lay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 4, 0, 16)
+        }
+        scroll.addView(lay)
+        root.addView(scroll)
+
+        fun lbl(t: String) = lay.addView(TextView(this).apply {
+            text = t; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#4A148C")); setPadding(6, 6, 0, 4)
+        })
+
+        lbl("Название набора (обязательно):")
+        val titleInp = EditText(this).apply {
+            hint = "Напр. ГК стандарт / ОКС / Обработка раны"
+            if (initialTitle.isNotBlank()) setText(initialTitle)
+            setPadding(24, 16, 24, 16)
+            MedicalTools.styleEditText(this, "#F3E5F5", "#CE93D8", 12f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        lay.addView(titleInp)
+
+        lbl("Состав набора:")
+        val itemsListLay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        lay.addView(itemsListLay)
+
+        // Форма добавления одной позиции в набор
+        val addBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 16, 20, 16)
+            background = roundBg("#F5F7F8", 14f, "#CFD8DC")
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+        }
+        addBox.addView(TextView(this).apply {
+            text = "➕ Добавить позицию в набор:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#263238")); setPadding(0, 0, 0, 8)
+        })
+
+        val nameInp = EditText(this).apply {
+            hint = "Наименование (напр. Перчатки н/ст или Кеторолак 3%-1,0)"
+            setPadding(20, 14, 20, 14)
+            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+        }
+        addBox.addView(nameInp)
+
+        val qtyRouteRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+        }
+        val qtyInp = EditText(this).apply {
+            hint = "Кол-во"
+            setText("1")
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setPadding(20, 14, 20, 14)
+            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 0.42f).apply { rightMargin = 8 }
+        }
+        val routeInp = EditText(this).apply {
+            hint = "Путь введения (или пусто)"
+            setPadding(20, 14, 20, 14)
+            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        qtyRouteRow.addView(qtyInp); qtyRouteRow.addView(routeInp)
+        addBox.addView(qtyRouteRow)
+
+        val routeChipsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 8) }
+        val routeChipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(
+            "не определен" to "путь введения не определен",
+            "в/в" to "внутривенный",
+            "в/м" to "внутримышечный",
+            "п/к" to "подкожный",
+            "внутрь" to "внутрь",
+            "сублингв." to "сублингвальный",
+            "ингал." to "ингаляционный"
+        ).forEach { (shortLbl, fullVal) ->
+            routeChipsLay.addView(TextView(this).apply {
+                text = shortLbl; textSize = 11.5f; setTextColor(Color.parseColor("#4A148C"))
+                setPadding(16, 8, 16, 8); background = roundBg("#EDE7F6", 12f)
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
+                setOnClickListener { routeInp.setText(fullVal) }
+            })
+        }
+        routeChipsScroll.addView(routeChipsLay)
+        addBox.addView(routeChipsScroll)
+
+        val noteInp = EditText(this).apply {
+            hint = "Примечание (необязательно)"
+            setPadding(20, 14, 20, 14)
+            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        addBox.addView(noteInp)
+
+        val addPosBtn = TextView(this).apply {
+            text = "➕ ДОБАВИТЬ В СПИСОК"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#4A148C")); gravity = Gravity.CENTER
+            setPadding(14, 14, 14, 14); background = roundBg("#EDE7F6", 10f, "#B39DDB")
+        }
+        addBox.addView(addPosBtn)
+        lay.addView(addBox)
+
+        fun renderItems() {
+            itemsListLay.removeAllViews()
+            if (items.isEmpty()) {
+                itemsListLay.addView(TextView(this).apply {
+                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или добавьте позиции ниже."
+                    textSize = 12.8f; setTextColor(Color.parseColor("#607D8B"))
+                    setPadding(16, 14, 16, 14); background = roundBg("#FAFAFA", 10f, "#E0E0E0")
+                })
+                return
+            }
+            items.forEachIndexed { idx, obj ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(18, 12, 14, 12); background = roundBg("#FAF5FF", 12f, "#E1BEE7")
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 6 }
+                }
+                val nm = obj.optString("name")
+                val qt = obj.optString("qty").ifEmpty { "1" }
+                val rt = obj.optString("route")
+                val rtShow = if (rt.isNotEmpty() && !rt.contains("не определен")) " • $rt" else ""
+                row.addView(TextView(this).apply {
+                    text = "${idx + 1}. $nm — $qt$rtShow"
+                    textSize = 13f; setTextColor(Color.parseColor("#263238"))
+                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                    setOnClickListener {
+                        nameInp.setText(nm)
+                        qtyInp.setText(qt)
+                        routeInp.setText(rt)
+                        noteInp.setText(obj.optString("note"))
+                        items.removeAt(idx)
+                        renderItems()
+                    }
+                })
+                row.addView(TextView(this).apply {
+                    text = "✕"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#C62828"))
+                    setPadding(14, 6, 10, 6)
+                    setOnClickListener { items.removeAt(idx); renderItems() }
+                })
+                itemsListLay.addView(row)
+            }
+        }
+
+        addPosBtn.setOnClickListener {
+            val nm = nameInp.text.toString().trim()
+            if (nm.isEmpty()) { toast("Введите наименование препарата!"); nameInp.requestFocus(); return@setOnClickListener }
+            val qt = qtyInp.text.toString().replace(",", ".").trim().ifEmpty { "1" }
+            val rt = routeInp.text.toString().trim()
+            val nt = noteInp.text.toString().trim()
+            items.add(JSONObject().apply {
+                put("name", nm); put("qty", qt); put("route", rt); put("note", nt)
+            })
+            nameInp.setText(""); qtyInp.setText("1"); routeInp.setText(""); noteInp.setText("")
+            renderItems()
+        }
+
+        pullBtn.setOnClickListener {
+            webView.evaluateJavascript("window.getCurrentMedicationsJson ? window.getCurrentMedicationsJson() : '';") { rawRes ->
+                val unwrapped = try {
+                    if (rawRes.isNullOrBlank() || rawRes == "null") ""
+                    else (JSONTokener(rawRes).nextValue() as? String) ?: ""
+                } catch (_: Exception) { "" }
+
+                if (unwrapped.isBlank()) {
+                    toast("В открытой карте нет добавленных препаратов")
+                    return@evaluateJavascript
+                }
+                try {
+                    val arr = JSONObject(unwrapped).optJSONArray("items") ?: JSONArray()
+                    if (arr.length() == 0) {
+                        toast("В открытой карте нет добавленных препаратов")
+                        return@evaluateJavascript
+                    }
+                    items.clear()
+                    for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { items.add(it) }
+                    renderItems()
+                    toast("📥 Подтянуто позиций: ${items.size}")
+                } catch (_: Exception) { toast("Ошибка чтения препаратов") }
+            }
+        }
+
+        renderItems()
+
+        root.addView(TextView(this).apply {
+            text = if (isEdit) "💾 СОХРАНИТЬ ИЗМЕНЕНИЯ" else "💾 СОХРАНИТЬ НАБОР ПРЕПАРАТОВ"
+            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 20, 20, 20); background = roundBg("#6A1B9A", 14f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10 }
+            setOnClickListener {
+                val t = titleInp.text.toString().trim()
+                if (t.isEmpty()) { toast("Введите название набора!"); titleInp.requestFocus(); return@setOnClickListener }
+                if (items.isEmpty()) { toast("Добавьте хотя бы один препарат!"); return@setOnClickListener }
+
+                val payload = JSONObject().apply {
+                    put("items", JSONArray().apply { items.forEach { put(it) } })
+                }.toString()
+
+                lifecycleScope.launch(Dispatchers.IO) {
+                    if (editingId != null) dbHelper.updateMedPreset(editingId, t, payload)
+                    else dbHelper.saveMedPreset(t, payload)
+                    withContext(Dispatchers.Main) {
+                        toast(if (isEdit) "✏️ Набор «$t» обновлён!" else "💊 Набор «$t» сохранён!")
+                        bs.dismiss()
+                        onSaved?.invoke()
+                    }
+                }
+            }
+        })
+
+        bs.show()
     }
 
     // ==========================================
@@ -753,18 +1121,21 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(topToolsRow)
 
+        val exactCardContainer = FrameLayout(this)
+        root.addView(exactCardContainer)
+
         val cleanFio = currentFio.trim()
         if (cleanFio.length >= 3) {
             lifecycleScope.launch(Dispatchers.IO) {
                 dbHelper.getBestCardForPatient(cleanFio)?.let { card ->
                     withContext(Dispatchers.Main) {
-                        root.addView(TextView(this@MainActivity).apply {
+                        exactCardContainer.addView(TextView(this@MainActivity).apply {
                             text = "👤 ЗАПОЛНИТЬ ИЗ АРХИВА: ${cleanFio.uppercase()}"
                             textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                             setPadding(20, 20, 20, 20); background = roundBg("#2E7D32", 16f)
-                            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12 }
+                            layoutParams = FrameLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
                             setOnClickListener { bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(card)});", null); toast("⚡ Заполнено!") }
-                        }, 3)
+                        })
                     }
                 }
             }
@@ -777,16 +1148,31 @@ class MainActivity : AppCompatActivity() {
         val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
 
-        root.addView(TextView(this).apply {
-            text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
-            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
-            setPadding(16, 16, 16, 16); background = roundBg("#E0F2F1", 14f, "#00897B")
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        }
+        actionRow.addView(TextView(this).apply {
+            text = "➕ СВОЙ ШАБЛОН"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
+            setPadding(12, 16, 12, 16); background = roundBg("#E0F2F1", 14f, "#00897B")
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
             setOnClickListener {
                 bs.dismiss()
                 showCreateTemplateDialog(null) { showAutofillPickerSheet(currentFio) }
             }
         })
+        actionRow.addView(TextView(this).apply {
+            text = "💊 ПРЕПАРАТЫ"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#6A1B9A")); gravity = Gravity.CENTER
+            setPadding(12, 16, 12, 16); background = roundBg("#F3E5F5", 14f, "#8E24AA")
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            setOnClickListener {
+                bs.dismiss()
+                openMedPresetsSheet()
+            }
+        })
+        root.addView(actionRow)
 
         val qInp = EditText(this).apply {
             hint = "Поиск (СЛР, диагноз, фамилия)..."

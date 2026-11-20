@@ -70,9 +70,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         val cleanedJson = try {
             JSONObject(rawJsonData).apply {
                 listOf(
-                    "fio", "birthDate", "age", "ageUnit", "citizenship",
-                    "settlement", "street", "building", "flat",
-                    "clarificationAddress", "address", "apo"
+                    "fio", "birthDate", "age", "ageUnit", "gender",
+                    "citizenship", "settlement", "street", "building", "flat",
+                    "clarificationAddress", "address", "apo", "callReason"
                 ).forEach { remove(it) }
             }.toString()
         } catch (_: Exception) { rawJsonData }
@@ -108,17 +108,39 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
     }
 
     fun searchPatientSummaries(query: String): List<PatientSummary> {
-        val results = mutableListOf<PatientSummary>()
-        val q = "%${query.trim().lowercase()}%"
+        val q = query.trim().lowercase()
+        val groups = LinkedHashMap<String, MutableList<Triple<String, Long, String>>>()
         val cursor = readableDatabase.rawQuery(
-            "SELECT fio, birth_date, COUNT(*), MAX(timestamp), json_data FROM cards WHERE is_builtin = 0 AND (fio LIKE ? OR json_data LIKE ?) GROUP BY fio ORDER BY MAX(timestamp) DESC LIMIT 40",
-            arrayOf(q, q)
+            "SELECT fio, birth_date, timestamp, json_data FROM cards WHERE is_builtin = 0 ORDER BY timestamp DESC",
+            null
         )
         while (cursor.moveToNext()) {
-            val j = try { JSONObject(cursor.getString(4)) } catch (_: Exception) { JSONObject() }
-            results.add(PatientSummary(cursor.getString(0), cursor.getString(1), cursor.getInt(2), cursor.getLong(3), j.optString("diagnosis").ifEmpty { j.optString("callReason") }))
+            val fio = (cursor.getString(0) ?: "").trim().lowercase()
+            if (fio.isEmpty()) continue
+            val bDate = cursor.getString(1) ?: ""
+            val ts = cursor.getLong(2)
+            val jd = cursor.getString(3) ?: "{}"
+            groups.getOrPut(fio) { mutableListOf() }.add(Triple(bDate, ts, jd))
         }
         cursor.close()
+
+        val results = mutableListOf<PatientSummary>()
+        for ((fio, items) in groups) {
+            val matches = q.isEmpty() || fio.contains(q) || items.any { it.third.lowercase().contains(q) }
+            if (!matches) continue
+            val latest = items[0]
+            val j = try { JSONObject(latest.third) } catch (_: Exception) { JSONObject() }
+            results.add(
+                PatientSummary(
+                    fio = fio,
+                    birthDate = latest.first,
+                    callCount = items.size,
+                    lastTimestamp = latest.second,
+                    lastReason = j.optString("diagnosis").ifEmpty { j.optString("callReason") }
+                )
+            )
+            if (results.size >= 40) break
+        }
         return results
     }
 
@@ -195,14 +217,25 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
     fun searchBuiltInTemplates(query: String): List<BestCardSample> {
         val q = query.trim().lowercase()
         val combined = mutableListOf<BestCardSample>()
-        val cursor = readableDatabase.rawQuery("SELECT id, fio, json_data FROM cards WHERE is_builtin = 2 AND (fio LIKE ? OR json_data LIKE ?) ORDER BY timestamp DESC", arrayOf("%$q%", "%$q%"))
+        val cursor = readableDatabase.rawQuery(
+            "SELECT id, fio, json_data FROM cards WHERE is_builtin = 2 ORDER BY timestamp DESC",
+            null
+        )
         while (cursor.moveToNext()) {
-            val jd = cursor.getString(2)
+            val id = cursor.getLong(0)
+            val title = cursor.getString(1) ?: ""
+            val jd = cursor.getString(2) ?: "{}"
             val j = try { JSONObject(jd) } catch (_: Exception) { JSONObject() }
-            combined.add(BestCardSample(cursor.getLong(0), cursor.getString(1), j.optString("diagnosis"), j.optString("mkb").ifEmpty { j.optString("diagnosis") }, jd, isCustom = true))
+            val diag = j.optString("diagnosis")
+            val mkb = j.optString("mkb").ifEmpty { diag }
+            if (q.isEmpty() || title.lowercase().contains(q) || diag.lowercase().contains(q) || mkb.lowercase().contains(q) || jd.lowercase().contains(q)) {
+                combined.add(BestCardSample(id, title, diag, mkb, jd, isCustom = true))
+            }
         }
         cursor.close()
-        combined.addAll(builtInTemplates.filter { q.isEmpty() || it.title.lowercase().contains(q) || it.diagnosis.lowercase().contains(q) || it.mkb.lowercase().contains(q) })
+        combined.addAll(builtInTemplates.filter {
+            q.isEmpty() || it.title.lowercase().contains(q) || it.diagnosis.lowercase().contains(q) || it.mkb.lowercase().contains(q)
+        })
         return combined
     }
 
@@ -434,7 +467,6 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
                 "Боль возникла после подъема тяжести. Таблетки без эффекта.",
                 "Остеохондроз", "Удовлетворительное", position = "ВЫНУЖДЕННОЕ", positionDescription = "Щадящее из-за боли в спине",
                 localStatus = "Болезненность паравертебральных точек L4-S1, дефанс мышц спины. С-м Ласега + слева 45°."),
-            // Пункт 1 ревью: исправлен ошибочный код G54.6 (фантомная боль) на корректный G58.0
             makeSample(26, "Межреберная невралгия (торакалгия)", "[G58.0] Межреберная невропатия",
                 "Остеохондроз ГОП. Вертеброгенная торакалгия (межреберная невралгия).",
                 "На колющую боль в левой половине грудной клетки, усиливающуюся при вдохе и поворотах.",

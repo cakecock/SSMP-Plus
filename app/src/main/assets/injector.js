@@ -1,4 +1,6 @@
 (function() {
+    if (!location.hostname.endsWith('103brest.by')) return;
+
     window.lastLoadedApiCard = window.lastLoadedApiCard || null;
     window.activeAutofillData = window.activeAutofillData || null;
     window.b103ScreenCache = window.b103ScreenCache || {};
@@ -123,7 +125,7 @@
     }
 
     // ==========================================
-    // 2. DOM-СБОР КЭША С ЭКРАНА (ПО КНОПКЕ 💾 И В ШАБЛОН)
+    // 2. DOM-СБОР КЭША С ЭКРАНА (💾, ШАБЛОНЫ И АУДИТ)
     // ==========================================
     function getRealInputs(container) {
         return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
@@ -135,7 +137,7 @@
         for (let kw of keywords) {
             const kwL = kw.toLowerCase();
             const target = all.find(el => {
-                if (!el.textContent) return false;
+                if (!el.textContent || isInConclusion(el)) return false;
                 const t = el.textContent.trim().toLowerCase();
                 return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
             });
@@ -159,9 +161,14 @@
     function scrapeCache() {
         const c = window.b103ScreenCache;
         const setValIfFound = (kw, fieldName, exact = false) => {
-            const v = findInputByKw(Array.isArray(kw) ? kw : [kw], exact)?.value?.trim();
-            if (v && !v.startsWith('__')) c[fieldName] = v;
+            const inp = findInputByKw(Array.isArray(kw) ? kw : [kw], exact);
+            if (!inp) return;
+            const v = (inp.value || '').trim();
+            if (!v.startsWith('__')) c[fieldName] = v;
         };
+
+        const fioInp = findInputByKw(["фио"], true);
+        if (fioInp && fioInp.value.trim()) c.initialFullName = fioInp.value.trim();
 
         setValIfFound("гражданство", "citizenship", true);
         setValIfFound("нас. пункт", "settlement");
@@ -193,10 +200,15 @@
         setValIfFound("комментарий (вынужденное)", "positionDescription");
         setValIfFound("комментарий (периферические отеки)", "peripheralEdemaDescription");
 
-        const mkbVal = findInputByKw(["код по мкб"])?.value?.trim();
-        if (mkbVal) {
-            const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
-            if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+        const mkbInp = findInputByKw(["код по мкб"]);
+        if (mkbInp) {
+            const mkbVal = (mkbInp.value || '').trim();
+            if (!mkbVal) {
+                c.icd = null;
+            } else {
+                const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
+                if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+            }
         }
 
         const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
@@ -208,10 +220,8 @@
                 if (inps.length === 2) {
                     const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
                     const s = inps[0].value.trim(), d = inps[1].value.trim();
-                    if (s || d) {
-                        if (tx.includes("адаптированное")) c.arterialPressureAdaptive = { sys: s, dia: d };
-                        else if (tx.includes("ад (мм") || tx.includes("артериальн")) c.arterialPressure = { sys: s, dia: d };
-                    }
+                    if (tx.includes("адаптированное")) c.arterialPressureAdaptive = { sys: s, dia: d };
+                    else if (tx.includes("ад (мм") || tx.includes("артериальн")) c.arterialPressure = { sys: s, dia: d };
                     break;
                 }
                 pr = pr.parentElement;
@@ -222,7 +232,7 @@
         const getSelectText = (kw) => {
             const kwL = kw.toLowerCase();
             const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
-            if (!l) return '';
+            if (!l) return null;
             let p = l.closest('.MuiFormControl-root') || l.parentElement;
             for (let i = 0; i < 3 && p && p !== document.body; i++) {
                 const b = p.querySelector('.MuiSelect-root, [role="button"]');
@@ -232,15 +242,15 @@
                 }
                 p = p.parentElement;
             }
-            return '';
+            return null;
         };
-        const gs = getSelectText("общее состояние"); if (gs) c.generalState = { type: gs };
-        const cs = getSelectText("сознание"); if (cs) c.consciousness = { type: cs };
+        const gs = getSelectText("общее состояние"); if (gs !== null) c.generalState = gs ? { type: gs } : null;
+        const cs = getSelectText("сознание"); if (cs !== null) c.consciousness = cs ? { type: cs } : null;
         const au = getSelectText("возраст (ед.)"); if (au) c.ageType = { type: au };
         const ap = getSelectText("территориальная апо") || getSelectText("апо по месту жительства"); if (ap) c.apo = ap;
         const toArr = (kw, key) => {
             const v = getSelectText(kw);
-            if (v) c[key] = v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type);
+            if (v !== null) c[key] = v ? v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type) : [];
         };
         toArr("кожа", "skins");
         toArr("тоны сердца", "heartSounds");
@@ -253,26 +263,31 @@
             const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
             if (!l) return null;
             let p = l.closest('.MuiFormControl-root') || l.parentElement;
-            for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                const btns = Array.from(p.querySelectorAll('button')).filter(b => !isInConclusion(b));
+            for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => !isInConclusion(b));
                 if (btns.length >= 2 && btns.length <= 6) {
-                    const act = btns.find(b => b.className.includes('MuiButton-contained'));
+                    const act = btns.find(b => {
+                        if (b.className && b.className.includes('MuiButton-contained')) return true;
+                        const s = window.getComputedStyle(b);
+                        return s.color.includes('255, 255, 255') && !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                    });
                     return act ? (act.innerText || act.textContent || '').trim().toUpperCase() : '';
                 }
                 p = p.parentElement;
             }
             return null;
         };
+        const gnd = getActiveBtnText("пол"); if (gnd !== null) c._screenGender = gnd;
         const pup = getActiveBtnText("зрачки"); if (pup !== null) c.pupils = pup ? { type: pup } : null;
-        const pos = getActiveBtnText("положение"); if (pos) c.position = { type: pos };
-        const beh = getActiveBtnText("поведение"); if (beh) c.behavior = { type: beh };
-        const spc = getActiveBtnText("речь"); if (spc) c.speech = { type: spc };
-        const fac = getActiveBtnText("лицо"); if (fac) c.face = { type: fac };
-        const gat = getActiveBtnText("походка"); if (gat) c.gait = { type: gat };
-        const nys = getActiveBtnText("нистагм"); if (nys) c.nystagmus = { type: nys };
-        const stu = getActiveBtnText("стул"); if (stu) c.defecatio = { type: stu };
-        const uri = getActiveBtnText("мочеиспускание"); if (uri) c.urinations = [{ type: uri }];
-        const liv = getActiveBtnText("печень"); if (liv) c.liver = { type: liv };
+        const pos = getActiveBtnText("положение"); if (pos !== null) c.position = pos ? { type: pos } : null;
+        const beh = getActiveBtnText("поведение"); if (beh !== null) c.behavior = beh ? { type: beh } : null;
+        const spc = getActiveBtnText("речь"); if (spc !== null) c.speech = spc ? { type: spc } : null;
+        const fac = getActiveBtnText("лицо"); if (fac !== null) c.face = fac ? { type: fac } : null;
+        const gat = getActiveBtnText("походка"); if (gat !== null) c.gait = gat ? { type: gat } : null;
+        const nys = getActiveBtnText("нистагм"); if (nys !== null) c.nystagmus = nys ? { type: nys } : null;
+        const stu = getActiveBtnText("стул"); if (stu !== null) c.defecatio = stu ? { type: stu } : null;
+        const uri = getActiveBtnText("мочеиспускание"); if (uri !== null) c.urinations = uri ? [{ type: uri }] : [];
+        const liv = getActiveBtnText("печень"); if (liv !== null) c.liver = liv ? { type: liv } : null;
         const alr = getActiveBtnText("аллергия"); if (alr) c.allergy = (alr === "ДА");
         const lgt = getActiveBtnText("реакция на свет"); if (lgt) c.pupilsLight = (lgt === "ДА");
         const rsh = getActiveBtnText("высыпания"); if (rsh) c.skinRashes = (rsh === "ДА");
@@ -280,6 +295,9 @@
         const edm = getActiveBtnText("периферические отеки"); if (edm) c.peripheralEdema = (edm === "ДА");
         const prt = getActiveBtnText("симптомы раздражения брюшины"); if (prt) c.stomachSymptoms = (prt === "ДА");
         const prs = getActiveBtnText("перистальтика"); if (prs) c.peristalsis = (prs === "ДА");
+        const pls = getActiveBtnText("пульс, ударов в минуту"); if (pls) c.pulseExists = (pls === "ДА");
+        const cns = getActiveBtnText("получено устное согласие на простое медицинское вмешательство") ?? getActiveBtnText("получено устное согласие");
+        if (cns !== null) c.acceptsSimpleMedProcedure = (cns === "ДА");
 
         const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
             .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes("Количество:"));
@@ -311,9 +329,10 @@
 
     window.getCurrentCardRawJson = function() {
         try {
-            if (!isInsideCard() || !window.lastLoadedApiCard) return '';
+            if (!isInsideCard()) return '';
             scrapeCache();
-            return JSON.stringify(Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache));
+            if (!window.lastLoadedApiCard && Object.keys(window.b103ScreenCache).length === 0) return '';
+            return JSON.stringify(Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache));
         } catch (e) {
             return '';
         }
@@ -489,9 +508,9 @@
         };
         document.getElementById('btn-save-db').onclick = () => {
             if (Date.now() < suppressClickUntil) return;
-            scrapeCache();
-            if (window.lastLoadedApiCard && window.AndroidBridge) {
-                window.AndroidBridge.saveApiCardForced(JSON.stringify(Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache)));
+            const raw = window.getCurrentCardRawJson();
+            if (raw && window.AndroidBridge) {
+                window.AndroidBridge.saveApiCardForced(raw);
             } else {
                 window.AndroidBridge?.notifyUser("Откройте карту для сохранения");
             }

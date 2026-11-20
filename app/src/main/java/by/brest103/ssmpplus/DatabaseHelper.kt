@@ -32,6 +32,14 @@ data class BestCardSample(
     val isCustom: Boolean = false
 )
 
+data class MedPresetSample(
+    val id: Long,
+    val title: String,
+    val itemsSummary: String,
+    val jsonData: String,
+    val isCustom: Boolean = false
+)
+
 class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -97,6 +105,102 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
 
     fun deleteCustomTemplate(templateId: Long): Boolean =
         writableDatabase.delete("cards", "id = ? AND is_builtin = 2", arrayOf(templateId.toString())) > 0
+
+    // ==========================================
+    // ШАБЛОНЫ ПРЕПАРАТОВ И РАСХОДНИКОВ (is_builtin = 3)
+    // ==========================================
+    fun saveMedPreset(title: String, jsonData: String) {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return
+        val values = ContentValues().apply {
+            put("fio", cleanTitle); put("birth_date", ""); put("timestamp", System.currentTimeMillis())
+            put("score", 100); put("json_data", jsonData); put("is_builtin", 3)
+        }
+        writableDatabase.insert("cards", null, values)
+    }
+
+    fun updateMedPreset(presetId: Long, title: String, jsonData: String): Boolean {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return false
+        val values = ContentValues().apply {
+            put("fio", cleanTitle)
+            put("timestamp", System.currentTimeMillis())
+            put("json_data", jsonData)
+        }
+        return writableDatabase.update("cards", values, "id = ? AND is_builtin = 3", arrayOf(presetId.toString())) > 0
+    }
+
+    fun deleteMedPreset(presetId: Long): Boolean =
+        writableDatabase.delete("cards", "id = ? AND is_builtin = 3", arrayOf(presetId.toString())) > 0
+
+    private fun summarizeMedPresetJson(jsonStr: String): String = try {
+        val arr = JSONObject(jsonStr).optJSONArray("items") ?: JSONArray()
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val n = o.optString("name").trim()
+            val q = o.optString("qty").trim()
+            if (n.isEmpty()) null else if (q.isNotEmpty()) "$n ($q)" else n
+        }.joinToString(", ")
+    } catch (_: Exception) { "" }
+
+    fun searchMedPresets(query: String): List<MedPresetSample> {
+        val q = query.trim().lowercase()
+        val combined = mutableListOf<MedPresetSample>()
+        val cursor = readableDatabase.rawQuery(
+            "SELECT id, fio, json_data FROM cards WHERE is_builtin = 3 ORDER BY timestamp DESC",
+            null
+        )
+        while (cursor.moveToNext()) {
+            val id = cursor.getLong(0)
+            val title = cursor.getString(1) ?: ""
+            val jd = cursor.getString(2) ?: "{\"items\":[]}"
+            val summary = summarizeMedPresetJson(jd)
+            if (q.isEmpty() || title.lowercase().contains(q) || summary.lowercase().contains(q)) {
+                combined.add(MedPresetSample(id, title, summary, jd, isCustom = true))
+            }
+        }
+        cursor.close()
+        combined.addAll(builtInMedPresets.filter {
+            q.isEmpty() || it.title.lowercase().contains(q) || it.itemsSummary.lowercase().contains(q)
+        })
+        return combined
+    }
+
+    private fun makeMedPreset(id: Long, title: String, vararg items: Triple<String, String, String>): MedPresetSample {
+        val arr = JSONArray()
+        items.forEach { (name, qty, route) ->
+            arr.put(JSONObject().apply {
+                put("name", name)
+                put("qty", qty)
+                put("route", route)
+                put("note", "")
+            })
+        }
+        val jd = JSONObject().apply { put("items", arr) }.toString()
+        return MedPresetSample(id, title, summarizeMedPresetJson(jd), jd, isCustom = false)
+    }
+
+    private val builtInMedPresets: List<MedPresetSample> by lazy {
+        listOf(
+            makeMedPreset(
+                1001,
+                "🧤 База на вызов (ЭКГ + гигиена)",
+                Triple("Перчатки н/ст", "2", "путь введения не определен"),
+                Triple("Септоцид Р плюс", "15", "путь введения не определен"),
+                Triple("Лента диаграмная 110*140", "1", "путь введения не определен")
+            ),
+            makeMedPreset(
+                1002,
+                "🩹 Обработка раны / перевязка",
+                Triple("Перчатки н/ст", "2", "путь введения не определен"),
+                Triple("Маска мед.о/р", "2", "путь введения не определен"),
+                Triple("Перекись водорода 3%-200,0", "50", "путь введения не определен"),
+                Triple("Салфетки стер. 10х10 №5", "1", "путь введения не определен"),
+                Triple("Бинт 5х10 н/ст", "1", "путь введения не определен"),
+                Triple("Вата медицинская н/ст", "5", "путь введения не определен")
+            )
+        )
+    }
 
     fun deleteCard(cardId: Long): Boolean =
         writableDatabase.delete("cards", "id = ? AND is_builtin = 0", arrayOf(cardId.toString())) > 0
@@ -164,7 +268,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
     }
 
     fun exportDatabaseToJson(): String {
-        val cursor = readableDatabase.rawQuery("SELECT fio, birth_date, timestamp, score, json_data, is_builtin FROM cards WHERE is_builtin IN (0, 2)", null)
+        val cursor = readableDatabase.rawQuery("SELECT fio, birth_date, timestamp, score, json_data, is_builtin FROM cards WHERE is_builtin IN (0, 2, 3)", null)
         val arr = JSONArray()
         while (cursor.moveToNext()) {
             arr.put(JSONObject().apply {
@@ -177,19 +281,23 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         return arr.toString()
     }
 
-    // Импорт с проверкой на дубликаты (fio + timestamp для архива и fio для личных шаблонов)
+    // Импорт с проверкой на дубликаты (архив, личные шаблоны и наборы препаратов)
     fun importDatabaseFromJson(jsonStr: String): Int {
         val arr = JSONArray(jsonStr)
         val db = writableDatabase
         var count = 0
 
         val existingKeys = HashSet<String>()
-        val cur = db.rawQuery("SELECT fio, timestamp, is_builtin FROM cards WHERE is_builtin IN (0, 2)", null)
+        val cur = db.rawQuery("SELECT fio, timestamp, is_builtin FROM cards WHERE is_builtin IN (0, 2, 3)", null)
         while (cur.moveToNext()) {
             val efio = cur.getString(0).trim().lowercase()
             val ets = cur.getLong(1)
             val eisb = cur.getInt(2)
-            existingKeys.add(if (eisb == 2) "tpl_$efio" else "card_${efio}_$ets")
+            existingKeys.add(when (eisb) {
+                2 -> "tpl_$efio"
+                3 -> "med_$efio"
+                else -> "card_${efio}_$ets"
+            })
         }
         cur.close()
 
@@ -197,13 +305,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "ssmp_plus.db
         try {
             for (i in 0 until arr.length()) {
                 val obj = arr.optJSONObject(i) ?: continue
-                val isB = if (obj.optInt("is_builtin", 0) == 2) 2 else 0
-                val fio = if (isB == 2) obj.optString("fio").trim() else obj.optString("fio").trim().lowercase()
+                val rawB = obj.optInt("is_builtin", 0)
+                val isB = when (rawB) { 2 -> 2; 3 -> 3; else -> 0 }
+                val fio = if (isB == 2 || isB == 3) obj.optString("fio").trim() else obj.optString("fio").trim().lowercase()
                 val jd = obj.optString("json_data").trim()
                 val ts = obj.optLong("timestamp", System.currentTimeMillis())
 
                 if (fio.isNotEmpty() && jd.isNotEmpty()) {
-                    val key = if (isB == 2) "tpl_${fio.lowercase()}" else "card_${fio}_$ts"
+                    val key = when (isB) {
+                        2 -> "tpl_${fio.lowercase()}"
+                        3 -> "med_${fio.lowercase()}"
+                        else -> "card_${fio}_$ts"
+                    }
                     if (!existingKeys.contains(key)) {
                         existingKeys.add(key)
                         db.insert("cards", null, ContentValues().apply {

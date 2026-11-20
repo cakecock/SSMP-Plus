@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.5.0
+// @version      3.6.0
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, история пациентов, МКБ-10, 11 модулей Помощника СМП (ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -157,7 +157,7 @@
         let cleaned = rawJsonData;
         try {
             const o = typeof rawJsonData === 'string' ? JSON.parse(rawJsonData) : Object.assign({}, rawJsonData);
-            ['fio', 'birthDate', 'age', 'ageUnit', 'address', 'apo'].forEach(k => delete o[k]);
+            ['fio', 'birthDate', 'age', 'ageUnit', 'gender', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress', 'address', 'apo', 'callReason'].forEach(k => delete o[k]);
             cleaned = JSON.stringify(o);
         } catch (e) {}
         const db = loadDb();
@@ -1846,8 +1846,8 @@ function formatCardText(jsonStr) {
             if (prefill) applyDataToInputs(prefill);
 
             body.querySelector('#ct-pull-btn').onclick = () => {
+                if (!isInsideCard() || !window.lastLoadedApiCard) { showToast('Откройте карту для считывания!'); return; }
                 scrapeCache();
-                if (!window.lastLoadedApiCard) { showToast('Откройте карту для считывания!'); return; }
                 const merged = Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache);
                 const internal = parseServerCardToInternal(merged);
                 if (internal && internal.json_data) {
@@ -1885,7 +1885,7 @@ function formatCardText(jsonStr) {
                     recommendedTherapy: therInp.value.trim()
                 });
 
-                ['fio', 'birthDate', 'age', 'ageUnit', 'address', 'apo', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress'].forEach(k => delete finalData[k]);
+                ['fio', 'birthDate', 'age', 'ageUnit', 'gender', 'address', 'apo', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress', 'callReason'].forEach(k => delete finalData[k]);
 
                 saveCustomTemplate(title, JSON.stringify(finalData));
                 showToast(`📌 Шаблон «${title}» сохранен!`);
@@ -2985,40 +2985,231 @@ function formatCardText(jsonStr) {
     }
 
     // ==========================================
-    // 9. ПЛАВАЮЩАЯ ПАНЕЛЬ КНОПОК
+    // 9. КОМПАКТНАЯ ПЕРЕТАСКИВАЕМАЯ КАПСУЛА КНОПОК
     // ==========================================
     function isInsideCard() {
         return Boolean(document.querySelector('.MuiTabs-root, [role="tablist"]'));
+    }
+
+    const DOCK_KEY = 'b103_dock_state_v1';
+    function loadDockState() {
+        try {
+            const raw = localStorage.getItem(DOCK_KEY);
+            if (raw) {
+                const s = JSON.parse(raw);
+                return {
+                    side: s.side === 'left' ? 'left' : 'right',
+                    topPct: (typeof s.topPct === 'number' && s.topPct >= 0.08 && s.topPct <= 0.88) ? s.topPct : 0.84,
+                    collapsed: Boolean(s.collapsed)
+                };
+            }
+        } catch (e) {}
+        return { side: 'right', topPct: 0.84, collapsed: false };
+    }
+    function saveDockState(st) {
+        try { localStorage.setItem(DOCK_KEY, JSON.stringify(st)); } catch (e) {}
+    }
+
+    window.b103DockState = window.b103DockState || loadDockState();
+    let isTypingInField = false;
+    let forceExpandWhileTyping = false;
+    let suppressClickUntil = 0;
+    let lastInCardState = null;
+
+    function isEditableEl(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') {
+            const tp = (el.type || 'text').toLowerCase();
+            return !['button', 'submit', 'checkbox', 'radio', 'file', 'hidden'].includes(tp);
+        }
+        return Boolean(el.isContentEditable);
+    }
+
+    function applyDockLayout() {
+        const bar = document.getElementById('b103-toolbar');
+        if (!bar) return;
+
+        const inCard = isInsideCard();
+        const st = window.b103DockState;
+        const effectiveCollapsed = inCard && (st.collapsed || (isTypingInField && !forceExpandWhileTyping));
+
+        const menuBtn = document.getElementById('btn-main-menu');
+        const pill = document.getElementById('b103-card-pill');
+        const tabBtn = document.getElementById('b103-edge-tab');
+        const collapseBtn = document.getElementById('btn-collapse-dock');
+
+        if (menuBtn) menuBtn.style.display = inCard ? 'none' : 'flex';
+        if (pill) {
+            pill.style.display = (inCard && !effectiveCollapsed) ? 'flex' : 'none';
+            pill.style.flexDirection = st.side === 'left' ? 'row-reverse' : 'row';
+        }
+        if (collapseBtn) collapseBtn.innerText = st.side === 'left' ? '‹' : '›';
+        if (tabBtn) {
+            tabBtn.style.display = (inCard && effectiveCollapsed) ? 'flex' : 'none';
+            tabBtn.style.borderRadius = st.side === 'left' ? '0 14px 14px 0' : '14px 0 0 14px';
+            tabBtn.style.opacity = isTypingInField ? '0.52' : '0.84';
+        }
+
+        const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 700;
+        const barH = bar.offsetHeight || 44;
+        const topPx = Math.max(54, Math.min(vh - barH - 12, Math.round(vh * st.topPct)));
+
+        bar.style.top = topPx + 'px';
+        bar.style.bottom = 'auto';
+        if (st.side === 'left') {
+            bar.style.left = effectiveCollapsed ? '0px' : '8px';
+            bar.style.right = 'auto';
+        } else {
+            bar.style.right = effectiveCollapsed ? '0px' : '8px';
+            bar.style.left = 'auto';
+        }
+    }
+
+    function attachDragBehavior(bar) {
+        let dragging = false, moved = false;
+        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+        function onStart(clientX, clientY) {
+            const rect = bar.getBoundingClientRect();
+            dragging = true;
+            moved = false;
+            startX = clientX;
+            startY = clientY;
+            startLeft = rect.left;
+            startTop = rect.top;
+            bar.style.transition = 'none';
+        }
+
+        function onMove(clientX, clientY, e) {
+            if (!dragging) return;
+            const dx = clientX - startX;
+            const dy = clientY - startY;
+            if (!moved && Math.hypot(dx, dy) > 8) moved = true;
+            if (moved) {
+                if (e && e.cancelable) e.preventDefault();
+                const vw = window.innerWidth || 360;
+                const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 700;
+                const w = bar.offsetWidth || 48;
+                const h = bar.offsetHeight || 44;
+                const nx = Math.max(0, Math.min(vw - w, startLeft + dx));
+                const ny = Math.max(48, Math.min(vh - h - 8, startTop + dy));
+                bar.style.left = nx + 'px';
+                bar.style.right = 'auto';
+                bar.style.top = ny + 'px';
+                bar.style.bottom = 'auto';
+            }
+        }
+
+        function onEnd() {
+            if (!dragging) return;
+            dragging = false;
+            bar.style.transition = 'left 0.18s ease, right 0.18s ease, top 0.18s ease, opacity 0.2s ease';
+            if (moved) {
+                suppressClickUntil = Date.now() + 320;
+                const rect = bar.getBoundingClientRect();
+                const vw = window.innerWidth || 360;
+                const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 700;
+                window.b103DockState.side = (rect.left + rect.width / 2) < (vw / 2) ? 'left' : 'right';
+                window.b103DockState.topPct = Math.max(0.08, Math.min(0.88, rect.top / vh));
+                saveDockState(window.b103DockState);
+                applyDockLayout();
+            }
+        }
+
+        bar.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) onStart(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+        bar.addEventListener('touchmove', (e) => {
+            if (dragging && e.touches.length === 1) onMove(e.touches[0].clientX, e.touches[0].clientY, e);
+        }, { passive: false });
+        bar.addEventListener('touchend', onEnd, { passive: true });
+        bar.addEventListener('touchcancel', onEnd, { passive: true });
+
+        bar.addEventListener('mousedown', (e) => { if (e.button === 0) onStart(e.clientX, e.clientY); });
+        window.addEventListener('mousemove', (e) => { if (dragging) onMove(e.clientX, e.clientY, e); });
+        window.addEventListener('mouseup', onEnd);
     }
 
     function ensureToolbar() {
         if (!document.body || document.getElementById('b103-toolbar')) return;
         const bar = document.createElement('div');
         bar.id = 'b103-toolbar';
-        bar.style.cssText = 'position:fixed;bottom:88px;right:16px;z-index:99999;display:flex;flex-direction:column;align-items:flex-end;gap:12px;';
-        const rs = 'width:52px;height:52px;border-radius:50%;border:none;box-shadow:0 4px 14px rgba(0,0,0,0.32);font-size:22px;display:none;align-items:center;justify-content:center;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;';
+        bar.style.cssText = 'position:fixed;z-index:99999;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;transition:left 0.18s ease, right 0.18s ease, top 0.18s ease, opacity 0.2s ease;';
+        const btnBase = 'width:34px;height:34px;border-radius:50%;border:none;color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 2px 6px rgba(0,0,0,0.22);-webkit-tap-highlight-color:transparent;';
+
         bar.innerHTML = `
-            <button id="btn-main-menu" style="background:#008577;color:white;${rs}">☰</button>
-            <button id="btn-save-db" style="background:#00796B;color:white;${rs}">💾</button>
-            <button id="btn-fill-db" style="background:#0288D1;color:white;${rs}">⚡</button>
+            <button id="btn-main-menu" style="width:46px;height:46px;border-radius:50%;border:none;background:#008577;color:#fff;font-size:20px;display:none;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.3);-webkit-tap-highlight-color:transparent;">☰</button>
+            <div id="b103-card-pill" style="display:none;align-items:center;gap:6px;padding:3px 6px;border-radius:22px;background:rgba(30,43,51,0.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 4px 14px rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.16);">
+                <span style="color:rgba(255,255,255,0.55);font-size:13px;padding:0 2px;letter-spacing:-1px;cursor:grab;">⋮⋮</span>
+                <button id="btn-save-db" title="Сохранить в архив" style="background:#00897B;${btnBase}">💾</button>
+                <button id="btn-fill-db" title="Автозаполнение и Помощник" style="background:#0288D1;${btnBase}">⚡</button>
+                <button id="btn-collapse-dock" title="Свернуть к краю" style="width:24px;height:32px;border-radius:12px;border:none;background:rgba(255,255,255,0.12);color:#fff;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent;">›</button>
+            </div>
+            <button id="b103-edge-tab" title="Развернуть панель SSMP Plus" style="display:none;width:26px;height:46px;border:none;background:rgba(2,136,209,0.92);color:#fff;font-size:15px;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 10px rgba(0,0,0,0.28);padding:0;-webkit-tap-highlight-color:transparent;">⚡</button>
         `;
         document.body.appendChild(bar);
+        attachDragBehavior(bar);
 
-        document.getElementById('btn-main-menu').onclick = openMainMenuIos;
-        document.getElementById('btn-save-db').onclick = saveCardToLocalArchive;
-        document.getElementById('btn-fill-db').onclick = openAutofillSheet;
+        document.getElementById('btn-main-menu').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            openMainMenuIos();
+        };
+        document.getElementById('btn-save-db').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            saveCardToLocalArchive();
+        };
+        document.getElementById('btn-fill-db').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            openAutofillSheet();
+        };
+        document.getElementById('btn-collapse-dock').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            window.b103DockState.collapsed = true;
+            forceExpandWhileTyping = false;
+            saveDockState(window.b103DockState);
+            applyDockLayout();
+        };
+        document.getElementById('b103-edge-tab').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            if (isTypingInField) forceExpandWhileTyping = true;
+            window.b103DockState.collapsed = false;
+            saveDockState(window.b103DockState);
+            applyDockLayout();
+        };
+
+        if (!window.b103DockListenersAdded) {
+            window.b103DockListenersAdded = true;
+            document.addEventListener('focusin', (e) => {
+                if (isEditableEl(e.target)) {
+                    isTypingInField = true;
+                    forceExpandWhileTyping = false;
+                    applyDockLayout();
+                }
+            }, true);
+            document.addEventListener('focusout', () => {
+                setTimeout(() => {
+                    if (!isEditableEl(document.activeElement)) {
+                        isTypingInField = false;
+                        forceExpandWhileTyping = false;
+                        applyDockLayout();
+                    }
+                }, 140);
+            }, true);
+            window.addEventListener('resize', applyDockLayout);
+            if (window.visualViewport) window.visualViewport.addEventListener('resize', applyDockLayout);
+        }
+
+        applyDockLayout();
     }
 
     function updateVisibility() {
         ensureToolbar();
         const inCard = isInsideCard();
-        const m = document.getElementById('btn-main-menu');
-        const s = document.getElementById('btn-save-db');
-        const f = document.getElementById('btn-fill-db');
-        if (m && s && f) {
-            m.style.display = inCard ? 'none' : 'flex';
-            s.style.display = inCard ? 'flex' : 'none';
-            f.style.display = inCard ? 'flex' : 'none';
+        if (inCard !== lastInCardState) {
+            lastInCardState = inCard;
+            applyDockLayout();
         }
         if (!inCard) {
             window.activeAutofillData = null;

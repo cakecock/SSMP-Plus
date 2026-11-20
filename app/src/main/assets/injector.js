@@ -1,1798 +1,1525 @@
-package by.brest103.ssmpplus
+(function() {
+    if (!location.hostname.endsWith('103brest.by')) return;
 
-import android.annotation.SuppressLint
-import android.content.*
-import android.content.ClipboardManager
-import android.graphics.*
-import android.graphics.drawable.*
-import android.net.Uri
-import android.net.http.SslError
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
-import android.view.*
-import android.webkit.*
-import android.widget.*
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.*
-import androidx.core.widget.NestedScrollView
-import androidx.lifecycle.lifecycleScope
-import androidx.webkit.*
-import com.google.android.material.bottomsheet.*
-import kotlinx.coroutines.*
-import org.json.*
-import java.text.SimpleDateFormat
-import java.util.*
-
-data class MkbCodeItem(val code: String, val name: String, val letter: String)
-
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var webView: WebView
-    private lateinit var dbHelper: DatabaseHelper
-    private var backPressedTime: Long = 0
-    private var mkbLoadJob: Job? = null
-
-    @Volatile
-    private var fullMkbList: List<MkbCodeItem> = emptyList()
-
-    private val targetHost = "soft.103brest.by"
-
-    private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        uri?.let {
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val data = dbHelper.exportDatabaseToJson()
-                    contentResolver.openOutputStream(it)?.use { out -> out.write(data.toByteArray(Charsets.UTF_8)) }
-                    withContext(Dispatchers.Main) { toast("📤 База экспортирована!") }
-                } catch (e: Exception) { withContext(Dispatchers.Main) { toast("Ошибка экспорта: ${e.message}") } }
-            }
-        }
-    }
-
-    private val importDbLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val json = contentResolver.openInputStream(it)?.bufferedReader()?.use { r -> r.readText() } ?: ""
-                    val count = dbHelper.importDatabaseFromJson(json)
-                    withContext(Dispatchers.Main) { toast("📥 Импортировано новых записей: $count") }
-                } catch (e: Exception) { withContext(Dispatchers.Main) { toast("Ошибка импорта файла") } }
-            }
-        }
-    }
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-    private fun roundBg(hex: String, r: Float, strokeHex: String? = null) = GradientDrawable().apply {
-        setColor(Color.parseColor(hex)); cornerRadius = r; strokeHex?.let { setStroke(2, Color.parseColor(it)) }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        dbHelper = DatabaseHelper(this)
-        webView = findViewById(R.id.webView)
-        mkbLoadJob = loadFullMkbAsync()
-
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack()
-                else if (System.currentTimeMillis() - backPressedTime < 2000) finish()
-                else { backPressedTime = System.currentTimeMillis(); toast("Нажмите назад ещё раз для выхода") }
-            }
-        })
-
-        CookieManager.getInstance().apply { setAcceptCookie(true); setAcceptThirdPartyCookies(webView, true) }
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            allowFileAccess = false
-            allowContentAccess = false
-            loadWithOverviewMode = true
-            useWideViewPort = true
-            cacheMode = WebSettings.LOAD_DEFAULT
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-        }
-
-        val polyfill = """
-            if (typeof window.Notification === 'undefined') {
-                function MockNotification(t, o) { this.title = t; this.options = o; this.close = function(){}; }
-                MockNotification.permission = 'granted';
-                MockNotification.requestPermission = function(cb) { if (typeof cb === 'function') cb('granted'); return Promise.resolve('granted'); };
-                window.Notification = MockNotification;
-            }
-        """.trimIndent()
-
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            WebViewCompat.addDocumentStartJavaScript(webView, polyfill, setOf("*"))
-        }
-
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onJsAlert(v: WebView?, u: String?, m: String?, r: JsResult?): Boolean {
-                Toast.makeText(this@MainActivity, m ?: "", Toast.LENGTH_LONG).show(); r?.confirm(); return true
-            }
-        }
-        webView.webViewClient = object : WebViewClient() {
-            @SuppressLint("WebViewClientOnReceivedSslError")
-            override fun onReceivedSslError(v: WebView?, h: SslErrorHandler?, e: SslError?) {
-                val reqHost = try { Uri.parse(e?.url ?: "").host?.lowercase() } catch (_: Exception) { null }
-                if (reqHost == targetHost) h?.proceed() else h?.cancel()
-            }
-
-            override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                if (r?.isForMainFrame != true) return false
-                val url = r.url ?: return false
-                val host = url.host?.lowercase() ?: ""
-                return if (host == targetHost || host.endsWith(".103brest.by")) {
-                    false
-                } else {
-                    try { startActivity(Intent(Intent.ACTION_VIEW, url)) } catch (_: Exception) {}
-                    true
-                }
-            }
-
-            override fun onPageStarted(v: WebView?, u: String?, f: Bitmap?) {
-                super.onPageStarted(v, u, f)
-                v?.evaluateJavascript(polyfill, null)
-            }
-            override fun onPageFinished(v: WebView?, u: String?) {
-                super.onPageFinished(v, u)
-                injectScript()
-            }
-        }
-        webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
-        webView.loadUrl("https://soft.103brest.by/ssmp/")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        if (::dbHelper.isInitialized) {
-            dbHelper.close()
-        }
-    }
-
-    private fun loadFullMkbAsync(): Job = lifecycleScope.launch(Dispatchers.IO) {
-        try {
-            val arr = JSONArray(assets.open("mkb10.json").bufferedReader().use { it.readText() })
-            val list = ArrayList<MkbCodeItem>(arr.length())
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val c = obj.optString("c").trim().uppercase()
-                val n = obj.optString("n").trim()
-                if (c.length >= 3 && c[0] in 'A'..'Z' && c.any { it.isDigit() }) list.add(MkbCodeItem(c, n, c[0].toString()))
-            }
-            fullMkbList = list
-        } catch (e: Exception) { e.printStackTrace() }
-    }
-
-    private fun injectScript() {
-        try { webView.evaluateJavascript(assets.open("injector.js").bufferedReader().use { it.readText() }, null) } catch (_: Exception) {}
-    }
-
-    @Suppress("DEPRECATION")
-    private fun createSheet(title: String, titleColor: String, fixedHeightRatio: Float? = null): Pair<BottomSheetDialog, LinearLayout> {
-        val bs = BottomSheetDialog(this)
-        bs.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 18, 36, 24); setBackgroundColor(Color.WHITE) }
-        root.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(8) }
-            background = roundBg("#B0BEC5", 4f)
-        })
-        root.addView(TextView(this).apply {
-            text = title; textSize = 18.5f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor(titleColor)); setPadding(0, 0, 0, 12)
-        })
-        if (fixedHeightRatio != null) {
-            val h = (resources.displayMetrics.heightPixels * fixedHeightRatio).toInt()
-            bs.setContentView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h))
-        } else {
-            bs.setContentView(root)
-        }
-        bs.behavior.apply {
-            state = BottomSheetBehavior.STATE_EXPANDED
-            skipCollapsed = true
-            peekHeight = (resources.displayMetrics.heightPixels * 0.85).toInt()
-        }
-        return bs to root
-    }
-
-    private fun makeListView(root: LinearLayout): ListView = ListView(this).apply {
-        layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-        isNestedScrollingEnabled = true; divider = null; dividerHeight = 12; setPadding(0, 14, 0, 0)
-        root.addView(this)
-    }
-
-    private fun setupAdapter(lv: ListView, items: List<String>, bg: String, stroke: String, onClick: (Int) -> Unit) {
-        lv.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
-            override fun getView(pos: Int, conv: View?, parent: ViewGroup): View = (super.getView(pos, conv, parent) as TextView).apply {
-                setPadding(26, 20, 26, 20); setTextColor(Color.parseColor("#263238")); textSize = 14f
-                background = roundBg(bg, 16f, stroke)
-            }
-        }
-        lv.setOnItemClickListener { _, _, pos, _ -> onClick(pos) }
-    }
-
-    private fun showMenuDialog(title: String, builders: (android.app.Dialog, LinearLayout) -> Unit) {
-        val dialog = android.app.Dialog(this).apply { requestWindowFeature(Window.FEATURE_NO_TITLE); window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)) }
-        val cardWidth = (resources.displayMetrics.widthPixels * 0.88).toInt().coerceAtMost(dp(420))
-        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(44, 36, 44, 40); background = roundBg("#FFFFFF", 18f); layoutParams = ViewGroup.LayoutParams(cardWidth, -2) }
-        val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 20) }
-        hdr.addView(TextView(this).apply { text = title; textSize = 19.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#212121")); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-        hdr.addView(TextView(this).apply { text = "✕"; textSize = 20f; setTextColor(Color.GRAY); setPadding(16, 4, 8, 4); setOnClickListener { dialog.dismiss() } })
-        card.addView(hdr)
-        builders(dialog, card)
-        dialog.setContentView(card)
-        dialog.show()
-    }
-
-    private fun addDialogBtn(dialog: android.app.Dialog, parent: LinearLayout, title: String, color: String = "#008577", onClick: () -> Unit) {
-        parent.addView(TextView(this).apply {
-            text = title; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(22, 24, 22, 24); background = roundBg(color, 10f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 14 }
-            setOnClickListener { dialog.dismiss(); onClick() }
-        })
-    }
-
-    // ГЛАВНОЕ МЕНЮ
-    private fun showMainModalMenu() = showMenuDialog("Меню SSMP Plus") { d, card ->
-        addDialogBtn(d, card, "⭐ ОБРАЗЦЫ КАРТ") { openSearchSheet(true) }
-        addDialogBtn(d, card, "💊 ШАБЛОНЫ ПРЕПАРАТОВ", "#6A1B9A") { openMedPresetsSheet() }
-        addDialogBtn(d, card, "📂 ОБЩИЙ АРХИВ ВЫЗОВОВ") { openSearchSheet(false) }
-        addDialogBtn(d, card, "🧰 ПОМОЩНИК СМП", "#0277BD") { showHelperSubMenu() }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, -2) }
-        fun half(t: String, mr: Int, act: () -> Unit) = TextView(this).apply {
-            text = t; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 1
-            setPadding(12, 26, 12, 26); background = roundBg("#00695C", 10f)
-            layoutParams = LinearLayout.LayoutParams(0, -1, 1f).apply { rightMargin = mr }
-            setOnClickListener { d.dismiss(); act() }
-        }
-        row.addView(half("📥 ИМПОРТ", 14) { importDbLauncher.launch(arrayOf("*/*")) })
-        row.addView(half("📤 ЭКСПОРТ", 0) { exportDbLauncher.launch("ssmp_archive_${SimpleDateFormat("dd_MM_yyyy", Locale.getDefault()).format(Date())}.json") })
-        card.addView(row)
-    }
-
-    // ПОДМЕНЮ: ПОМОЩНИК СМП (12 МОДУЛЕЙ)
-    private fun showHelperSubMenu() = showMenuDialog("Помощник СМП") { d, card ->
-        val scroll = NestedScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        }
-        val listLay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        }
-        scroll.addView(listLay)
-        card.addView(scroll)
-
-        addDialogBtn(d, listLay, "🩺 АУДИТ ОТКРЫТОЙ КАРТЫ (ПРОВЕРКА)", "#1565C0") { runCardAudit() }
-        addDialogBtn(d, listLay, "📈 КОНСТРУКТОР ЭКГ (В КАРТУ)", "#00897B") { SmartAssistants.showEcgConstructorSheet(this, webView) }
-        addDialogBtn(d, listLay, "⏱️ ТАЙМЕР И ПРОТОКОЛ СЛР", "#D32F2F") { SmartAssistants.showCprTimerSheet(this, webView) }
-        addDialogBtn(d, listLay, "📝 ФРАЗЫ: ОТКАЗЫ И ПРИМЕЧАНИЯ", "#5D4037") { SmartAssistants.showQuickPhrasesSheet(this, webView) }
-        addDialogBtn(d, listLay, "📖 СПРАВОЧНИК МКБ-10", "#008577") { openMkbSheet() }
-        addDialogBtn(d, listLay, "👶 ПЕДИАТРИЯ: НОРМЫ, ДОЗЫ, ИВЛ", "#0277BD") { MedicalTools.showPediatricsSheet(this) }
-        addDialogBtn(d, listLay, "🧠 ШКАЛЫ И ИНДЕКСЫ СМП", "#5E35B1") { MedicalTools.showCalculatorsSheet(this) }
-        addDialogBtn(d, listLay, "📋 ШПАРГАЛКИ И РАСЧЕТЫ (O2 МПа)", "#EF6C00") { MedicalTools.showCheatSheetsSheet(this) }
-        addDialogBtn(d, listLay, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
-        addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
-        addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
-        addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
-    }
+    window.lastLoadedApiCard = window.lastLoadedApiCard || null;
+    window.activeAutofillData = window.activeAutofillData || null;
+    window.b103ScreenCache = window.b103ScreenCache || {};
+    window.b103IsApplying = false;
 
     // ==========================================
-    // ОТДЕЛЬНОЕ МЕНЮ: ШАБЛОНЫ ПРЕПАРАТОВ И РАСХОДНИКОВ
+    // 0. БАЗОВЫЕ УТИЛИТЫ И ГРАНИЦА «ЗАКЛЮЧЕНИЕ»
     // ==========================================
-    private fun openMedPresetsSheet() {
-        val (bs, root) = createSheet("💊 Шаблоны препаратов", "#6A1B9A")
-
-        root.addView(TextView(this).apply {
-            text = "➕ СОЗДАТЬ НАБОР ПРЕПАРАТОВ"
-            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#6A1B9A")); gravity = Gravity.CENTER
-            setPadding(16, 16, 16, 16); background = roundBg("#F3E5F5", 14f, "#8E24AA")
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-            setOnClickListener {
-                bs.dismiss()
-                showCreateMedPresetDialog(null) { openMedPresetsSheet() }
-            }
-        })
-
-        val qInp = EditText(this).apply {
-            hint = "Поиск набора или препарата (перчатки, рана, ГК)..."
-            setPadding(30, 22, 30, 22)
-            MedicalTools.styleEditText(this, "#F3E5F5", "#CE93D8", 18f)
+    function cleanVal(v) {
+        if (v === undefined || v === null) return '';
+        if (typeof v === 'string') {
+            const s = v.trim();
+            return (s === 'null' || s.startsWith('[object')) ? '' : s;
         }
-        root.addView(qInp)
-        val lv = makeListView(root)
-
-        fun run(q: String) = lifecycleScope.launch(Dispatchers.IO) {
-            val list = dbHelper.searchMedPresets(q)
-            withContext(Dispatchers.Main) {
-                setupAdapter(
-                    lv,
-                    list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n💊 ${it.itemsSummary.ifEmpty { "Пустой набор" }}" },
-                    "#FAF5FF",
-                    "#E1BEE7"
-                ) { pos ->
-                    bs.dismiss()
-                    showMedPresetPreview(list[pos])
-                }
-            }
-        }
-        qInp.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) { run(s.toString()) }
-            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
-            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
-        })
-        bs.show()
-        run("")
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+        if (Array.isArray(v)) return v.map(cleanVal).filter(Boolean).join(', ');
+        if (typeof v === 'object') return cleanVal(v.type || v.name || v.display || v.title || '');
+        return '';
     }
 
-    private fun showMedPresetPreview(preset: MedPresetSample) {
-        val (bs, root) = createSheet("${if (preset.isCustom) "📌" else "⭐"} ${preset.title}", "#6A1B9A")
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
+    function cleanBpString(raw) {
+        if (!raw) return '';
+        if (typeof raw === 'object') {
+            const s = String(raw.sys || raw.systolic || '').replace(/null/g, '').trim();
+            const d = String(raw.dis || raw.dia || raw.diastolic || '').replace(/null/g, '').trim();
+            return (s || d) ? `${s}/${d}` : '';
+        }
+        const str = String(raw).replace(/null/g, '').trim();
+        if (!str) return '';
+        if (str.startsWith('{')) {
+            try {
+                const o = JSON.parse(str);
+                const s = String(o.sys || o.systolic || '').replace(/null/g, '').trim();
+                const d = String(o.dis || o.dia || o.diastolic || '').replace(/null/g, '').trim();
+                return (s || d) ? `${s}/${d}` : '';
+            } catch (e) { return ''; }
+        }
+        return (str.includes('ул.') || /\d{2}\.\d{2}\.\d{4}/.test(str)) ? '' : str;
+    }
 
-        bar.addView(TextView(this).apply {
-            text = "💊 Вставить в карту"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(24, 16, 24, 16); background = roundBg("#6A1B9A", 16f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = if (preset.isCustom) 8 else 0 }
-            setOnClickListener {
-                bs.dismiss()
-                toast("⏳ Добавляю препараты в карту...")
-                webView.evaluateJavascript("window.applyMedicationsPreset && window.applyMedicationsPreset(${JSONObject.quote(preset.jsonData)});", null)
-            }
-        })
+    let cachedAnchor = null;
+    let anchorTime = 0;
+    function getConclusionAnchor() {
+        const now = (window.performance && performance.now) ? performance.now() : Date.now();
+        if (cachedAnchor && (now - anchorTime < 2500) && cachedAnchor.isConnected) {
+            return cachedAnchor;
+        }
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, h6, .MuiTypography-root'));
+        cachedAnchor = labels.find(e => {
+            if (!e.textContent || e.children.length > 2) return false;
+            const t = e.textContent.trim();
+            return t === 'Результат оказания мед. помощи' || t === 'Результат выезда';
+        }) || null;
+        anchorTime = now;
+        return cachedAnchor;
+    }
 
-        if (preset.isCustom) {
-            bar.addView(TextView(this).apply {
-                text = "✏️"; textSize = 17f; gravity = Gravity.CENTER
-                setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 16f, "#FFB74D")
-                layoutParams = LinearLayout.LayoutParams(-2, -1).apply { rightMargin = 8 }
-                setOnClickListener {
-                    bs.dismiss()
-                    showCreateMedPresetDialog(
-                        prefillJson = preset.jsonData,
-                        editingId = preset.id,
-                        initialTitle = preset.title
-                    ) { openMedPresetsSheet() }
+    function isInConclusion(el) {
+        if (!el) return false;
+        const anchor = getConclusionAnchor();
+        if (!anchor) return false;
+        return Boolean(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    window.b103IsInConclusion = isInConclusion;
+
+    // ==========================================
+    // 1. СЕТЕВОЙ ПЕРЕХВАТЧИК КАРТЫ СЕРВЕРА
+    // ==========================================
+    if (!window.b103NetHooked) {
+        window.b103NetHooked = true;
+        const origFetch = window.fetch;
+        window.fetch = async function(...args) {
+            try {
+                const opts = args[1] || {};
+                if (opts.body && typeof opts.body === 'string' && opts.body.includes('"patient"')) {
+                    const s = JSON.parse(opts.body);
+                    if (s && s.patient) window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, s);
                 }
-            })
-            bar.addView(ImageButton(this).apply {
-                contentDescription = "Удалить набор"
-                setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 16f); setPadding(18, 16, 18, 16)
-                setOnClickListener {
-                    AlertDialog.Builder(this@MainActivity).setTitle("Удалить набор препаратов?").setPositiveButton("Удалить") { _, _ ->
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            if (dbHelper.deleteMedPreset(preset.id)) {
-                                withContext(Dispatchers.Main) { toast("Удалено"); bs.dismiss(); openMedPresetsSheet() }
+            } catch (e) {}
+            const res = await origFetch.apply(this, args);
+            try {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0] ? args[0].url : '');
+                if (url && url.includes('/api/card/') && !url.includes('/short')) {
+                    res.clone().json().then(d => {
+                        if (d && d.patient) {
+                            if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
+                                window.activeAutofillData = null; window.b103ScreenCache = {};
                             }
+                            window.lastLoadedApiCard = d;
                         }
-                    }.setNegativeButton("Отмена", null).show()
+                    }).catch(() => {});
                 }
-            })
-        }
-        root.addView(bar)
+            } catch (e) {}
+            return res;
+        };
 
-        val formatted = try {
-            val arr = JSONObject(preset.jsonData).optJSONArray("items") ?: JSONArray()
-            if (arr.length() == 0) "Список препаратов пуст." else (0 until arr.length()).joinToString("\n\n") { i ->
-                val o = arr.getJSONObject(i)
-                val nm = o.optString("name")
-                val qt = o.optString("qty").ifEmpty { "1" }
-                val rt = o.optString("route")
-                val nt = o.optString("note")
-                buildString {
-                    append("${i + 1}. $nm\n   • Количество: $qt")
-                    if (rt.isNotEmpty() && !rt.contains("не определен")) append(" | Путь: $rt")
-                    if (nt.isNotEmpty()) append("\n   • Примечание: $nt")
-                }
-            }
-        } catch (_: Exception) { "Ошибка чтения набора" }
-
-        val sv = NestedScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isFillViewport = true; isNestedScrollingEnabled = true }
-        sv.addView(TextView(this).apply { textSize = 14.5f; setTextIsSelectable(true); setTextColor(Color.parseColor("#263238")); setLineSpacing(6f, 1.15f); text = formatted })
-        root.addView(sv)
-        bs.show()
-    }
-
-    private fun showCreateMedPresetDialog(
-        prefillJson: String? = null,
-        editingId: Long? = null,
-        initialTitle: String = "",
-        onSaved: (() -> Unit)? = null
-    ) {
-        val isEdit = editingId != null
-        val (bs, root) = createSheet(
-            title = if (isEdit) "✏️ Редактировать набор препаратов" else "💊 Новый набор препаратов",
-            titleColor = "#6A1B9A",
-            fixedHeightRatio = 0.88f
-        )
-
-        val items = mutableListOf<JSONObject>()
-        if (prefillJson != null) {
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(m, u) { this._url = u; return origOpen.apply(this, arguments); };
+        XMLHttpRequest.prototype.send = function(body) {
             try {
-                val arr = JSONObject(prefillJson).optJSONArray("items") ?: JSONArray()
-                for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { items.add(it) }
-            } catch (_: Exception) {}
-        }
-
-        val pullBtn = TextView(this).apply {
-            text = "📥 ПОДТЯНУТЬ ПРЕПАРАТЫ ИЗ ОТКРЫТОЙ КАРТЫ"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(18, 16, 18, 16); background = roundBg("#0288D1", 12f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-        }
-        root.addView(pullBtn)
-
-        val scroll = NestedScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-            isFillViewport = true
-            isNestedScrollingEnabled = true
-        }
-        val lay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 4, 0, 16)
-        }
-        scroll.addView(lay)
-        root.addView(scroll)
-
-        fun lbl(t: String) = lay.addView(TextView(this).apply {
-            text = t; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#4A148C")); setPadding(6, 6, 0, 4)
-        })
-
-        lbl("Название набора (обязательно):")
-        val titleInp = EditText(this).apply {
-            hint = "Напр. ГК стандарт / ОКС / Обработка раны"
-            if (initialTitle.isNotBlank()) setText(initialTitle)
-            setPadding(24, 16, 24, 16)
-            MedicalTools.styleEditText(this, "#F3E5F5", "#CE93D8", 12f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-        }
-        lay.addView(titleInp)
-
-        lbl("Состав набора:")
-        val itemsListLay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-        }
-        lay.addView(itemsListLay)
-
-        // Форма добавления одной позиции в набор
-        val addBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20, 16, 20, 16)
-            background = roundBg("#F5F7F8", 14f, "#CFD8DC")
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-        }
-        addBox.addView(TextView(this).apply {
-            text = "➕ Добавить позицию в набор:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#263238")); setPadding(0, 0, 0, 8)
-        })
-
-        val nameInp = EditText(this).apply {
-            hint = "Наименование (напр. Перчатки н/ст или Кеторолак 3%-1,0)"
-            setPadding(20, 14, 20, 14)
-            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-        }
-        addBox.addView(nameInp)
-
-        val qtyRouteRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-        }
-        val qtyInp = EditText(this).apply {
-            hint = "Кол-во"
-            setText("1")
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setPadding(20, 14, 20, 14)
-            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 0.42f).apply { rightMargin = 8 }
-        }
-        val routeInp = EditText(this).apply {
-            hint = "Путь введения (или пусто)"
-            setPadding(20, 14, 20, 14)
-            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        qtyRouteRow.addView(qtyInp); qtyRouteRow.addView(routeInp)
-        addBox.addView(qtyRouteRow)
-
-        val routeChipsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 8) }
-        val routeChipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(
-            "не определен" to "путь введения не определен",
-            "в/в" to "внутривенный",
-            "в/м" to "внутримышечный",
-            "п/к" to "подкожный",
-            "внутрь" to "внутрь",
-            "сублингв." to "сублингвальный",
-            "ингал." to "ингаляционный"
-        ).forEach { (shortLbl, fullVal) ->
-            routeChipsLay.addView(TextView(this).apply {
-                text = shortLbl; textSize = 11.5f; setTextColor(Color.parseColor("#4A148C"))
-                setPadding(16, 8, 16, 8); background = roundBg("#EDE7F6", 12f)
-                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
-                setOnClickListener { routeInp.setText(fullVal) }
-            })
-        }
-        routeChipsScroll.addView(routeChipsLay)
-        addBox.addView(routeChipsScroll)
-
-        val noteInp = EditText(this).apply {
-            hint = "Примечание (необязательно)"
-            setPadding(20, 14, 20, 14)
-            MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-        }
-        addBox.addView(noteInp)
-
-        val addPosBtn = TextView(this).apply {
-            text = "➕ ДОБАВИТЬ В СПИСОК"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#4A148C")); gravity = Gravity.CENTER
-            setPadding(14, 14, 14, 14); background = roundBg("#EDE7F6", 10f, "#B39DDB")
-        }
-        addBox.addView(addPosBtn)
-        lay.addView(addBox)
-
-        fun renderItems() {
-            itemsListLay.removeAllViews()
-            if (items.isEmpty()) {
-                itemsListLay.addView(TextView(this).apply {
-                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или добавьте позиции ниже."
-                    textSize = 12.8f; setTextColor(Color.parseColor("#607D8B"))
-                    setPadding(16, 14, 16, 14); background = roundBg("#FAFAFA", 10f, "#E0E0E0")
-                })
-                return
-            }
-            items.forEachIndexed { idx, obj ->
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(18, 12, 14, 12); background = roundBg("#FAF5FF", 12f, "#E1BEE7")
-                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 6 }
+                if (body && typeof body === 'string' && body.includes('"patient"')) {
+                    const s = JSON.parse(body);
+                    if (s && s.patient) window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, s);
                 }
-                val nm = obj.optString("name")
-                val qt = obj.optString("qty").ifEmpty { "1" }
-                val rt = obj.optString("route")
-                val rtShow = if (rt.isNotEmpty() && !rt.contains("не определен")) " • $rt" else ""
-                row.addView(TextView(this).apply {
-                    text = "${idx + 1}. $nm — $qt$rtShow"
-                    textSize = 13f; setTextColor(Color.parseColor("#263238"))
-                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                    setOnClickListener {
-                        nameInp.setText(nm)
-                        qtyInp.setText(qt)
-                        routeInp.setText(rt)
-                        noteInp.setText(obj.optString("note"))
-                        items.removeAt(idx)
-                        renderItems()
-                    }
-                })
-                row.addView(TextView(this).apply {
-                    text = "✕"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#C62828"))
-                    setPadding(14, 6, 10, 6)
-                    setOnClickListener { items.removeAt(idx); renderItems() }
-                })
-                itemsListLay.addView(row)
-            }
-        }
-
-        addPosBtn.setOnClickListener {
-            val nm = nameInp.text.toString().trim()
-            if (nm.isEmpty()) { toast("Введите наименование препарата!"); nameInp.requestFocus(); return@setOnClickListener }
-            val qt = qtyInp.text.toString().replace(",", ".").trim().ifEmpty { "1" }
-            val rt = routeInp.text.toString().trim()
-            val nt = noteInp.text.toString().trim()
-            items.add(JSONObject().apply {
-                put("name", nm); put("qty", qt); put("route", rt); put("note", nt)
-            })
-            nameInp.setText(""); qtyInp.setText("1"); routeInp.setText(""); noteInp.setText("")
-            renderItems()
-        }
-
-        pullBtn.setOnClickListener {
-            webView.evaluateJavascript("window.getCurrentMedicationsJson ? window.getCurrentMedicationsJson() : '';") { rawRes ->
-                val unwrapped = try {
-                    if (rawRes.isNullOrBlank() || rawRes == "null") ""
-                    else (JSONTokener(rawRes).nextValue() as? String) ?: ""
-                } catch (_: Exception) { "" }
-
-                if (unwrapped.isBlank()) {
-                    toast("В открытой карте нет добавленных препаратов")
-                    return@evaluateJavascript
-                }
+            } catch (e) {}
+            this.addEventListener('load', function() {
                 try {
-                    val arr = JSONObject(unwrapped).optJSONArray("items") ?: JSONArray()
-                    if (arr.length() == 0) {
-                        toast("В открытой карте нет добавленных препаратов")
-                        return@evaluateJavascript
+                    if (this._url && this._url.includes('/api/card/') && !this._url.includes('/short')) {
+                        const d = JSON.parse(this.responseText);
+                        if (d && d.patient) {
+                            if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
+                                window.activeAutofillData = null; window.b103ScreenCache = {};
+                            }
+                            window.lastLoadedApiCard = d;
+                        }
                     }
-                    items.clear()
-                    for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { items.add(it) }
-                    renderItems()
-                    toast("📥 Подтянуто позиций: ${items.size}")
-                } catch (_: Exception) { toast("Ошибка чтения препаратов") }
-            }
-        }
-
-        renderItems()
-
-        root.addView(TextView(this).apply {
-            text = if (isEdit) "💾 СОХРАНИТЬ ИЗМЕНЕНИЯ" else "💾 СОХРАНИТЬ НАБОР ПРЕПАРАТОВ"
-            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(20, 20, 20, 20); background = roundBg("#6A1B9A", 14f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10 }
-            setOnClickListener {
-                val t = titleInp.text.toString().trim()
-                if (t.isEmpty()) { toast("Введите название набора!"); titleInp.requestFocus(); return@setOnClickListener }
-                if (items.isEmpty()) { toast("Добавьте хотя бы один препарат!"); return@setOnClickListener }
-
-                val payload = JSONObject().apply {
-                    put("items", JSONArray().apply { items.forEach { put(it) } })
-                }.toString()
-
-                lifecycleScope.launch(Dispatchers.IO) {
-                    if (editingId != null) dbHelper.updateMedPreset(editingId, t, payload)
-                    else dbHelper.saveMedPreset(t, payload)
-                    withContext(Dispatchers.Main) {
-                        toast(if (isEdit) "✏️ Набор «$t» обновлён!" else "💊 Набор «$t» сохранён!")
-                        bs.dismiss()
-                        onSaved?.invoke()
-                    }
-                }
-            }
-        })
-
-        bs.show()
+                } catch (e) {}
+            });
+            return origSend.apply(this, arguments);
+        };
     }
 
     // ==========================================
-    // АУДИТ ОТКРЫТОЙ КАРТЫ (ЭКСПЕРТ-КОНТРОЛЬ)
+    // 2. DOM-СБОР КЭША С ЭКРАНА (💾, ШАБЛОНЫ, ПРЕПАРАТЫ И АУДИТ)
     // ==========================================
-    private fun runCardAudit() {
-        val js = """
-            (function() {
-                if (typeof window.getCurrentCardRawJson === 'function') return window.getCurrentCardRawJson();
-                if (window.lastLoadedApiCard) return JSON.stringify(Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache || {}));
-                return '';
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(js) { rawRes ->
-            val unwrapped = try {
-                if (rawRes.isNullOrBlank() || rawRes == "null") ""
-                else (JSONTokener(rawRes).nextValue() as? String) ?: ""
-            } catch (_: Exception) { "" }
+    function getRealInputs(container) {
+        return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
+            .filter(el => !el.classList.contains('MuiSelect-nativeInput') && !el.classList.contains('MuiTextareaAutosize-shadow') && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+    }
 
-            if (unwrapped.isBlank()) {
-                toast("Откройте карту для проверки!")
-                return@evaluateJavascript
+    function findInputByKw(keywords, exact = false) {
+        const all = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+        for (let kw of keywords) {
+            const kwL = kw.toLowerCase();
+            const target = all.find(el => {
+                if (!el.textContent || isInConclusion(el)) return false;
+                const t = el.textContent.trim().toLowerCase();
+                return (exact ? t === kwL : (t === kwL || t.includes(kwL))) && t.length < kwL.length + 35;
+            });
+            if (target) {
+                const fc = target.closest('.MuiFormControl-root');
+                if (fc && !isInConclusion(fc)) {
+                    const inps = getRealInputs(fc);
+                    if (inps.length > 0) return inps[0];
+                }
+                let p = target.parentElement;
+                for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                    const inps = getRealInputs(p);
+                    if (inps.length === 1) return inps[0];
+                    p = p.parentElement;
+                }
             }
+        }
+        return null;
+    }
 
-            try {
-                val raw = JSONObject(unwrapped)
-                val p = raw.optJSONObject("patient") ?: JSONObject()
+    function findMedicationsSection() {
+        const lbl = Array.from(document.querySelectorAll('label'))
+            .find(e => e.textContent && e.textContent.trim().toLowerCase() === 'лекарственные средства' && !isInConclusion(e));
+        return lbl ? lbl.parentElement : null;
+    }
 
-                val fio = cleanJsonVal(p.opt("fullName")).ifEmpty { cleanJsonVal(raw.opt("initialFullName")) }
-                val ageStr = cleanJsonVal(raw.opt("age"))
-                val scrGender = cleanJsonVal(raw.opt("_screenGender")).uppercase()
-                val gender = when {
-                    scrGender.startsWith("М") -> "МУЖЧИНА"
-                    scrGender.startsWith("Ж") -> "ЖЕНЩИНА"
-                    p.has("gender") && !p.isNull("gender") -> if (p.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА"
-                    else -> ""
+    function cleanQtyNum(raw) {
+        const m = String(raw || '').replace(',', '.').match(/\d+(?:\.\d+)?/);
+        if (!m) return '';
+        const n = parseFloat(m[0]);
+        return Number.isNaN(n) ? m[0] : String(n);
+    }
+
+    function scrapeScreenMedications() {
+        const sec = findMedicationsSection();
+        if (!sec) return [];
+        const cards = Array.from(sec.querySelectorAll('.MuiCard-root'));
+        const items = [];
+        for (const card of cards) {
+            const name = cleanVal(card.querySelector('.MuiCardHeader-title')?.innerText);
+            if (!name) continue;
+            let qty = '';
+            let route = '';
+            const spans = Array.from(card.querySelectorAll('span, p'));
+            for (let i = 0; i < spans.length; i++) {
+                const t = (spans[i].innerText || spans[i].textContent || '').trim();
+                if (t === 'Количество:' && spans[i].nextElementSibling) {
+                    qty = cleanQtyNum(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
+                } else if (t === 'Путь введения:' && spans[i].nextElementSibling) {
+                    route = cleanVal(spans[i].nextElementSibling.innerText || spans[i].nextElementSibling.textContent);
                 }
-
-                val diagnosis = cleanJsonVal(raw.opt("diagnosis"))
-                val icdObj = raw.optJSONObject("icd")
-                val mkbCode = icdObj?.let { cleanJsonVal(it.opt("code")) } ?: ""
-                val mkbName = icdObj?.let { cleanJsonVal(it.opt("type")).ifEmpty { cleanJsonVal(it.opt("name")) } } ?: ""
-                val mkbFull = if (mkbCode.isNotEmpty()) "[$mkbCode] $mkbName".trim() else ""
-
-                val complaints = cleanJsonVal(raw.opt("complaints"))
-                val anamnesis = cleanJsonVal(raw.opt("anamnesis"))
-                val localStatus = cleanJsonVal(raw.opt("localStatus"))
-                val ecgBefore = cleanJsonVal(raw.opt("electrocardiogramBefore"))
-
-                val generalState = cleanJsonVal(raw.opt("generalState"))
-                val consciousness = cleanJsonVal(raw.opt("consciousness"))
-                val position = cleanJsonVal(raw.opt("position")).uppercase()
-                val speech = cleanJsonVal(raw.opt("speech")).uppercase()
-                val gait = cleanJsonVal(raw.opt("gait")).uppercase()
-                val abdomen = cleanJsonVal(raw.opt("stomachs")).lowercase()
-                val glasgowStr = cleanJsonVal(raw.opt("comaScale"))
-                val glasgow = glasgowStr.toIntOrNull()
-
-                val bp = cleanBpString(raw.optString("arterialPressure"))
-                val bpParts = bp.split("/")
-                val sysBp = bpParts.getOrNull(0)?.trim()?.toIntOrNull()
-                val diaBp = bpParts.getOrNull(1)?.trim()?.toIntOrNull()
-                val pulseStr = cleanJsonVal(raw.opt("pulse"))
-                val pulse = pulseStr.toIntOrNull()
-                val pulseExists = if (raw.has("pulseExists") && !raw.isNull("pulseExists")) raw.optBoolean("pulseExists", true) else true
-                val rrStr = cleanJsonVal(raw.opt("breathCount"))
-                val tempStr = cleanJsonVal(raw.opt("skinTemp")).replace(",", ".")
-                val tempVal = tempStr.toDoubleOrNull()
-                val satStr = cleanJsonVal(raw.opt("saturation1"))
-                val satVal = satStr.toIntOrNull()
-
-                val consent = raw.optBoolean("acceptsSimpleMedProcedure", false)
-
-                val gsL = generalState.lowercase()
-                val csL = consciousness.lowercase()
-                val isDeath = gsL.contains("смерть") || diagnosis.lowercase().contains("биологическая смерть")
-                val isUnconscious = isDeath || csL.contains("кома") || csL.contains("сопор") || csL.contains("отсутств")
-
-                val errors = mutableListOf<String>()
-                val warnings = mutableListOf<String>()
-
-                if (fio.isEmpty()) warnings.add("Не указано ФИО пациента")
-                if (ageStr.isEmpty()) warnings.add("Не указан возраст пациента")
-                if (gender.isEmpty()) warnings.add("Не указан пол пациента")
-
-                if (diagnosis.isEmpty()) errors.add("Не заполнен «Предварительный диагноз»")
-                if (mkbCode.isEmpty()) errors.add("Не выбран «Код по МКБ-10»")
-                if (complaints.isEmpty()) {
-                    errors.add(if (isUnconscious) "Пустое поле «Жалобы» (при коме/смерти укажите: контакт невозможен / жалоб нет ввиду тяжести состояния)" else "Не заполнено поле «Жалобы»")
-                }
-                if (anamnesis.length < 15) errors.add("Не заполнен или слишком короткий «Анамнез заболевания»")
-                if (generalState.isEmpty()) errors.add("Не выбрано «Общее состояние»")
-                if (consciousness.isEmpty()) errors.add("Не выбрано «Сознание»")
-
-                if (!isUnconscious && !consent) {
-                    errors.add("Не отмечено «Устное согласие на простое мед. вмешательство» (ДА)")
-                }
-
-                if (!isDeath) {
-                    if (sysBp == null || diaBp == null) errors.add("Не заполнено АД (мм рт.ст.)")
-                    if (pulseExists && pulseStr.isEmpty()) errors.add("Не заполнен пульс")
-                    if (rrStr.isEmpty()) warnings.add("Не указана частота дыхания (ЧДД)")
-                    if (tempStr.isEmpty()) warnings.add("Не указана температура тела (°C)")
-                    if (satStr.isEmpty()) warnings.add("Не указана сатурация (SpO₂)")
-                }
-
-                // Клинико-экспертные нестыковки
-                if (isUnconscious) {
-                    if (abdomen.contains("безболезн")) {
-                        warnings.add("При коме/сопоре нельзя указывать «живот безболезненный» (нет речевого контакта)")
-                    }
-                    if (gait == "СВОБОДНАЯ") {
-                        warnings.add("При коме/сопоре стоит «Походка: СВОБОДНАЯ» — смените на «НЕ ОЦЕНИВАЛАСЬ»")
-                    }
-                    if (speech == "СОХРАНЕНА") {
-                        warnings.add("При коме/сопоре стоит «Речь: СОХРАНЕНА» — проверьте поле «Речь»")
-                    }
-                    if (position == "АКТИВНОЕ") {
-                        warnings.add("При коме/сопоре стоит «Положение: АКТИВНОЕ» — должно быть «ПАССИВНОЕ»")
-                    }
-                }
-
-                if (glasgow != null) {
-                    if (csL.contains("ясное") && glasgow < 15) {
-                        warnings.add("Сознание «Ясное», но по шкале Глазго указано $glasgow б. (для ясного сознания — 15 б.)")
-                    }
-                    if (csL.contains("кома") && glasgow > 8) {
-                        warnings.add("Сознание «Кома», но по шкале Глазго указано $glasgow б. (кома — ≤ 8 б.)")
-                    }
-                }
-
-                if (!isDeath) {
-                    val clinicalBlob = "$diagnosis $mkbFull $complaints".lowercase()
-                    val cardioKeywords = listOf("окс", "инфаркт", "стенокард", "фибрилл", "аритм", "тахикард", "тэла", "гипертонический криз", "боль за грудин", "боли за грудин", "давящ", "жгуч", "[i20", "[i21", "[i26", "[i47", "[i48", "[i49", "[i50")
-                    val highRiskVitals = (sysBp != null && sysBp >= 180) || (pulse != null && (pulse >= 115 || pulse in 1..50))
-                    if ((cardioKeywords.any { clinicalBlob.contains(it) } || highRiskVitals) && ecgBefore.isEmpty()) {
-                        warnings.add("Кардио-профиль / высокое АД или ЧСС — не заполнено поле «ЭКГ до оказания помощи»")
-                    }
-
-                    val localKeywords = listOf("перелом", "рана", "ушиб", "ожог", "травм", "чмт", "сгм", "онмк", "инсульт", "[s", "[t2", "[t3", "[i61", "[i63")
-                    if (localKeywords.any { clinicalBlob.contains(it) } && localStatus.isEmpty()) {
-                        warnings.add("При травме / ОНМК рекомендуется подробно заполнить «Локальный статус»")
-                    }
-
-                    if (gsL.contains("удовлетворительн")) {
-                        if ((sysBp != null && sysBp in 1..89) || (satVal != null && satVal in 1..91) || (tempVal != null && tempVal >= 39.0)) {
-                            warnings.add("Выбрано «Удовлетворительное» состояние при критических витальных (АД $bp / SpO₂ $satStr% / Т° $tempStr)")
-                        }
-                    }
-                }
-
-                val summary = StringBuilder().apply {
-                    append("👤 Пациент: ${fio.ifEmpty { "—" }} (${ageStr.ifEmpty { "?" }}, ${gender.ifEmpty { "?" }})\n")
-                    append("📋 Диагноз: ${diagnosis.ifEmpty { "—" }}\n")
-                    append("🏷️ МКБ-10: ${mkbFull.ifEmpty { "—" }}\n")
-                    append("🩺 Состояние: ${generalState.ifEmpty { "—" }} | Сознание: ${consciousness.ifEmpty { "—" }} (ШКГ ${glasgowStr.ifEmpty { "—" }})\n")
-                    append("❤️ АД: ${if (sysBp != null && diaBp != null) "$sysBp/$diaBp" else "—"} | 💓 ЧСС: ${pulseStr.ifEmpty { "—" }} | 🫁 ЧДД: ${rrStr.ifEmpty { "—" }} | SpO₂: ${satStr.ifEmpty { "—" }}% | 🌡️ ${tempStr.ifEmpty { "—" }}°C\n")
-                    append("✍️ Устное согласие: ${if (consent) "ДА ✅" else "НЕТ / не отмечено"}")
-                }.toString()
-
-                showAuditResultSheet(errors, warnings, summary)
-            } catch (_: Exception) {
-                toast("Ошибка анализа карты")
             }
+            items.push({ name, qty: qty || '1', route, note: '' });
+        }
+        return items;
+    }
+
+    function scrapeCache() {
+        const c = window.b103ScreenCache;
+        const setValIfFound = (kw, fieldName, exact = false) => {
+            const inp = findInputByKw(Array.isArray(kw) ? kw : [kw], exact);
+            if (!inp) return;
+            const v = (inp.value || '').trim();
+            if (!v.startsWith('__')) c[fieldName] = v;
+        };
+
+        const fioInp = findInputByKw(["фио"], true);
+        if (fioInp && fioInp.value.trim()) c.initialFullName = fioInp.value.trim();
+
+        setValIfFound("гражданство", "citizenship", true);
+        setValIfFound("нас. пункт", "settlement");
+        setValIfFound("улица", "street");
+        setValIfFound("дом", "building", true);
+        setValIfFound("квартира", "flat", true);
+        setValIfFound("уточнение места жительства", "clarificationAddress");
+        setValIfFound("место жительства (пребывания)", "address");
+        setValIfFound("экг до оказания", "electrocardiogramBefore");
+        setValIfFound("экг после оказания", "electrocardiogramAfter");
+        setValIfFound("предварительный диагноз", "diagnosis");
+        setValIfFound("жалобы", "complaints");
+        setValIfFound("анамнез заболевания", "anamnesis");
+        setValIfFound("перенесенные заболевания", "pastIllnesses");
+        setValIfFound("локальный статус", "localStatus");
+        setValIfFound("возраст", "age", true);
+        setValIfFound(["комментарий (пульс", "пульс, ударов в минуту"], "pulse");
+        setValIfFound("частота дыхания (в минуту)", "breathCount");
+        setValIfFound("температура тела (°c)", "skinTemp");
+        setValIfFound("сатурация 1 (%)", "saturation1");
+        setValIfFound("гликемия 1 (ммоль/л)", "glycemia1");
+        setValIfFound("шкала комы глазго (баллы)", "comaScale");
+        setValIfFound("тонус мышц", "muscleTone");
+        setValIfFound("патологические рефлексы", "pathologicalReflexes");
+        setValIfFound("менингиальные знаки", "meningealSymptoms");
+        setValIfFound("плегии, парезы", "plegia");
+        setValIfFound("язык", "tongue");
+        setValIfFound("слизистые", "mucosa");
+        setValIfFound("комментарий (вынужденное)", "positionDescription");
+        setValIfFound("комментарий (периферические отеки)", "peripheralEdemaDescription");
+
+        const mkbInp = findInputByKw(["код по мкб"]);
+        if (mkbInp) {
+            const mkbVal = (mkbInp.value || '').trim();
+            if (!mkbVal) {
+                c.icd = null;
+            } else {
+                const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
+                if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+            }
+        }
+
+        const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+            .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+        for (const sl of slashNodes) {
+            let pr = sl.parentElement;
+            for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
+                const inps = getRealInputs(pr);
+                if (inps.length === 2) {
+                    const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
+                    const s = inps[0].value.trim(), d = inps[1].value.trim();
+                    if (tx.includes("адаптированное")) c.arterialPressureAdaptive = { sys: s, dia: d };
+                    else if (tx.includes("ад (мм") || tx.includes("артериальн")) c.arterialPressure = { sys: s, dia: d };
+                    break;
+                }
+                pr = pr.parentElement;
+            }
+        }
+
+        const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+        const getSelectText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return null;
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 3 && p && p !== document.body; i++) {
+                const b = p.querySelector('.MuiSelect-root, [role="button"]');
+                if (b) {
+                    const t = (b.innerText || '').trim();
+                    return (t && t.toLowerCase() !== 'не выбрано') ? t : '';
+                }
+                p = p.parentElement;
+            }
+            return null;
+        };
+        const gs = getSelectText("общее состояние"); if (gs !== null) c.generalState = gs ? { type: gs } : null;
+        const cs = getSelectText("сознание"); if (cs !== null) c.consciousness = cs ? { type: cs } : null;
+        const au = getSelectText("возраст (ед.)"); if (au) c.ageType = { type: au };
+        const ap = getSelectText("территориальная апо") || getSelectText("апо по месту жительства"); if (ap) c.apo = ap;
+        const toArr = (kw, key) => {
+            const v = getSelectText(kw);
+            if (v !== null) c[key] = v ? v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type) : [];
+        };
+        toArr("кожа", "skins");
+        toArr("тоны сердца", "heartSounds");
+        toArr("дыхание", "breaths");
+        toArr("перкуссия легких", "percussionOfLungs");
+        toArr("живот", "stomachs");
+
+        const getActiveBtnText = (kw) => {
+            const kwL = kw.toLowerCase();
+            const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return null;
+            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+            for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => !isInConclusion(b));
+                if (btns.length >= 2 && btns.length <= 6) {
+                    const act = btns.find(b => {
+                        if (b.className && b.className.includes('MuiButton-contained')) return true;
+                        const s = window.getComputedStyle(b);
+                        return s.color.includes('255, 255, 255') && !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                    });
+                    return act ? (act.innerText || act.textContent || '').trim().toUpperCase() : '';
+                }
+                p = p.parentElement;
+            }
+            return null;
+        };
+        const gnd = getActiveBtnText("пол"); if (gnd !== null) c._screenGender = gnd;
+        const pup = getActiveBtnText("зрачки"); if (pup !== null) c.pupils = pup ? { type: pup } : null;
+        const pos = getActiveBtnText("положение"); if (pos !== null) c.position = pos ? { type: pos } : null;
+        const beh = getActiveBtnText("поведение"); if (beh !== null) c.behavior = beh ? { type: beh } : null;
+        const spc = getActiveBtnText("речь"); if (spc !== null) c.speech = spc ? { type: spc } : null;
+        const fac = getActiveBtnText("лицо"); if (fac !== null) c.face = fac ? { type: fac } : null;
+        const gat = getActiveBtnText("походка"); if (gat !== null) c.gait = gat ? { type: gat } : null;
+        const nys = getActiveBtnText("нистагм"); if (nys !== null) c.nystagmus = nys ? { type: nys } : null;
+        const stu = getActiveBtnText("стул"); if (stu !== null) c.defecatio = stu ? { type: stu } : null;
+        const uri = getActiveBtnText("мочеиспускание"); if (uri !== null) c.urinations = uri ? [{ type: uri }] : [];
+        const liv = getActiveBtnText("печень"); if (liv !== null) c.liver = liv ? { type: liv } : null;
+        const alr = getActiveBtnText("аллергия"); if (alr) c.allergy = (alr === "ДА");
+        const lgt = getActiveBtnText("реакция на свет"); if (lgt) c.pupilsLight = (lgt === "ДА");
+        const rsh = getActiveBtnText("высыпания"); if (rsh) c.skinRashes = (rsh === "ДА");
+        const asc = getActiveBtnText("асцит"); if (asc) c.ascites = (asc === "ДА");
+        const edm = getActiveBtnText("периферические отеки"); if (edm) c.peripheralEdema = (edm === "ДА");
+        const prt = getActiveBtnText("симптомы раздражения брюшины"); if (prt) c.stomachSymptoms = (prt === "ДА");
+        const prs = getActiveBtnText("перистальтика"); if (prs) c.peristalsis = (prs === "ДА");
+        const pls = getActiveBtnText("пульс, ударов в минуту"); if (pls) c.pulseExists = (pls === "ДА");
+        const cns = getActiveBtnText("получено устное согласие на простое медицинское вмешательство") ?? getActiveBtnText("получено устное согласие");
+        if (cns !== null) c.acceptsSimpleMedProcedure = (cns === "ДА");
+
+        const medItems = scrapeScreenMedications();
+        if (medItems.length > 0) {
+            c._domMedications = medItems.map(m => {
+                const rtStr = (m.route && !m.route.includes('не определен')) ? ` [${m.route}]` : '';
+                return `${m.name} — ${m.qty}${rtStr}`;
+            }).join(";\n• ");
         }
     }
 
-    private fun showAuditResultSheet(errors: List<String>, warnings: List<String>, summary: String) {
-        val (bs, root) = createSheet("🩺 Аудит открытой карты", "#1565C0", fixedHeightRatio = 0.84f)
-
-        val bannerColor = when {
-            errors.isNotEmpty() -> "#C62828"
-            warnings.isNotEmpty() -> "#EF6C00"
-            else -> "#2E7D32"
-        }
-        val bannerText = when {
-            errors.isEmpty() && warnings.isEmpty() -> "✅ Карта заполнена грамотно!\nПропусков и нестыковок не найдено."
-            errors.isEmpty() -> "⚠️ Критичных пропусков нет\nНайдено рекомендаций: ${warnings.size}"
-            else -> "🔴 Найдены пропуски перед сдачей\nКритичных: ${errors.size} | Рекомендаций: ${warnings.size}"
-        }
-        root.addView(TextView(this).apply {
-            text = bannerText; textSize = 14.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(22, 18, 22, 18); background = roundBg(bannerColor, 14f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12 }
-        })
-
-        val scroll = NestedScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-            isFillViewport = true
-            isNestedScrollingEnabled = true
-        }
-        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 2, 0, 14) }
-        scroll.addView(lay)
-        root.addView(scroll)
-
-        if (errors.isNotEmpty()) {
-            lay.addView(TextView(this).apply {
-                text = "🔴 КРИТИЧНЫЕ ПРОПУСКИ:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#B71C1C")); setPadding(4, 2, 0, 6)
-            })
-            errors.forEach { msg ->
-                lay.addView(TextView(this).apply {
-                    text = "• $msg"; textSize = 13.5f; setTextColor(Color.parseColor("#263238"))
-                    setPadding(20, 14, 20, 14); background = roundBg("#FFEBEE", 12f, "#EF9A9A")
-                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-                })
-            }
-        }
-
-        if (warnings.isNotEmpty()) {
-            lay.addView(TextView(this).apply {
-                text = "⚠️ ЭКСПЕРТНЫЕ РЕКОМЕНДАЦИИ:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#E65100")); setPadding(4, 6, 0, 6)
-            })
-            warnings.forEach { msg ->
-                lay.addView(TextView(this).apply {
-                    text = "• $msg"; textSize = 13.5f; setTextColor(Color.parseColor("#263238"))
-                    setPadding(20, 14, 20, 14); background = roundBg("#FFF8E1", 12f, "#FFE082")
-                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-                })
-            }
-        }
-
-        lay.addView(TextView(this).apply {
-            text = "📊 СВОДКА СЧИТАННОЙ КАРТЫ:"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#37474F")); setPadding(4, 10, 0, 6)
-        })
-        lay.addView(TextView(this).apply {
-            text = summary; textSize = 13.2f; setTextIsSelectable(true); setTextColor(Color.parseColor("#263238"))
-            setLineSpacing(5f, 1.15f); setPadding(20, 16, 20, 16); background = roundBg("#F5F7F8", 12f, "#CFD8DC")
-        })
-
-        val bottomRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 0) }
-        bottomRow.addView(TextView(this).apply {
-            text = "🔄 ПЕРЕПРОВЕРИТЬ"; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(16, 18, 16, 18); background = roundBg("#1565C0", 12f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
-            setOnClickListener { bs.dismiss(); runCardAudit() }
-        })
-        bottomRow.addView(TextView(this).apply {
-            text = "ЗАКРЫТЬ"; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#37474F")); gravity = Gravity.CENTER
-            setPadding(16, 18, 16, 18); background = roundBg("#ECEFF1", 12f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 0.7f)
-            setOnClickListener { bs.dismiss() }
-        })
-        root.addView(bottomRow)
-        bs.show()
+    function isInsideCard() {
+        return Boolean(document.querySelector('.MuiTabs-root, [role="tablist"]'));
     }
 
-    private fun defaultTemplateJson(): JSONObject = JSONObject().apply {
-        put("pastDiseases", "ИБС, АГ")
-        put("allergy", "НЕТ")
-        put("generalState", "Удовлетворительное")
-        put("consciousness", "Ясное")
-        put("position", "АКТИВНОЕ")
-        put("behavior", "СПОКОЙНОЕ")
-        put("glasgowScore", "15")
-        put("bp", "130/80")
-        put("bpAdapted", "120/80")
-        put("pulse", "78")
-        put("pulseExists", "ДА")
-        put("rr", "16")
-        put("temp", "36.6")
-        put("saturation", "98")
-        put("glucose", "5.4")
-        put("heartSounds", "Ритмичные, Ясные")
-        put("lungs", "Свободное, Везикулярное")
-        put("percussion", "Ясный легочный звук")
-        put("abdomen", "Участвует в акте дыхания, Мягкий, Безболезненный")
-        put("skin", "Теплая, Сухая, Нормальная")
-        put("tongue", "Чистые")
-        put("mucous", "Бледно-розовые")
-        put("pupils", "")
-        put("lightReaction", "ДА")
-        put("speech", "СОХРАНЕНА")
-        put("face", "СИММЕТРИЧНОЕ")
-        put("gait", "СВОБОДНАЯ")
-        put("nystagmus", "НЕТ")
-        put("muscleTone", "Нормальный")
-        put("pathologicalReflexes", "Отрицательные")
-        put("meningealSymptoms", "Отрицательные")
-        put("plegia", "Нет")
-        put("rash", "НЕТ")
-        put("ascites", "НЕТ")
-        put("edema", "НЕТ")
-        put("alcohol", "НЕТ")
-        put("acetone", "НЕТ")
-        put("peritoneal", "НЕТ")
-        put("liver", "НЕ УВЕЛИЧЕНА")
-        put("peristalsis", "ДА")
-        put("urination", "НЕ НАРУШЕНО")
-        put("stool", "НЕ НАРУШЕН")
-        put("attack", "КУПИРОВАН")
-        put("therapyEffect", "УЛУЧШЕНИЕ")
-        put("callResult", "ОСТАВЛЕН НА МЕСТЕ")
+    window.getCurrentCardRawJson = function() {
+        try {
+            if (!isInsideCard()) return '';
+            scrapeCache();
+            if (!window.lastLoadedApiCard && Object.keys(window.b103ScreenCache).length === 0) return '';
+            return JSON.stringify(Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache));
+        } catch (e) {
+            return '';
+        }
+    };
+
+    window.getCurrentMedicationsJson = function() {
+        try {
+            if (!isInsideCard()) return '';
+            let items = scrapeScreenMedications();
+            if (!items.length && Array.isArray(window.lastLoadedApiCard?.medications)) {
+                items = window.lastLoadedApiCard.medications.map(m => {
+                    const name = cleanVal(m?.medication?.name || m?.medication || m?.name);
+                    if (!name) return null;
+                    const qty = cleanQtyNum(m.number || m.count || m.amount || m.quantity || '1') || '1';
+                    const route = cleanVal(m?.routeDict?.display || m?.wayOfAdministration?.type || m?.way);
+                    const note = cleanVal(m?.route);
+                    return { name, qty, route, note };
+                }).filter(Boolean);
+            }
+            return items.length ? JSON.stringify({ items }) : '';
+        } catch (e) {
+            return '';
+        }
+    };
+
+    // ==========================================
+    // 2.5 КОМПАКТНАЯ ПЕРЕТАСКИВАЕМАЯ КАПСУЛА КНОПОК
+    // ==========================================
+    const DOCK_KEY = 'b103_dock_state_v1';
+    function loadDockState() {
+        try {
+            const raw = localStorage.getItem(DOCK_KEY);
+            if (raw) {
+                const s = JSON.parse(raw);
+                return {
+                    side: s.side === 'left' ? 'left' : 'right',
+                    topPct: (typeof s.topPct === 'number' && s.topPct >= 0.08 && s.topPct <= 0.88) ? s.topPct : 0.84,
+                    collapsed: Boolean(s.collapsed)
+                };
+            }
+        } catch (e) {}
+        return { side: 'right', topPct: 0.84, collapsed: false };
+    }
+    function saveDockState(st) {
+        try { localStorage.setItem(DOCK_KEY, JSON.stringify(st)); } catch (e) {}
     }
 
-    private fun showCreateTemplateDialog(
-        prefillJson: String? = null,
-        editingId: Long? = null,
-        initialTitle: String = "",
-        onSaved: (() -> Unit)? = null
-    ) {
-        val isEdit = editingId != null
-        val (bs, root) = createSheet(
-            title = if (isEdit) "✏️ Редактировать шаблон" else "➕ Новый клинический шаблон",
-            titleColor = if (isEdit) "#E65100" else "#00796B",
-            fixedHeightRatio = 0.86f
-        )
-        var baseCard: JSONObject? = try { prefillJson?.let { JSONObject(it) } } catch (_: Exception) { null }
+    window.b103DockState = window.b103DockState || loadDockState();
+    let isTypingInField = false;
+    let forceExpandWhileTyping = false;
+    let suppressClickUntil = 0;
+    let lastInCardState = null;
 
-        val pullBtn = TextView(this).apply {
-            text = "📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ"
-            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(18, 16, 18, 16); background = roundBg("#0288D1", 12f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+    function isEditableEl(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') {
+            const tp = (el.type || 'text').toLowerCase();
+            return !['button', 'submit', 'checkbox', 'radio', 'file', 'hidden'].includes(tp);
         }
-        root.addView(pullBtn)
-
-        val scroll = NestedScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-            isFillViewport = true
-            isNestedScrollingEnabled = true
-        }
-        val lay = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 4, 0, 16)
-        }
-        scroll.addView(lay)
-        root.addView(scroll)
-
-        fun field(lbl: String, hintTxt: String, rows: Int = 1, bgHex: String = "#F5F7F8", strokeHex: String = "#B0BEC5"): EditText {
-            lay.addView(TextView(this).apply {
-                text = lbl; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#004D40")); setPadding(6, 6, 0, 4)
-            })
-            val et = EditText(this).apply {
-                hint = hintTxt
-                setPadding(26, 16, 26, 16)
-                if (rows > 1) {
-                    minLines = rows
-                    gravity = Gravity.TOP or Gravity.START
-                }
-                MedicalTools.styleEditText(this, bgHex, strokeHex, 12f)
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
-            }
-            lay.addView(et)
-            return et
-        }
-
-        val titleInp = field("Название шаблона (обязательно):", "Напр. ГК с тошнотой / ОКС с блокадой", 1, "#E0F2F1", "#80CBC4")
-        val mkbInp = field("Код по МКБ-10:", "Напр. [I10] или [I20.0]")
-        val diagInp = field("Предварительный диагноз:", "Клинический диагноз...", 2)
-        val compInp = field("Жалобы:", "Жалобы пациента...", 2)
-        val anamInp = field("Анамнез заболевания:", "Хронология, обстоятельства...", 3)
-        val locInp = field("Локальный статус:", "Локальный статус при травме, ранах...", 2)
-        val therInp = field("Рекомендованная терапия / протокол:", "Препараты по протоколу...", 2)
-
-        if (initialTitle.isNotBlank()) titleInp.setText(initialTitle)
-
-        fun applyObjToFields(j: JSONObject) {
-            diagInp.setText(cleanJsonVal(j.opt("diagnosis")))
-            mkbInp.setText(cleanJsonVal(j.opt("mkb")))
-            compInp.setText(cleanJsonVal(j.opt("complaints")))
-            anamInp.setText(cleanJsonVal(j.opt("anamnesis")))
-            locInp.setText(cleanJsonVal(j.opt("localStatus")))
-            therInp.setText(cleanJsonVal(j.opt("recommendedTherapy")))
-            if (titleInp.text.toString().trim().isEmpty()) {
-                titleInp.setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
-            }
-        }
-
-        baseCard?.let { applyObjToFields(it) }
-
-        pullBtn.setOnClickListener {
-            val js = """
-                (function() {
-                    if (typeof window.getCurrentCardRawJson === 'function') return window.getCurrentCardRawJson();
-                    if (window.lastLoadedApiCard) return JSON.stringify(Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache || {}));
-                    return '';
-                })();
-            """.trimIndent()
-            webView.evaluateJavascript(js) { rawRes ->
-                val unwrapped = try {
-                    if (rawRes.isNullOrBlank() || rawRes == "null") ""
-                    else (JSONTokener(rawRes).nextValue() as? String) ?: ""
-                } catch (_: Exception) { "" }
-
-                if (unwrapped.isBlank()) {
-                    toast("Откройте карту для считывания!")
-                    return@evaluateJavascript
-                }
-                val parsed = parseServerCardJson(unwrapped)
-                if (parsed == null) {
-                    toast("Не удалось считать данные карты")
-                    return@evaluateJavascript
-                }
-                baseCard = parsed.third.second
-                applyObjToFields(parsed.third.second)
-                toast("📥 Данные подтянуты из карты!")
-            }
-        }
-
-        val saveBtn = TextView(this).apply {
-            text = if (isEdit) "💾 СОХРАНИТЬ ИЗМЕНЕНИЯ" else "💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ"
-            textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(20, 20, 20, 20); background = roundBg(if (isEdit) "#E65100" else "#00796B", 14f)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10 }
-            setOnClickListener {
-                val t = titleInp.text.toString().trim()
-                if (t.isEmpty()) {
-                    toast("Введите название шаблона!")
-                    titleInp.requestFocus()
-                    return@setOnClickListener
-                }
-                val finalData = defaultTemplateJson()
-                baseCard?.let { src ->
-                    val it = src.keys()
-                    while (it.hasNext()) {
-                        val k = it.next()
-                        finalData.put(k, src.opt(k))
-                    }
-                }
-                finalData.apply {
-                    put("diagnosis", diagInp.text.toString().trim())
-                    put("mkb", mkbInp.text.toString().trim())
-                    put("complaints", compInp.text.toString().trim())
-                    put("anamnesis", anamInp.text.toString().trim())
-                    put("localStatus", locInp.text.toString().trim())
-                    put("recommendedTherapy", therInp.text.toString().trim())
-                }
-                lifecycleScope.launch(Dispatchers.IO) {
-                    if (editingId != null) {
-                        dbHelper.updateCustomTemplate(editingId, t, finalData.toString())
-                    } else {
-                        dbHelper.saveCustomTemplate(t, finalData.toString())
-                    }
-                    withContext(Dispatchers.Main) {
-                        toast(if (isEdit) "✏️ Шаблон «$t» обновлён!" else "📌 Шаблон «$t» сохранен!")
-                        bs.dismiss()
-                        onSaved?.invoke()
-                    }
-                }
-            }
-        }
-        root.addView(saveBtn)
-        bs.show()
+        return Boolean(el.isContentEditable);
     }
 
-    private fun showAutofillPickerSheet(currentFio: String = "") {
-        val (bs, root) = createSheet("⚡ Автозаполнение и Помощник:", "#0288D1")
+    function applyDockLayout() {
+        const bar = document.getElementById('b103-toolbar');
+        if (!bar) return;
 
-        val topToolsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
+        const inCard = isInsideCard();
+        const st = window.b103DockState;
+        const effectiveCollapsed = inCard && (st.collapsed || (isTypingInField && !forceExpandWhileTyping));
+
+        const menuBtn = document.getElementById('btn-main-menu');
+        const pill = document.getElementById('b103-card-pill');
+        const tabBtn = document.getElementById('b103-edge-tab');
+        const collapseBtn = document.getElementById('btn-collapse-dock');
+
+        if (menuBtn) menuBtn.style.display = inCard ? 'none' : 'flex';
+        if (pill) {
+            pill.style.display = (inCard && !effectiveCollapsed) ? 'flex' : 'none';
+            pill.style.flexDirection = st.side === 'left' ? 'row-reverse' : 'row';
         }
-        topToolsRow.addView(TextView(this).apply {
-            text = "🧰 ПОМОЩНИК СМП"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(12, 18, 12, 18); background = roundBg("#00897B", 14f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1.15f).apply { rightMargin = 8 }
-            setOnClickListener { bs.dismiss(); showHelperSubMenu() }
-        })
-        topToolsRow.addView(TextView(this).apply {
-            text = "🩺 АУДИТ КАРТЫ"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(12, 18, 12, 18); background = roundBg("#1565C0", 14f)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            setOnClickListener { bs.dismiss(); runCardAudit() }
-        })
-        root.addView(topToolsRow)
+        if (collapseBtn) collapseBtn.innerText = st.side === 'left' ? '‹' : '›';
+        if (tabBtn) {
+            tabBtn.style.display = (inCard && effectiveCollapsed) ? 'flex' : 'none';
+            tabBtn.style.borderRadius = st.side === 'left' ? '0 14px 14px 0' : '14px 0 0 14px';
+            tabBtn.style.opacity = isTypingInField ? '0.52' : '0.84';
+        }
 
-        val exactCardContainer = FrameLayout(this)
-        root.addView(exactCardContainer)
+        const vh = window.innerHeight || 700;
+        const barH = bar.offsetHeight || 44;
+        const topPx = Math.max(54, Math.min(vh - barH - 12, Math.round(vh * st.topPct)));
 
-        val cleanFio = currentFio.trim()
-        if (cleanFio.length >= 3) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                dbHelper.getBestCardForPatient(cleanFio)?.let { card ->
-                    withContext(Dispatchers.Main) {
-                        exactCardContainer.addView(TextView(this@MainActivity).apply {
-                            text = "👤 ЗАПОЛНИТЬ ИЗ АРХИВА: ${cleanFio.uppercase()}"
-                            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-                            setPadding(20, 20, 20, 20); background = roundBg("#2E7D32", 16f)
-                            layoutParams = FrameLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-                            setOnClickListener { bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(card)});", null); toast("⚡ Заполнено!") }
-                        })
+        bar.style.top = topPx + 'px';
+        bar.style.bottom = 'auto';
+        if (st.side === 'left') {
+            bar.style.left = effectiveCollapsed ? '0px' : '8px';
+            bar.style.right = 'auto';
+        } else {
+            bar.style.right = effectiveCollapsed ? '0px' : '8px';
+            bar.style.left = 'auto';
+        }
+    }
+
+    function attachDragBehavior(bar) {
+        let dragging = false, moved = false;
+        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+        function onStart(clientX, clientY) {
+            const rect = bar.getBoundingClientRect();
+            dragging = true;
+            moved = false;
+            startX = clientX;
+            startY = clientY;
+            startLeft = rect.left;
+            startTop = rect.top;
+            bar.style.transition = 'none';
+        }
+
+        function onMove(clientX, clientY, e) {
+            if (!dragging) return;
+            const dx = clientX - startX;
+            const dy = clientY - startY;
+            if (!moved && Math.hypot(dx, dy) > 8) moved = true;
+            if (moved) {
+                if (e && e.cancelable) e.preventDefault();
+                const vw = window.innerWidth || 360;
+                const vh = window.innerHeight || 700;
+                const w = bar.offsetWidth || 48;
+                const h = bar.offsetHeight || 44;
+                const nx = Math.max(0, Math.min(vw - w, startLeft + dx));
+                const ny = Math.max(48, Math.min(vh - h - 8, startTop + dy));
+                bar.style.left = nx + 'px';
+                bar.style.right = 'auto';
+                bar.style.top = ny + 'px';
+                bar.style.bottom = 'auto';
+            }
+        }
+
+        function onEnd() {
+            if (!dragging) return;
+            dragging = false;
+            bar.style.transition = 'left 0.18s ease, right 0.18s ease, top 0.18s ease, opacity 0.2s ease';
+            if (moved) {
+                suppressClickUntil = Date.now() + 320;
+                const rect = bar.getBoundingClientRect();
+                const vw = window.innerWidth || 360;
+                const vh = window.innerHeight || 700;
+                window.b103DockState.side = (rect.left + rect.width / 2) < (vw / 2) ? 'left' : 'right';
+                window.b103DockState.topPct = Math.max(0.08, Math.min(0.88, rect.top / vh));
+                saveDockState(window.b103DockState);
+                applyDockLayout();
+            }
+        }
+
+        bar.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) onStart(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+        bar.addEventListener('touchmove', (e) => {
+            if (dragging && e.touches.length === 1) onMove(e.touches[0].clientX, e.touches[0].clientY, e);
+        }, { passive: false });
+        bar.addEventListener('touchend', onEnd, { passive: true });
+        bar.addEventListener('touchcancel', onEnd, { passive: true });
+
+        bar.addEventListener('mousedown', (e) => { if (e.button === 0) onStart(e.clientX, e.clientY); });
+        window.addEventListener('mousemove', (e) => { if (dragging) onMove(e.clientX, e.clientY, e); });
+        window.addEventListener('mouseup', onEnd);
+    }
+
+    function ensureToolbar() {
+        if (!document.body || document.getElementById('b103-toolbar')) return;
+        const bar = document.createElement('div');
+        bar.id = 'b103-toolbar';
+        bar.style.cssText = 'position:fixed;z-index:99999;touch-action:none;user-select:none;-webkit-user-select:none;transition:left 0.18s ease, right 0.18s ease, top 0.18s ease, opacity 0.2s ease;';
+        const btnBase = 'width:34px;height:34px;border-radius:50%;border:none;color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 2px 6px rgba(0,0,0,0.22);';
+
+        bar.innerHTML = `
+            <button id="btn-main-menu" style="width:46px;height:46px;border-radius:50%;border:none;background:#008577;color:#fff;font-size:20px;display:none;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.3);">☰</button>
+            <div id="b103-card-pill" style="display:none;align-items:center;gap:6px;padding:3px 6px;border-radius:22px;background:rgba(30,43,51,0.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 4px 14px rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.16);">
+                <span style="color:rgba(255,255,255,0.55);font-size:13px;padding:0 2px;letter-spacing:-1px;cursor:grab;">⋮⋮</span>
+                <button id="btn-save-db" title="Сохранить в архив" style="background:#00897B;${btnBase}">💾</button>
+                <button id="btn-fill-db" title="Автозаполнение и Помощник" style="background:#0288D1;${btnBase}">⚡</button>
+                <button id="btn-collapse-dock" title="Свернуть к краю" style="width:24px;height:32px;border-radius:12px;border:none;background:rgba(255,255,255,0.12);color:#fff;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;">›</button>
+            </div>
+            <button id="b103-edge-tab" title="Развернуть панель SSMP Plus" style="display:none;width:26px;height:46px;border:none;background:rgba(2,136,209,0.92);color:#fff;font-size:15px;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 10px rgba(0,0,0,0.28);padding:0;">⚡</button>
+        `;
+        document.body.appendChild(bar);
+        attachDragBehavior(bar);
+
+        document.getElementById('btn-main-menu').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            window.AndroidBridge?.openMainMenu();
+        };
+        document.getElementById('btn-save-db').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            const raw = window.getCurrentCardRawJson();
+            if (raw && window.AndroidBridge) {
+                window.AndroidBridge.saveApiCardForced(raw);
+            } else {
+                window.AndroidBridge?.notifyUser("Откройте карту для сохранения");
+            }
+        };
+        document.getElementById('btn-fill-db').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            const fio = findInputByKw(["фио"], true)?.value?.trim() || "";
+            window.AndroidBridge?.requestAutofill(fio);
+        };
+        document.getElementById('btn-collapse-dock').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            window.b103DockState.collapsed = true;
+            forceExpandWhileTyping = false;
+            saveDockState(window.b103DockState);
+            applyDockLayout();
+        };
+        document.getElementById('b103-edge-tab').onclick = () => {
+            if (Date.now() < suppressClickUntil) return;
+            if (isTypingInField) {
+                forceExpandWhileTyping = true;
+            }
+            window.b103DockState.collapsed = false;
+            saveDockState(window.b103DockState);
+            applyDockLayout();
+        };
+
+        if (!window.b103DockListenersAdded) {
+            window.b103DockListenersAdded = true;
+            document.addEventListener('focusin', (e) => {
+                if (isEditableEl(e.target)) {
+                    isTypingInField = true;
+                    forceExpandWhileTyping = false;
+                    applyDockLayout();
+                }
+            }, true);
+            document.addEventListener('focusout', () => {
+                setTimeout(() => {
+                    if (!isEditableEl(document.activeElement)) {
+                        isTypingInField = false;
+                        forceExpandWhileTyping = false;
+                        applyDockLayout();
+                    }
+                }, 140);
+            }, true);
+            window.addEventListener('resize', applyDockLayout);
+        }
+
+        applyDockLayout();
+    }
+
+    function updateVisibility() {
+        ensureToolbar();
+        const inCard = isInsideCard();
+        if (inCard !== lastInCardState) {
+            lastInCardState = inCard;
+            applyDockLayout();
+        }
+        if (!inCard) {
+            window.activeAutofillData = null;
+            window.b103ScreenCache = {};
+        }
+    }
+
+    ensureToolbar();
+    updateVisibility();
+    if (!window.b103VisTimer) window.b103VisTimer = setInterval(updateVisibility, 400);
+
+    // ==========================================
+    // 3. ТОЧНЫЙ АВТОПИЛОТ (ВНУТРИ ТОЙ ЖЕ ОБЛАСТИ ВИДИМОСТИ)
+    // ==========================================
+    window.setAndApplyAutofill = function(jsonStr) {
+        try {
+            window.activeAutofillData = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+            window.applyAutofill(window.activeAutofillData);
+        } catch (e) {}
+    };
+
+    window.applyAutofill = async function(jsonStr) {
+        if (window.b103IsApplying) return;
+
+        const savedScrollWinY = window.scrollY || document.documentElement.scrollTop || 0;
+        const savedScrollContainers = Array.from(document.querySelectorAll('main, .MuiDialog-paper, [role="tabpanel"], .MuiContainer-root'))
+            .filter(el => el.scrollTop > 0)
+            .map(el => ({ el, top: el.scrollTop }));
+
+        const activeTabBefore = Array.from(document.querySelectorAll('[role="tab"], button'))
+            .find(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
+
+        if (activeTabBefore && (activeTabBefore.innerText || '').toUpperCase().includes('ЗАКЛЮЧЕНИЕ')) {
+            return;
+        }
+
+        function restoreScreenPosition() {
+            window.scrollTo(0, savedScrollWinY);
+            document.documentElement.scrollTop = savedScrollWinY;
+            for (let item of savedScrollContainers) {
+                item.el.scrollTop = item.top;
+            }
+        }
+
+        window.b103IsApplying = true;
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = "⏳";
+
+        let hideStyle = document.getElementById('b103-hide-menus');
+        if (!hideStyle) {
+            hideStyle = document.createElement('style');
+            hideStyle.id = 'b103-hide-menus';
+            hideStyle.textContent = '.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper { opacity: 0 !important; pointer-events: auto !important; transition: none !important; }';
+            document.head.appendChild(hideStyle);
+        }
+
+        function isElemVisible(el) {
+            if (!el || !el.isConnected) return false;
+            if (el.getAttribute('aria-hidden') === 'true') return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }
+
+        function getActivePopovers() {
+            return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiModal-root, .MuiAutocomplete-popper'))
+                .filter(isElemVisible);
+        }
+
+        async function closeAnyOpenMenu() {
+            for (let attempt = 0; attempt < 5; attempt++) {
+                const popovers = getActivePopovers();
+                const expandedBtns = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+                if (popovers.length === 0 && expandedBtns.length === 0) break;
+
+                const escInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+                if (document.activeElement && document.activeElement !== document.body) {
+                    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                    document.activeElement.dispatchEvent(new KeyboardEvent('keyup', escInit));
+                    if (document.activeElement.blur) document.activeElement.blur();
+                }
+
+                for (let pop of popovers) {
+                    const list = pop.querySelector('[role="listbox"], [role="menu"], ul, .MuiMenu-list') || pop;
+                    list.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                    list.dispatchEvent(new KeyboardEvent('keyup', escInit));
+
+                    const backdrop = pop.querySelector('.MuiBackdrop-root') || (pop.firstElementChild && pop.firstElementChild.classList.contains('MuiBackdrop-root') ? pop.firstElementChild : null);
+                    if (backdrop) {
+                        backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                        backdrop.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                        backdrop.click();
                     }
                 }
-            }
-        }
 
-        val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
-        var showT = true
-        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 10) }
-        val t1 = TextView(this).apply { text = "⭐ Образцы ($builtinCount)"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-        val t2 = TextView(this).apply { text = "📂 Мой архив"; gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-        tabs.addView(t1); tabs.addView(t2); root.addView(tabs)
-
-        val actionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-        }
-        actionRow.addView(TextView(this).apply {
-            text = "➕ СВОЙ ШАБЛОН"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
-            setPadding(12, 16, 12, 16); background = roundBg("#E0F2F1", 14f, "#00897B")
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
-            setOnClickListener {
-                bs.dismiss()
-                showCreateTemplateDialog(null) { showAutofillPickerSheet(currentFio) }
-            }
-        })
-        actionRow.addView(TextView(this).apply {
-            text = "💊 ПРЕПАРАТЫ"
-            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#6A1B9A")); gravity = Gravity.CENTER
-            setPadding(12, 16, 12, 16); background = roundBg("#F3E5F5", 14f, "#8E24AA")
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            setOnClickListener {
-                bs.dismiss()
-                openMedPresetsSheet()
-            }
-        })
-        root.addView(actionRow)
-
-        val qInp = EditText(this).apply {
-            hint = "Поиск (СЛР, диагноз, фамилия)..."
-            setPadding(30, 22, 30, 22)
-            MedicalTools.styleEditText(this, "#F0F8FF", "#90CAF9", 18f)
-        }
-        root.addView(qInp)
-        val lv = makeListView(root)
-
-        fun update(q: String) {
-            t1.typeface = if (showT) Typeface.DEFAULT_BOLD else Typeface.DEFAULT; t1.setTextColor(if (showT) Color.WHITE else Color.parseColor("#004D40")); t1.background = roundBg(if (showT) "#00796B" else "#E0F2F1", 14f)
-            t2.typeface = if (!showT) Typeface.DEFAULT_BOLD else Typeface.DEFAULT; t2.setTextColor(if (!showT) Color.WHITE else Color.parseColor("#004D40")); t2.background = roundBg(if (!showT) "#00796B" else "#E0F2F1", 14f)
-            lifecycleScope.launch(Dispatchers.IO) {
-                if (showT) {
-                    val list = dbHelper.searchBuiltInTemplates(q)
-                    withContext(Dispatchers.Main) {
-                        if (q.isEmpty()) t1.text = "⭐ Образцы (${list.size})"
-                        setupAdapter(lv, list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n📋 ${it.mkb}" }, "#FFFDE7", "#FFE082") { pos ->
-                            bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(list[pos].jsonData)});", null); toast("⚡ Заполнен: ${list[pos].title}")
-                        }
+                for (let b of expandedBtns) {
+                    b.dispatchEvent(new KeyboardEvent('keydown', escInit));
+                    if (attempt >= 2) {
+                        b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+                        b.click();
                     }
-                } else {
-                    val list = dbHelper.searchPatientSummaries(q)
-                    withContext(Dispatchers.Main) {
-                        setupAdapter(lv, list.map { "👤 ${it.fio.uppercase()}\n📋 ${it.lastReason}" }, "#F0F8FF", "#BBDEFB") { pos ->
-                            bs.dismiss()
-                            lifecycleScope.launch(Dispatchers.IO) {
-                                dbHelper.getBestCardForPatient(list[pos].fio)?.let { c ->
-                                    withContext(Dispatchers.Main) { webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(c)});", null); toast("⚡ Заполнено!") }
+                }
+
+                restoreScreenPosition();
+                await new Promise(r => setTimeout(r, 45));
+            }
+        }
+
+        try {
+            const data = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+
+            function setVal(inp, val, allowEmpty = false) {
+                if (!inp || val === undefined || val === null || inp.disabled || isInConclusion(inp)) return;
+                const str = cleanVal(val);
+                const prev = cleanVal(inp.value);
+                if (!allowEmpty && !str) return;
+                if (prev === str) return;
+                try {
+                    const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(inp, str); else inp.value = str;
+                    if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                } catch (e) { inp.value = str; }
+            }
+
+            function getRealInputsAutofill(container) {
+                return Array.from(container.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
+                    .filter(el => !el.classList.contains('MuiSelect-nativeInput') && !el.classList.contains('MuiTextareaAutosize-shadow') && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+            }
+
+            function findInputs(keywords, exact = false) {
+                const res = [];
+                const searchingFio = keywords.some(k => k.toLowerCase() === 'фио');
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+
+                for (let kw of keywords) {
+                    const kwL = kw.toLowerCase();
+                    for (let l of labels) {
+                        if (!l.textContent || l.children.length > 3 || isInConclusion(l)) continue;
+
+                        const t = l.textContent.trim().toLowerCase();
+                        const isMatch = exact ? t === kwL : (t === kwL || t.includes(kwL));
+                        if (isMatch && t.length < kwL.length + 35) {
+                            let foundInp = null;
+
+                            const fc = l.closest('.MuiFormControl-root');
+                            if (fc && !isInConclusion(fc)) {
+                                const inps = getRealInputsAutofill(fc);
+                                if (inps.length === 1) foundInp = inps[0];
+                            }
+
+                            if (!foundInp) {
+                                let p = l.parentElement;
+                                for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                                    const inps = getRealInputsAutofill(p);
+                                    if (inps.length === 1) {
+                                        foundInp = inps[0];
+                                        break;
+                                    } else if (inps.length > 1) {
+                                        break;
+                                    }
+                                    p = p.parentElement;
                                 }
                             }
-                        }
-                    }
-                }
-            }
-        }
-        t1.setOnClickListener { showT = true; update(qInp.text.toString()) }
-        t2.setOnClickListener { showT = false; update(qInp.text.toString()) }
-        qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) = update(s.toString()); override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })
-        bs.show(); update("")
-    }
 
-    private fun openMkbSheet() {
-        val initialTitle = if (fullMkbList.isEmpty()) "📖 Справочник МКБ-10 (загрузка...)" else "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
-        val (bs, root) = createSheet(initialTitle, "#00695C")
-        val titleTv = root.getChildAt(1) as? TextView
-
-        val cats = listOf("🌟 Все" to "ALL", "❤️ I Кардио" to "I", "🫁 J Дыхание" to "J", "🧠 G Невро" to "G", "🩹 S Травмы" to "S", "🧪 T Токсико" to "T", "🚨 R Симптомы" to "R", "🤢 K ЖКТ" to "K", "🩸 E Эндокрин" to "E", "🤰 O Акушерство" to "O", "🏥 Z Прочее" to "Z", "🦠 A/B Инфекции" to "AB", "🤪 F Психиатрия" to "F", "🚽 N Урология" to "N", "🦴 M Кости" to "M", "🎗️ C/D Онко" to "CD", "👂 H ЛОР" to "H", "👶 P/Q Дети" to "PQ", "⚠️ V-Y Причины" to "VY")
-        var selCat = "ALL"
-        val chipsLay = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 12); addView(chipsLay) })
-        val qInp = EditText(this).apply {
-            hint = "Поиск (I48, инфаркт, пневмония)..."
-            setPadding(30, 22, 30, 22)
-            MedicalTools.styleEditText(this, "#E0F2F1", "#80CBC4", 18f)
-        }
-        root.addView(qInp)
-        val lv = makeListView(root)
-
-        fun filter() {
-            if (fullMkbList.isEmpty() && mkbLoadJob?.isActive == true) {
-                setupAdapter(lv, listOf("⏳ Загрузка базы МКБ-10 (12 500+ кодов)..."), "#F7FAFA", "#E0EAEA") {}
-                return
-            }
-            val q = qInp.text.toString().trim().lowercase()
-            val res = fullMkbList.asSequence().filter { item ->
-                val mc = when (selCat) {
-                    "ALL" -> true; "AB" -> item.letter in listOf("A", "B"); "CD" -> item.letter in listOf("C", "D")
-                    "PQ" -> item.letter in listOf("P", "Q"); "VY" -> item.letter in listOf("V", "W", "X", "Y"); else -> item.letter == selCat
-                }
-                mc && (q.isEmpty() || item.code.lowercase().contains(q) || item.name.lowercase().contains(q))
-            }.take(80).toList()
-            setupAdapter(lv, res.map { "[${it.code}] ${it.name}" }, "#F7FAFA", "#E0EAEA") { pos ->
-                (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("MKB", "[${res[pos].code}] ${res[pos].name}"))
-                toast("📋 Скопировано: [${res[pos].code}]"); bs.dismiss()
-            }
-        }
-
-        fun renderChips() {
-            chipsLay.removeAllViews()
-            cats.forEach { (lbl, key) ->
-                val sel = key == selCat
-                chipsLay.addView(TextView(this).apply {
-                    text = lbl; textSize = 12f; typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                    setTextColor(if (sel) Color.WHITE else Color.parseColor("#004D40")); setPadding(20, 10, 20, 10)
-                    background = roundBg(if (sel) "#00796B" else "#E0F2F1", 16f)
-                    layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 8 }
-                    setOnClickListener { selCat = key; renderChips(); filter() }
-                })
-            }
-        }
-        qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) = filter(); override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })
-        renderChips(); filter(); bs.show()
-
-        if (fullMkbList.isEmpty() && mkbLoadJob?.isActive == true) {
-            lifecycleScope.launch {
-                mkbLoadJob?.join()
-                if (bs.isShowing) {
-                    titleTv?.text = "📖 Справочник МКБ-10 (${fullMkbList.size} кодов)"
-                    filter()
-                }
-            }
-        }
-    }
-
-    private fun openSearchSheet(isBest: Boolean) {
-        val builtinCount = dbHelper.getBuiltinTemplateCountOnly()
-        val (bs, root) = createSheet(if (isBest) "⭐ Образцы карт ($builtinCount шаблонов)" else "📂 Общий архив вызовов", if (isBest) "#E65100" else "#004D40")
-        val titleTv = root.getChildAt(1) as? TextView
-
-        if (isBest) {
-            root.addView(TextView(this).apply {
-                text = "➕ СОЗДАТЬ СВОЙ ШАБЛОН"
-                textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER
-                setPadding(16, 16, 16, 16); background = roundBg("#FFF8E1", 14f, "#E65100")
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
-                setOnClickListener {
-                    bs.dismiss()
-                    showCreateTemplateDialog(null) { openSearchSheet(true) }
-                }
-            })
-        }
-
-        val qInp = EditText(this).apply {
-            hint = if (isBest) "Поиск по диагнозу или СЛР..." else "Поиск по фамилии..."
-            setPadding(30, 22, 30, 22)
-            MedicalTools.styleEditText(this, if (isBest) "#FFF8E1" else "#F0F4F4", if (isBest) "#FFE082" else "#B0BEC5", 18f)
-        }
-        root.addView(qInp)
-        val lv = makeListView(root)
-        val sdf = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
-
-        fun run(q: String) = lifecycleScope.launch(Dispatchers.IO) {
-            if (isBest) {
-                val list = dbHelper.searchBuiltInTemplates(q)
-                withContext(Dispatchers.Main) {
-                    if (q.isEmpty()) titleTv?.text = "⭐ Образцы карт (${list.size} шаблонов)"
-                    setupAdapter(lv, list.map { "${if (it.isCustom) "📌" else "⭐"} ${it.title}\n📋 ${it.mkb}" }, "#FFFDE7", "#FFE082") { pos -> bs.dismiss(); showTemplatePreview(list[pos]) }
-                }
-            } else {
-                val list = dbHelper.searchPatientSummaries(q)
-                withContext(Dispatchers.Main) {
-                    setupAdapter(lv, list.map { "👤 ${it.fio.uppercase()}${if (it.callCount > 1) " [${it.callCount}]" else ""}\nСохранено: ${sdf.format(Date(it.lastTimestamp))}\n• ${it.lastReason}" }, "#F7FAFA", "#E0EAEA") { pos -> bs.dismiss(); showPatientHistory(list[pos].fio) }
-                }
-            }
-        }
-        qInp.addTextChangedListener(object : TextWatcher { override fun afterTextChanged(s: Editable?) { run(s.toString()) }; override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}; override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {} })
-        bs.show(); run("")
-    }
-
-    private fun showTemplatePreview(s: BestCardSample) {
-        val (bs, root) = createSheet("${if (s.isCustom) "📌" else "⭐"} ${s.title}", "#E65100")
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
-        bar.addView(TextView(this).apply {
-            text = "⚡ Вставить в карту"; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(24, 16, 24, 16); background = roundBg("#0288D1", 16f); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = if (s.isCustom) 8 else 0 }
-            setOnClickListener { bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(s.jsonData)});", null); toast("⚡ Шаблон вставлен!") }
-        })
-        if (s.isCustom) {
-            bar.addView(TextView(this).apply {
-                text = "✏️"; textSize = 17f; gravity = Gravity.CENTER
-                setPadding(20, 14, 20, 14); background = roundBg("#FFF3E0", 16f, "#FFB74D")
-                layoutParams = LinearLayout.LayoutParams(-2, -1).apply { rightMargin = 8 }
-                setOnClickListener {
-                    bs.dismiss()
-                    showCreateTemplateDialog(
-                        prefillJson = s.jsonData,
-                        editingId = s.id,
-                        initialTitle = s.title
-                    ) { openSearchSheet(true) }
-                }
-            })
-            bar.addView(ImageButton(this).apply {
-                contentDescription = "Удалить шаблон"
-                setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 16f); setPadding(18, 16, 18, 16)
-                setOnClickListener {
-                    AlertDialog.Builder(this@MainActivity).setTitle("Удалить шаблон?").setPositiveButton("Удалить") { _, _ ->
-                        lifecycleScope.launch(Dispatchers.IO) { if (dbHelper.deleteCustomTemplate(s.id)) withContext(Dispatchers.Main) { toast("Удалено"); bs.dismiss() } }
-                    }.setNegativeButton("Отмена", null).show()
-                }
-            })
-        }
-        root.addView(bar)
-        val sv = NestedScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isFillViewport = true; isNestedScrollingEnabled = true }
-        sv.addView(TextView(this).apply { textSize = 15f; setTextIsSelectable(true); setTextColor(Color.parseColor("#263238")); setLineSpacing(6f, 1.15f); text = formatCardText(s.jsonData) })
-        root.addView(sv); bs.show()
-    }
-
-    private fun showPatientHistory(fio: String) = lifecycleScope.launch(Dispatchers.IO) {
-        val history = dbHelper.getPatientHistory(fio).toMutableList()
-        if (history.isEmpty()) return@launch
-        withContext(Dispatchers.Main) {
-            val (bs, root) = createSheet(fio.uppercase(), "#004D40")
-            val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
-
-            val actions = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 12) }
-            val toTpl = TextView(this@MainActivity).apply { text = "⭐ В шаблон"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#E65100")); gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); background = roundBg("#FFF8E1", 14f, "#FFE082"); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-            val fillBtn = TextView(this@MainActivity).apply { text = "⚡ Вставить"; textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(16, 14, 16, 14); background = roundBg("#0288D1", 14f); layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 } }
-            val delBtn = ImageButton(this@MainActivity).apply {
-                contentDescription = "Удалить вызов"
-                setImageResource(android.R.drawable.ic_menu_delete); background = roundBg("#FFEBEE", 14f); setPadding(16, 12, 16, 12)
-            }
-            actions.addView(toTpl); actions.addView(fillBtn); actions.addView(delBtn); root.addView(actions)
-
-            val chipsLay = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
-            root.addView(HorizontalScrollView(this@MainActivity).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 8); addView(chipsLay) })
-            val badgesLay = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
-            root.addView(HorizontalScrollView(this@MainActivity).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 10); addView(badgesLay) })
-
-            val sv = NestedScrollView(this@MainActivity).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); isFillViewport = true; isNestedScrollingEnabled = true }
-            val details = TextView(this@MainActivity).apply { textSize = 15f; setTextIsSelectable(true); setTextColor(Color.parseColor("#263238")); setLineSpacing(6f, 1.15f); setPadding(4, 6, 4, 20) }
-            sv.addView(details); root.addView(sv)
-
-            var selIdx = 0
-            fun render() {
-                val itm = history[selIdx]
-                val j = try { JSONObject(itm.jsonData) } catch (_: Exception) { JSONObject() }
-                toTpl.setOnClickListener {
-                    val inp = EditText(this@MainActivity).apply {
-                        setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
-                        hint = "Название шаблона..."
-                        setPadding(30, 20, 30, 20)
-                        setTextColor(Color.BLACK)
-                        setHintTextColor(Color.parseColor("#546E7A"))
-                    }
-                    AlertDialog.Builder(this@MainActivity).setTitle("Сохранить в свои шаблоны").setMessage("ФИО и адрес будут удалены.").setView(inp).setPositiveButton("Сохранить") { _, _ ->
-                        val t = inp.text.toString().trim()
-                        if (t.isNotEmpty()) lifecycleScope.launch(Dispatchers.IO) { dbHelper.saveCustomTemplate(t, itm.jsonData); withContext(Dispatchers.Main) { toast("📌 Шаблон «$t» сохранен!") } }
-                    }.setNegativeButton("Отмена", null).show()
-                }
-                fillBtn.setOnClickListener { bs.dismiss(); webView.evaluateJavascript("setAndApplyAutofill(${JSONObject.quote(itm.jsonData)});", null); toast("⚡ Вставлено!") }
-                delBtn.setOnClickListener {
-                    AlertDialog.Builder(this@MainActivity).setTitle("Удалить вызов?").setPositiveButton("Удалить") { _, _ ->
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            if (dbHelper.deleteCard(itm.id)) {
-                                history.removeAt(selIdx)
-                                withContext(Dispatchers.Main) { toast("Удалено"); if (history.isEmpty()) bs.dismiss() else { selIdx = 0; render() } }
+                            if (foundInp && !res.includes(foundInp)) {
+                                const holderText = cleanVal((foundInp.closest('.MuiFormControl-root') || foundInp.parentElement)?.innerText).toLowerCase();
+                                if (!searchingFio && (holderText === 'фио' || holderText.startsWith('фио\n') || holderText.includes('фио пациента'))) continue;
+                                if (searchingFio) {
+                                    const rowTxt = (foundInp.closest('.MuiGrid-container') || foundInp.parentElement?.parentElement?.parentElement)?.innerText || '';
+                                    if (rowTxt.includes('Должность') || rowTxt.includes('передачи мед.работнику')) continue;
+                                }
+                                res.push(foundInp);
                             }
                         }
-                    }.setNegativeButton("Отмена", null).show()
-                }
-
-                chipsLay.removeAllViews()
-                history.forEachIndexed { idx, c ->
-                    val on = idx == selIdx
-                    chipsLay.addView(TextView(this@MainActivity).apply {
-                        text = "Вызов #${history.size - idx} (${sdf.format(Date(c.timestamp))})"; textSize = 12f
-                        typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                        setTextColor(if (on) Color.WHITE else Color.parseColor("#004D40")); setPadding(20, 10, 20, 10)
-                        background = roundBg(if (on) "#00796B" else "#E0F2F1", 16f)
-                        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 8 }
-                        setOnClickListener { selIdx = idx; render() }
-                    })
-                }
-                badgesLay.removeAllViews()
-                fun addB(t: String, c: String) = badgesLay.addView(TextView(this@MainActivity).apply {
-                    text = t; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); setPadding(18, 6, 18, 6); background = roundBg(c, 14f)
-                    layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 8 }
-                })
-                val bp = cleanBpString(j.optString("bp")).ifEmpty { cleanBpString(j.optString("bpAdapted")) }
-                if (bp.isNotEmpty()) addB("❤️ $bp", "#E53935")
-                if (cleanJsonVal(j.opt("pulse")).isNotEmpty()) addB("💓 ${cleanJsonVal(j.opt("pulse"))}", "#D81B60")
-                if (cleanJsonVal(j.opt("saturation")).isNotEmpty()) addB("🫁 ${cleanJsonVal(j.opt("saturation"))}%", "#00897B")
-                if (cleanJsonVal(j.opt("glucose")).isNotEmpty()) addB("🩸 ${cleanJsonVal(j.opt("glucose"))}", "#8E24AA")
-                if (cleanJsonVal(j.opt("glasgowScore")).isNotEmpty()) addB("🧠 ${cleanJsonVal(j.opt("glasgowScore"))} б", "#3949AB")
-
-                details.text = formatCardText(itm.jsonData)
-                sv.post { sv.scrollTo(0, 0) }
-            }
-            render(); bs.show()
-        }
-    }
-
-    private val dateInStringRegex = Regex("""\d{2}\.\d{2}\.\d{4}""")
-
-    private fun cleanJsonVal(v: Any?): String {
-        if (v == null || v == JSONObject.NULL) return ""
-        if (v is String) {
-            val s = v.trim()
-            return if (s == "null" || s.startsWith("[object") || s.startsWith("{")) "" else s
-        }
-        if (v is JSONObject) {
-            for (k in listOf("type", "name", "display", "title")) {
-                val s = v.optString(k).replace("null", "").trim()
-                if (s.isNotEmpty() && !s.startsWith("{")) return s
-            }
-            return ""
-        }
-        if (v is JSONArray) {
-            return (0 until v.length()).mapNotNull { i ->
-                val s = cleanJsonVal(v.opt(i))
-                if (s.isNotEmpty()) s else null
-            }.joinToString(", ")
-        }
-        return v.toString().replace("null", "").trim()
-    }
-
-    private fun cleanBpString(raw: String): String {
-        val s = raw.trim().replace("null", "")
-        if (s.isEmpty()) return ""
-        if (s.startsWith("{")) return try {
-            val o = JSONObject(s)
-            val sys = o.optString("sys").ifEmpty { o.optString("systolic") }.replace("null", "").trim()
-            val dis = o.optString("dis").ifEmpty { o.optString("dia") }.ifEmpty { o.optString("diastolic") }.replace("null", "").trim()
-            if (sys.isNotEmpty() || dis.isNotEmpty()) "$sys/$dis" else ""
-        } catch (_: Exception) { "" }
-        return if (s.contains("ул.") || dateInStringRegex.containsMatchIn(s)) "" else s
-    }
-
-    private fun cleanMedicationsString(raw: String): String {
-        var s = raw.trim().replace("null", "")
-        if (s.isEmpty()) return ""
-        if (s.contains("{")) {
-            val rx = Regex(""""(?:type|name|title)"\s*:\s*"([^"]+)"""")
-            s = s.replace(Regex("""\{[^{}]*\}""")) { rx.find(it.value)?.groupValues?.get(1) ?: "" }
-        }
-        return s.replace(Regex("""(?i)\bid\s*[:=]?\s*\d+\s*[,;]?"""), "").trim()
-    }
-
-    private fun formatCardText(jsonStr: String): String = try {
-        val j = JSONObject(jsonStr)
-        StringBuilder().apply {
-            fun add(label: String, key: String, suf: String = "") {
-                val v = cleanJsonVal(j.opt(key))
-                if (v.isNotEmpty()) append("$label: $v$suf\n")
-            }
-            add("🎂 Родился", "birthDate")
-            add("⏳ Возраст", "age", " ${cleanJsonVal(j.opt("ageUnit"))}".trimEnd())
-            add("⚧ Пол", "gender")
-            add("🌍 Гражданство", "citizenship")
-            add("📍 Адрес", "address")
-            add("🚨 Повод", "callReason")
-            add("🏥 АПО", "apo")
-
-            append("\n📋 ДИАГНОЗ:\n• ${cleanJsonVal(j.opt("diagnosis"))}\n")
-            add("• Код МКБ", "mkb")
-            val th = cleanJsonVal(j.opt("recommendedTherapy"))
-            if (th.isNotEmpty()) append("\n💊 ПРОТОКОЛЬНАЯ ТЕРАПИЯ (подсказка):\n$th\n")
-
-            if (cleanJsonVal(j.opt("ecgBefore")).isNotEmpty() || cleanJsonVal(j.opt("ecgAfter")).isNotEmpty()) {
-                append("\n📈 ЭКГ:\n")
-                add("• До помощи", "ecgBefore")
-                add("• После помощи", "ecgAfter")
-            }
-
-            append("\n🩺 ОБЪЕКТИВНО:\n")
-            add("• Состояние", "generalState")
-            add("• Сознание", "consciousness")
-            val pDesc = cleanJsonVal(j.opt("positionDescription"))
-            add("• Положение", "position", if (pDesc.isNotEmpty()) " ($pDesc)" else "")
-            add("• Поведение", "behavior")
-            add("• Глазго", "glasgowScore", " б")
-            val bpAd = cleanBpString(j.optString("bpAdapted"))
-            if (bpAd.isNotEmpty()) append("• Привычное АД: $bpAd\n")
-            val bp = cleanBpString(j.optString("bp"))
-            if (bp.isNotEmpty()) append("• АД на вызове: $bp\n")
-            add("• Пульс", "pulse", " уд/мин")
-            add("• ЧДД", "rr", " в мин")
-            add("• SpO2", "saturation", "%")
-            add("• Сахар", "glucose", " ммоль/л")
-            add("• Температура", "temp", "°C")
-            add("• Тоны сердца", "heartSounds")
-            add("• Дыхание", "lungs")
-            add("• Перкуссия", "percussion")
-            add("• Живот", "abdomen")
-            add("• Асцит", "ascites")
-            add("• Кожа", "skin")
-            add("• Высыпания", "rash")
-            val eDesc = cleanJsonVal(j.opt("edemaDescription"))
-            add("• Отеки", "edema", if (eDesc.isNotEmpty()) " ($eDesc)" else "")
-            add("• Зрачки", "pupils")
-            add("• Реакция на свет", "lightReaction")
-            add("• Речь", "speech")
-            add("• Лицо", "face")
-            add("• Походка", "gait")
-            add("• Нистагм", "nystagmus")
-            add("• Тонус мышц", "muscleTone")
-            add("• Пат. рефлексы", "pathologicalReflexes")
-            add("• Менингеальные", "meningealSymptoms")
-            add("• Плегии/парезы", "plegia")
-            add("• Язык", "tongue")
-            add("• Слизистые", "mucous")
-            add("• Перистальтика", "peristalsis")
-            add("• Печень", "liver")
-            add("• Брюшина", "peritoneal")
-            add("• Мочеиспускание", "urination")
-            add("• Стул", "stool")
-            add("• Запах алкоголя", "alcohol")
-            add("• Запах ацетона", "acetone")
-            add("• Локально", "localStatus")
-
-            if (cleanJsonVal(j.opt("complaints")).isNotEmpty()) append("\n🗣️ Жалобы:\n${cleanJsonVal(j.opt("complaints"))}\n")
-            if (cleanJsonVal(j.opt("anamnesis")).isNotEmpty()) append("\n📖 Анамнез:\n${cleanJsonVal(j.opt("anamnesis"))}\n")
-            if (cleanJsonVal(j.opt("pastDiseases")).isNotEmpty()) append("\n🩹 Перенесенные: ${cleanJsonVal(j.opt("pastDiseases"))}\n")
-            add("⚠️ Аллергия", "allergy")
-
-            val meds = cleanMedicationsString(j.optString("medications"))
-            if (meds.isNotEmpty() || cleanJsonVal(j.opt("attack")).isNotEmpty() || cleanJsonVal(j.opt("therapyEffect")).isNotEmpty() || cleanJsonVal(j.opt("callResult")).isNotEmpty()) {
-                append("\n💉 ОКАЗАННАЯ ПОМОЩЬ:\n")
-                add("• Помощь", "medHelp")
-                if (meds.isNotEmpty()) append("• Препараты:\n• $meds\n")
-                add("• Приступ", "attack")
-                add("• Эффект", "therapyEffect")
-                add("• Итог", "callResult")
-            }
-        }.toString()
-    } catch (_: Exception) { "Ошибка чтения данных" }
-
-    private fun extractName(obj: JSONObject, vararg keys: String): String {
-        for (k in keys) {
-            obj.optJSONObject(k)?.let { n ->
-                val t = n.optString("type").ifEmpty { n.optString("name") }.ifEmpty { n.optString("title") }.replace("null", "").trim()
-                if (t.isNotEmpty() && !t.startsWith("{")) return t
-                val deep = n.optJSONObject("name") ?: n.optJSONObject("type") ?: n.optJSONObject("medicine")
-                deep?.let { d -> val dt = d.optString("type").ifEmpty { d.optString("name") }.replace("null", "").trim(); if (dt.isNotEmpty()) return dt }
-            } ?: run {
-                val s = obj.optString(k).replace("null", "").trim()
-                if (s.isNotEmpty() && !s.startsWith("{") && !s.all { it.isDigit() }) return s
-            }
-        }
-        val it = obj.keys()
-        while (it.hasNext()) {
-            val k = it.next(); val kl = k.lowercase()
-            if (kl.contains("unit") || kl.contains("way") || kl.contains("route") || kl.contains("id") || kl in listOf("count", "amount", "quantity", "number")) continue
-            obj.optJSONObject(k)?.let { sub ->
-                val st = sub.optString("type").ifEmpty { sub.optString("name") }.ifEmpty { sub.optString("title") }.replace("null", "").trim()
-                if (st.isNotEmpty() && !st.startsWith("{")) return st
-            }
-        }
-        return ""
-    }
-
-    private fun parseServerCardJson(jsonStr: String): Triple<String, String, Pair<Int, JSONObject>>? = try {
-        val raw = JSONObject(jsonStr)
-        val p = raw.optJSONObject("patient") ?: JSONObject()
-        val fio = cleanJsonVal(p.opt("fullName")).ifEmpty { cleanJsonVal(raw.opt("initialFullName")) }.trim()
-        if (fio.isEmpty()) null else {
-            val regDateOnly = raw.optString("dateOfRegistration").substringBefore("T")
-            val rawBDate = p.optString("birthDate").replace("null", "")
-            val ageUnit = raw.optJSONObject("ageType")?.optString("type")?.ifEmpty { raw.optString("ageType") } ?: raw.optString("ageType")
-            var bDate = ""
-            if (rawBDate.contains("-")) {
-                val bDateOnly = rawBDate.substringBefore("T")
-                if (bDateOnly != regDateOnly || ageUnit in listOf("Дней", "Часов")) {
-                    val sp = bDateOnly.split("-"); if (sp.size == 3) bDate = "${sp[2]}.${sp[1]}.${sp[0]} / 00:00"
-                }
-            }
-            fun jArr(k: String) = raw.optJSONArray(k)?.let { a -> (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { extractName(it, "type", "name", "title") } ?: a.optString(i) }.filter { it.isNotEmpty() && it != "null" && !it.startsWith("{") }.joinToString(", ") } ?: ""
-            fun parseMeds(): String {
-                val dom = raw.optString("_domMedications").replace("null", "").trim()
-                if (dom.isNotEmpty()) return dom
-                val arr = raw.optJSONArray("medications") ?: return ""
-                return (0 until arr.length()).mapNotNull { i ->
-                    val m = arr.optJSONObject(i) ?: return@mapNotNull null
-                    val medObj = m.optJSONObject("medication")
-                    val name = medObj?.optString("name")?.replace("null", "")?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: extractName(m, "medication", "medicine", "drug", "nomenclature", "preparation", "med", "name", "title")
-                    val cnt = listOf("number", "count", "amount", "quantity", "dose", "value").firstNotNullOfOrNull { k -> m.optString(k).replace("null", "").trim().takeIf { it.isNotEmpty() && !it.startsWith("{") } } ?: ""
-                    val unit = (medObj?.optJSONObject("type") ?: medObj?.optJSONObject("unitsType") ?: m.optJSONObject("unit") ?: m.optJSONObject("measurement"))?.let { it.optString("name").ifEmpty { it.optString("type") }.replace("null", "").trim() } ?: ""
-                    val way = (m.optJSONObject("routeDict") ?: m.optJSONObject("wayOfAdministration") ?: m.optJSONObject("way") ?: m.optJSONObject("route"))?.let { it.optString("display").ifEmpty { it.optString("type") }.ifEmpty { it.optString("name") }.replace("null", "").trim() } ?: ""
-                    if (name.isEmpty()) null else "$name${listOf(cnt, unit).filter { it.isNotEmpty() }.joinToString(" ").let { if (it.isNotEmpty()) " — $it" else "" }}${if (way.isNotEmpty() && !way.contains("не определен")) " [$way]" else ""}"
-                }.joinToString(";\n• ")
-            }
-
-            val complaints = cleanJsonVal(raw.opt("complaints"))
-            val anamnesis = cleanJsonVal(raw.opt("anamnesis"))
-            val diag = cleanJsonVal(raw.opt("diagnosis"))
-            val meds = parseMeds()
-            val bp = cleanBpString(raw.optString("arterialPressure"))
-            val bpAd = cleanBpString(raw.optString("arterialPressureAdaptive"))
-            var score = 0; if (anamnesis.length > 10) score += 35; if (complaints.isNotEmpty()) score += 25; if (diag.isNotEmpty()) score += 25; if (meds.isNotEmpty() || bp.isNotEmpty()) score += 15
-            val icd = raw.optJSONObject("icd")
-
-            val liverVal = when {
-                raw.optJSONObject("liver") != null -> raw.optJSONObject("liver")?.optString("type")?.uppercase() ?: "НЕ УВЕЛИЧЕНА"
-                raw.has("liver") && !raw.isNull("liver") -> if (raw.optBoolean("liver", false)) "УВЕЛИЧЕНА" else "НЕ УВЕЛИЧЕНА"
-                else -> "НЕ УВЕЛИЧЕНА"
-            }
-
-            val attackVal = when {
-                raw.optJSONObject("postAttack") != null -> raw.optJSONObject("postAttack")?.optString("type")?.uppercase() ?: ""
-                raw.has("postAttack") && !raw.isNull("postAttack") -> {
-                    val v = raw.opt("postAttack")
-                    if (v is Boolean) {
-                        if (v) "КУПИРОВАН" else "НЕ КУПИРОВАН"
-                    } else {
-                        v.toString().trim().uppercase().replace("NULL", "")
                     }
                 }
-                else -> ""
+                return res;
             }
 
-            val scrGender = cleanJsonVal(raw.opt("_screenGender")).uppercase()
-            val genderVal = when {
-                scrGender.startsWith("М") -> "МУЖЧИНА"
-                scrGender.startsWith("Ж") -> "ЖЕНЩИНА"
-                p.has("gender") && !p.isNull("gender") -> if (p.optBoolean("gender", false)) "МУЖЧИНА" else "ЖЕНЩИНА"
-                else -> ""
+            const setAll = (kws, val, ex = false, allowEmpty = false) => {
+                if (val !== undefined && val !== null && (allowEmpty || cleanVal(val) !== '')) {
+                    findInputs(kws, ex).forEach(i => setVal(i, val, allowEmpty));
+                }
+            };
+
+            function formatBirthDateAndCalcAge(rawDateStr) {
+                if (!rawDateStr) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
+                let clean = String(rawDateStr).trim();
+                if (clean.startsWith("__")) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
+
+                let datePart = "", timePart = "00:00";
+                if (clean.includes("-")) {
+                    const p = clean.split("T"); const d = p[0].split("-");
+                    if (d.length === 3) datePart = `${d[2]}.${d[1]}.${d[0]}`;
+                    if (p[1] && /^\d{2}:\d{2}/.test(p[1].trim())) timePart = p[1].trim().substring(0, 5);
+                } else if (clean.includes(".")) {
+                    const p = clean.split("/"); datePart = p[0].trim();
+                    if (p[1] && /^\d{2}:\d{2}/.test(p[1].trim())) timePart = p[1].trim().substring(0, 5);
+                }
+                if (!datePart || datePart.includes("_")) return { dateStr: "", ageStr: "", ageUnitGuess: "" };
+
+                const now = new Date();
+                const todayStr = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;
+                let calcAge = "", ageUnitGuess = "";
+                const dp = datePart.split(".");
+                if (dp.length === 3) {
+                    const bd = parseInt(dp[0], 10), bm = parseInt(dp[1], 10), by = parseInt(dp[2], 10);
+                    const bObj = new Date(by, bm - 1, bd);
+                    if (by > 1900 && bObj <= now) {
+                        let yrs = now.getFullYear() - by;
+                        if ((now.getMonth() + 1) < bm || ((now.getMonth() + 1) === bm && now.getDate() < bd)) yrs--;
+                        if (yrs >= 1) {
+                            calcAge = String(yrs); ageUnitGuess = "Лет";
+                        } else {
+                            let mos = (now.getFullYear() - by) * 12 + ((now.getMonth() + 1) - bm);
+                            if (now.getDate() < bd) mos--;
+                            if (mos >= 1) {
+                                calcAge = String(mos); ageUnitGuess = "Месяцев";
+                            } else {
+                                const days = Math.floor((now - bObj) / 86400000);
+                                calcAge = String(Math.max(1, days)); ageUnitGuess = "Дней";
+                            }
+                        }
+                    }
+                }
+                return { dateStr: (datePart !== todayStr) ? `${datePart} / 00:00` : `${datePart} / ${timePart}`, ageStr: calcAge, ageUnitGuess };
             }
 
-            val citizenship = cleanJsonVal(raw.opt("citizenship")).ifEmpty {
-                cleanJsonVal(p.opt("countryOfRegistration"))
+            async function selectDropdown(keywords, valStr, forceMulti = false, allowClearMulti = false) {
+                const vals = cleanVal(valStr).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                if (!vals.length && !(forceMulti && allowClearMulti)) return;
+
+                const matchVal = (ot, v) => {
+                    if (!ot || ot === 'не выбрано') return false;
+                    if (ot === v || ot.includes(v) || v.includes(ot)) return true;
+                    if (v.startsWith('месяц') && ot.startsWith('месяц')) return true;
+                    if ((v === 'лет' || v.startsWith('год')) && (ot === 'лет' || ot.startsWith('год'))) return true;
+                    if ((v.startsWith('дн') || v === 'день') && (ot.startsWith('дн') || ot === 'день')) return true;
+                    if (v.startsWith('час') && ot.startsWith('час')) return true;
+                    return false;
+                };
+
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+                const ctrls = [];
+                for (let kw of keywords) {
+                    const kwL = kw.toLowerCase();
+                    for (let l of labels) {
+                        if (!l.textContent || l.children.length > 3 || isInConclusion(l)) continue;
+                        const t = l.textContent.trim().toLowerCase();
+                        if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
+                            let p = l.closest('.MuiFormControl-root') || l.parentElement;
+                            for (let i = 0; i < 3 && p && p !== document.body && !isInConclusion(p); i++) {
+                                const selBtns = p.querySelectorAll('.MuiSelect-root, [role="button"]');
+                                if (selBtns.length === 1) {
+                                    if (!ctrls.includes(p)) ctrls.push(p);
+                                    break;
+                                } else if (selBtns.length > 1) break;
+                                p = p.parentElement;
+                            }
+                        }
+                    }
+                }
+
+                for (let c of ctrls) {
+                    const btn = c.querySelector('.MuiSelect-root, [role="button"]');
+                    if (!btn || btn.classList.contains('Mui-disabled') || isInConclusion(btn)) continue;
+
+                    const isMulti = forceMulti || btn.classList.contains('MuiSelect-multiple') || vals.length > 1;
+                    const curText = cleanVal(btn.innerText).toLowerCase();
+                    const curItems = (!curText || curText === 'не выбрано') ? [] : curText.split(',').map(s => s.trim()).filter(Boolean);
+
+                    if (!isMulti && vals.length > 0 && matchVal(curText, vals[0])) continue;
+                    if (isMulti && curItems.length === vals.length && vals.every(v => curItems.some(ci => matchVal(ci, v)))) continue;
+
+                    await closeAnyOpenMenu();
+
+                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 60));
+                    if (getActivePopovers().length === 0) {
+                        btn.click();
+                        restoreScreenPosition();
+                    }
+
+                    let activePops = [];
+                    for (let w = 0; w < 6; w++) {
+                        activePops = getActivePopovers();
+                        if (activePops.length > 0 && activePops[activePops.length - 1].querySelector('li[role="option"], .MuiMenuItem-root')) break;
+                        await new Promise(r => setTimeout(r, 55));
+                    }
+
+                    const popover = activePops.length > 0 ? activePops[activePops.length - 1] : null;
+                    const opts = popover ? Array.from(popover.querySelectorAll('li[role="option"], .MuiMenuItem-root')) : [];
+
+                    if (opts.length > 0) {
+                        const hasCheckboxes = opts.some(o => !!o.querySelector('input[type="checkbox"], .MuiCheckbox-root'));
+                        const treatAsMulti = isMulti || hasCheckboxes;
+
+                        if (!treatAsMulti) {
+                            const match = opts.find(o => matchVal(cleanVal(o.innerText).toLowerCase(), vals[0]));
+                            if (match) {
+                                match.click();
+                                restoreScreenPosition();
+                                await new Promise(r => setTimeout(r, 80));
+                            }
+                            if (getActivePopovers().length > 0) await closeAnyOpenMenu();
+                        } else {
+                            const wanted = new Set();
+                            for (let v of vals) {
+                                const m = opts.find(o => matchVal(cleanVal(o.innerText).toLowerCase(), v));
+                                if (m) wanted.add(m);
+                            }
+                            for (let o of opts) {
+                                const shouldBe = wanted.has(o);
+                                const isSel = o.classList.contains('Mui-selected') || o.getAttribute('aria-selected') === 'true' || !!o.querySelector('input[type="checkbox"]:checked');
+                                if (shouldBe !== isSel) {
+                                    o.click();
+                                    restoreScreenPosition();
+                                    await new Promise(r => setTimeout(r, 35));
+                                }
+                            }
+                            await closeAnyOpenMenu();
+                        }
+                    } else {
+                        await closeAnyOpenMenu();
+                    }
+                }
             }
 
-            val settlement = cleanJsonVal(raw.opt("settlement")).ifEmpty {
-                cleanJsonVal(p.opt("settlement"))
+            async function fillMkbAutocomplete(mkbStr) {
+                if (!mkbStr) return;
+                const codeMatch = String(mkbStr).trim().match(/\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?/i);
+                const searchCode = codeMatch ? codeMatch[1].toUpperCase() : String(mkbStr).trim();
+
+                const mkbInputs = findInputs(["код по мкб"]);
+                if (!mkbInputs.length) return;
+                const inp = mkbInputs[0];
+
+                if (inp.value && inp.value.toUpperCase().includes(`[${searchCode}]`)) return;
+
+                await closeAnyOpenMenu();
+
+                const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+                const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
+
+                try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+                restoreScreenPosition();
+                setVal(inp, searchCode);
+                await new Promise(r => setTimeout(r, 120));
+                if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                    popupBtn.click();
+                    restoreScreenPosition();
+                }
+
+                let targetOpt = null;
+                for (let w = 0; w < 12; w++) {
+                    const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                    const popper = poppers[poppers.length - 1];
+                    if (popper) {
+                        const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                            .filter(o => {
+                                const tx = cleanVal(o.innerText).toLowerCase();
+                                return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                            });
+                        if (opts.length > 0) {
+                            targetOpt = opts.find(o => cleanVal(o.innerText).toUpperCase().includes(`[${searchCode}]`))
+                                || opts.find(o => cleanVal(o.innerText).toUpperCase().startsWith(searchCode))
+                                || opts.find(o => cleanVal(o.innerText).toUpperCase().includes(searchCode))
+                                || opts[0];
+                            if (targetOpt) break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 80));
+                }
+
+                if (targetOpt) {
+                    targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    targetOpt.click();
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (inp.blur) inp.blur();
+                await closeAnyOpenMenu();
             }
 
-            val street = cleanJsonVal(raw.opt("street")).ifEmpty {
-                cleanJsonVal(p.opt("street"))
+            async function fillSimpleAutocomplete(keywords, targetVal, skipIfFilled = false) {
+                const cleanTarget = cleanVal(targetVal);
+                if (!cleanTarget) return;
+                const inps = findInputs(keywords);
+                if (!inps.length) return;
+                const inp = inps[0];
+                const cur = cleanVal(inp.value);
+                const fullTargetL = cleanTarget.toLowerCase();
+                const shortSearch = cleanTarget.split('(')[0].trim();
+                const shortTargetL = shortSearch.toLowerCase();
+
+                if (skipIfFilled && cur) return;
+                if (cur && (cur.toLowerCase() === fullTargetL || cur.toLowerCase().startsWith(shortTargetL))) return;
+
+                await closeAnyOpenMenu();
+                const autoRoot = inp.closest('.MuiAutocomplete-root') || inp.closest('.MuiFormControl-root') || inp.parentElement;
+                const clearBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-clearIndicator') : null;
+                const popupBtn = autoRoot ? autoRoot.querySelector('.MuiAutocomplete-popupIndicator') : null;
+                try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+                if (cur && clearBtn) {
+                    clearBtn.click();
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                restoreScreenPosition();
+                setVal(inp, shortSearch, true);
+                await new Promise(r => setTimeout(r, 140));
+                if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isElemVisible) && popupBtn) {
+                    popupBtn.click();
+                    restoreScreenPosition();
+                }
+
+                let targetOpt = null;
+                for (let w = 0; w < 12; w++) {
+                    const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isElemVisible);
+                    const popper = poppers[poppers.length - 1];
+                    if (popper) {
+                        const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                            .filter(o => {
+                                const tx = cleanVal(o.innerText).toLowerCase();
+                                return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                            });
+                        if (opts.length > 0) {
+                            targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === fullTargetL)
+                                || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(shortTargetL))
+                                || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(shortTargetL))
+                                || opts[0];
+                            if (targetOpt) break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (targetOpt) {
+                    targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                    targetOpt.click();
+                    restoreScreenPosition();
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                if (inp.blur) inp.blur();
+                await closeAnyOpenMenu();
             }
 
-            val building = cleanJsonVal(raw.opt("building")).ifEmpty {
-                cleanJsonVal(p.opt("building"))
+            function clickButtonInRow(rowKeywords, buttonChoices) {
+                if (!buttonChoices) return;
+                const choices = (Array.isArray(buttonChoices) ? buttonChoices : [buttonChoices])
+                    .map(c => cleanVal(c).toUpperCase()).filter(Boolean);
+                if (!choices.length) return;
+
+                const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p, span'));
+                for (let kw of rowKeywords) {
+                    const kwL = kw.toLowerCase();
+                    const targets = labels.filter(el => {
+                        if (!el.textContent || el.children.length > 2 || isInConclusion(el)) return false;
+                        const t = el.textContent.trim().toLowerCase();
+                        return (t === kwL || t.includes(kwL)) && t.length < kwL.length + 35;
+                    });
+
+                    for (let target of targets) {
+                        let p = target.closest('.MuiFormControl-root') || target.parentElement;
+                        for (let i = 0; i < 4 && p && p !== document.body && !isInConclusion(p); i++) {
+                            const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => !b.disabled && !isInConclusion(b));
+                            const desired = btns.find(b => {
+                                const bt = cleanVal(b.innerText || b.textContent).toUpperCase();
+                                return choices.some(ch => bt === ch || (ch.includes("СИММЕТР") && ch.startsWith("А") && bt.startsWith("А") && bt.includes("СИМ")));
+                            });
+                            if (desired) {
+                                const s = window.getComputedStyle(desired);
+                                const isWhite = s.color.includes('255, 255, 255');
+                                const isColored = !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                                const isAlreadyOn = (isWhite && isColored) || desired.className.includes('MuiButton-contained');
+                                if (!isAlreadyOn) desired.click();
+                                break;
+                            }
+                            p = p.parentElement;
+                        }
+                    }
+                }
             }
 
-            val flat = cleanJsonVal(raw.opt("flat")).ifEmpty {
-                cleanJsonVal(p.opt("flat"))
+            function fillBP(isAd, raw, allowEmpty = false) {
+                const str = cleanBpString(raw);
+                if (!str.includes('/') && !allowEmpty) return;
+                const p = str.includes('/') ? str.split('/') : ['', ''];
+                const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
+                    .filter(e => e.children.length === 0 && e.textContent?.trim() === '/' && !isInConclusion(e));
+
+                for (let sl of slashNodes) {
+                    let pr = sl.parentElement;
+                    for (let i = 0; i < 3 && pr && pr !== document.body; i++) {
+                        const inps = getRealInputsAutofill(pr);
+                        if (inps.length === 2) {
+                            const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
+                            const isMatch = isAd
+                                ? (tx.includes('адаптированное') && (tx.includes('ад') || tx.includes('давлен')))
+                                : (!tx.includes('адаптированное') && (tx.includes('ад (мм') || tx.includes('артериальн')));
+                            if (isMatch) {
+                                setVal(inps[0], p[0].trim(), allowEmpty);
+                                setVal(inps[1], p[1].trim(), allowEmpty);
+                                return;
+                            }
+                        }
+                        pr = pr.parentElement;
+                    }
+                }
             }
 
-            val clarificationAddress = cleanJsonVal(raw.opt("clarificationAddress")).ifEmpty {
-                cleanJsonVal(p.opt("clarificationAddress"))
+            if (data.fio) setAll(["фио"], data.fio, true);
+
+            if (data.gender) {
+                const gUp = cleanVal(data.gender).toUpperCase();
+                const gTarget = (gUp.startsWith("М") || gUp === "TRUE") ? ["МУЖЧИНА", "МУЖСКОЙ"] : ["ЖЕНЩИНА", "ЖЕНСКИЙ"];
+                clickButtonInRow(["пол"], gTarget);
             }
 
-            val address = cleanJsonVal(raw.opt("address")).ifEmpty {
-                cleanJsonVal(p.opt("placeOfRegistration"))
+            const initAgeRaw = cleanVal(window.lastLoadedApiCard?.initialAge);
+            const initAgeM = initAgeRaw.match(/^(\d+)\s+([А-Яа-яЁё]+)/);
+            let finAge = cleanVal(data.age) || cleanVal(window.lastLoadedApiCard?.age) || (initAgeM ? initAgeM[1] : "");
+            let unitGuess = "";
+
+            const bDateInps = findInputs(["дата рождения"]);
+            if (bDateInps.length > 0) {
+                const now = new Date();
+                const todayIso = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+                const todayDot = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;
+                const regDateIso = (window.lastLoadedApiCard?.dateOfRegistration || "").split("T")[0];
+
+                let servB = cleanVal(window.lastLoadedApiCard?.patient?.birthDate);
+                if (servB && (servB.startsWith(todayIso) || (regDateIso && servB.startsWith(regDateIso)))) servB = "";
+                let archB = cleanVal(data.birthDate);
+                if (archB && (archB.includes(todayIso) || archB.includes(todayDot))) archB = "";
+                let scrB = cleanVal(bDateInps[0].value);
+                let scrDateOnly = scrB.split("/")[0].trim();
+                if (scrDateOnly.includes("_") || scrDateOnly === todayDot) scrB = "";
+
+                const rawB = servB || archB || scrB;
+                if (rawB) {
+                    const parsed = formatBirthDateAndCalcAge(rawB);
+                    if (parsed.dateStr) setVal(bDateInps[0], parsed.dateStr);
+                    if (!finAge && parsed.ageStr) finAge = parsed.ageStr;
+                    if (parsed.ageUnitGuess) unitGuess = parsed.ageUnitGuess;
+                }
             }
 
-            val apo = cleanJsonVal(raw.opt("apo")).ifEmpty {
-                cleanJsonVal(p.opt("territorialMedicalFacility"))
-            }
+            const unitVal = cleanVal(data.ageUnit) || cleanVal(window.lastLoadedApiCard?.ageType) || (initAgeM ? initAgeM[2] : "") || unitGuess || "Лет";
+            await selectDropdown(["возраст (ед.)"], unitVal, false);
+            if (finAge) setAll(["возраст"], finAge, true);
 
-            val card = JSONObject().apply {
-                put("fio", fio)
-                put("birthDate", bDate)
-                put("age", cleanJsonVal(raw.opt("age")))
-                put("ageUnit", cleanJsonVal(ageUnit))
-                put("citizenship", citizenship)
-                put("settlement", settlement)
-                put("street", street)
-                put("building", building)
-                put("flat", flat)
-                put("clarificationAddress", clarificationAddress)
-                put("address", address)
-                put("apo", apo)
-                put("callReason", cleanJsonVal(raw.optJSONObject("reasonToCall")?.opt("type")))
-                put("gender", genderVal)
-                put("complaints", complaints)
-                put("anamnesis", anamnesis)
-                put("pastDiseases", cleanJsonVal(raw.opt("pastIllnesses")))
-                put("allergy", if (raw.optBoolean("allergy", false)) "ДА" else "НЕТ")
-                put("generalState", cleanJsonVal(raw.optJSONObject("generalState")?.opt("type")))
-                put("consciousness", cleanJsonVal(raw.optJSONObject("consciousness")?.opt("type")))
-                put("position", cleanJsonVal(raw.optJSONObject("position")?.opt("type")).uppercase())
-                put("positionDescription", cleanJsonVal(raw.opt("positionDescription")))
-                put("behavior", cleanJsonVal(raw.optJSONObject("behavior")?.opt("type")).uppercase())
-                put("glasgowScore", cleanJsonVal(raw.opt("comaScale")).ifEmpty { "15" })
-                put("bp", bp)
-                put("bpAdapted", bpAd)
-                put("pulse", cleanJsonVal(raw.opt("pulse")))
-                put("rr", cleanJsonVal(raw.opt("breathCount")))
-                put("temp", cleanJsonVal(raw.opt("skinTemp")))
-                put("saturation", cleanJsonVal(raw.opt("saturation1")))
-                put("glucose", cleanJsonVal(raw.opt("glycemia1")))
-                put("heartSounds", jArr("heartSounds"))
-                put("lungs", jArr("breaths"))
-                put("percussion", jArr("percussionOfLungs"))
-                put("abdomen", jArr("stomachs"))
-                put("skin", jArr("skins"))
-                put("urination", jArr("urinations").uppercase())
-                put("stool", cleanJsonVal(raw.optJSONObject("defecatio")?.opt("type")).uppercase())
-                put("edema", if (raw.optBoolean("peripheralEdema", false)) "ДА" else "НЕТ")
-                put("edemaDescription", cleanJsonVal(raw.opt("peripheralEdemaDescription")))
-                put("rash", if (raw.optBoolean("skinRashes", false)) "ДА" else "НЕТ")
-                put("ascites", if (raw.optBoolean("ascites", false)) "ДА" else "НЕТ")
-                put("peritoneal", if (raw.optBoolean("stomachSymptoms", false)) "ДА" else "НЕТ")
-                put("medHelp", jArr("medicalAssistanceProvided"))
-                put("medications", meds)
-                put("pupils", cleanJsonVal(raw.optJSONObject("pupils")?.opt("type")).uppercase())
-                put("lightReaction", if (raw.optBoolean("pupilsLight", true)) "ДА" else "НЕТ")
-                put("speech", cleanJsonVal(raw.optJSONObject("speech")?.opt("type")).uppercase())
-                put("gait", cleanJsonVal(raw.optJSONObject("gait")?.opt("type")).uppercase())
-                put("face", cleanJsonVal(raw.optJSONObject("face")?.opt("type")).uppercase())
-                put("nystagmus", cleanJsonVal(raw.optJSONObject("nystagmus")?.opt("type")).uppercase())
-                put("muscleTone", cleanJsonVal(raw.opt("muscleTone")).ifEmpty { "Нормальный" })
-                put("pathologicalReflexes", cleanJsonVal(raw.opt("pathologicalReflexes")).ifEmpty { "Отрицательные" })
-                put("meningealSymptoms", cleanJsonVal(raw.opt("meningealSymptoms")).ifEmpty { "Отрицательные" })
-                put("plegia", cleanJsonVal(raw.opt("plegia")).ifEmpty { "Нет" })
-                put("tongue", cleanJsonVal(raw.opt("tongue")).ifEmpty { "Чистые" })
-                put("mucous", cleanJsonVal(raw.opt("mucosa")).ifEmpty { "Бледно-розовые" })
-                put("liver", liverVal)
-                put("peristalsis", if (raw.optBoolean("peristalsis", true)) "ДА" else "НЕТ")
-                put("localStatus", cleanJsonVal(raw.opt("localStatus")))
-                put("ecgBefore", cleanJsonVal(raw.opt("electrocardiogramBefore")))
-                put("ecgAfter", cleanJsonVal(raw.opt("electrocardiogramAfter")))
-                put("diagnosis", diag)
-                put("mkb", if (icd != null) "[${icd.optString("code")}] ${icd.optString("type").ifEmpty { icd.optString("name") }}".trim() else "")
-                put("attack", attackVal)
-                put("therapyEffect", cleanJsonVal(raw.optJSONObject("result")?.opt("type")).uppercase())
-                put("callResult", cleanJsonVal(raw.optJSONObject("resultDeparture")?.opt("type")).uppercase())
+            const getInpVal = (kws, exact = false) => cleanVal(findInputs(kws, exact)[0]?.value);
+            const savedSettl = cleanVal(data.settlement) || getInpVal(['нас. пункт']) || cleanVal(window.lastLoadedApiCard?.patient?.settlement) || cleanVal(window.lastLoadedApiCard?.settlement);
+            const savedStreet = cleanVal(data.street) || getInpVal(['улица']) || cleanVal(window.lastLoadedApiCard?.patient?.street) || cleanVal(window.lastLoadedApiCard?.street);
+            const savedBld = cleanVal(data.building) || getInpVal(['дом'], true) || cleanVal(window.lastLoadedApiCard?.patient?.building) || cleanVal(window.lastLoadedApiCard?.building);
+            const savedFlat = cleanVal(data.flat) || getInpVal(['квартира'], true) || cleanVal(window.lastLoadedApiCard?.patient?.flat) || cleanVal(window.lastLoadedApiCard?.flat);
+            const savedClar = cleanVal(data.clarificationAddress) || getInpVal(['уточнение места жительства']) || cleanVal(window.lastLoadedApiCard?.patient?.clarificationAddress);
+            const savedAddr = cleanVal(data.address) || getInpVal(['место жительства (пребывания)']) || cleanVal(window.lastLoadedApiCard?.patient?.placeOfRegistration) || cleanVal(window.lastLoadedApiCard?.address);
+
+            const ctzVal = cleanVal(data.citizenship) || cleanVal(window.lastLoadedApiCard?.patient?.countryOfRegistration) || '';
+            if (ctzVal) await fillSimpleAutocomplete(["гражданство"], ctzVal, !data.citizenship);
+            if (savedSettl) await fillSimpleAutocomplete(["нас. пункт"], savedSettl, false);
+            if (savedStreet) await fillSimpleAutocomplete(["улица"], savedStreet, false);
+            if (savedBld) setAll(["дом"], savedBld, true);
+            if (savedFlat) setAll(["квартира"], savedFlat, true);
+            if (savedClar) setAll(["уточнение места жительства"], savedClar);
+            if (savedAddr) setAll(["место жительства (пребывания)"], savedAddr);
+
+            if (data.apo) await selectDropdown(["территориальная апо", "апо по месту жительства"], data.apo, false);
+
+            setAll(["жалобы"], data.complaints ?? "", false, true);
+            setAll(["анамнез заболевания"], data.anamnesis ?? "", false, true);
+            setAll(["перенесенные заболевания"], data.pastDiseases ?? "", false, true);
+            setAll(["предварительный диагноз"], data.diagnosis ?? "", false, true);
+            setAll(["локальный статус"], data.localStatus ?? "", false, true);
+            if (data.mkb) await fillMkbAutocomplete(data.mkb);
+
+            fillBP(true, data.bpAdapted ?? "", true);
+            fillBP(false, data.bp ?? "", true);
+            setAll(["комментарий (пульс", "пульс, ударов в минуту"], data.pulse ?? "", false, true);
+            setAll(["частота дыхания (в минуту)"], data.rr ?? "", false, true);
+            setAll(["температура тела (°c)"], data.temp !== undefined && data.temp !== null && String(data.temp) !== "" ? String(data.temp).replace(',', '.') : "", false, true);
+            setAll(["сатурация 1 (%)"], data.saturation ?? "", false, true);
+            setAll(["гликемия 1 (ммоль/л)"], data.glucose !== undefined && data.glucose !== null && String(data.glucose) !== "" ? String(data.glucose).replace(',', '.') : "", false, true);
+
+            setAll(["экг до оказания"], data.ecgBefore ?? "", false, true);
+            setAll(["экг после оказания"], data.ecgAfter ?? "", false, true);
+            setAll(["шкала комы глазго (баллы)"], cleanVal(data.glasgowScore) || "15", false, true);
+            setAll(["тонус мышц"], cleanVal(data.muscleTone) || "Нормальный", false, true);
+            setAll(["патологические рефлексы"], cleanVal(data.pathologicalReflexes) || "Отрицательные", false, true);
+            setAll(["менингиальные знаки"], cleanVal(data.meningealSymptoms) || "Отрицательные", false, true);
+            setAll(["плегии, парезы"], cleanVal(data.plegia) || "Нет", false, true);
+            setAll(["язык"], cleanVal(data.tongue) || "Чистые", false, true);
+            setAll(["слизистые"], cleanVal(data.mucous) || "Бледно-розовые", false, true);
+
+            clickButtonInRow(["положение"], data.position || "АКТИВНОЕ");
+            clickButtonInRow(["поведение"], data.behavior || "СПОКОЙНОЕ");
+            if (data.pupils) {
+                clickButtonInRow(["зрачки"], [data.pupils, data.pupils.replace("АНИЗОКОРИЯ", "АНИЗОКАРИЯ")]);
+            } else {
+                const pupLbl = Array.from(document.querySelectorAll('label')).find(e => e.textContent && e.textContent.trim().toLowerCase() === 'зрачки' && !isInConclusion(e));
+                if (pupLbl && pupLbl.parentElement) {
+                    Array.from(pupLbl.parentElement.querySelectorAll('button'))
+                        .filter(b => b.className.includes('MuiButton-contained') && !b.disabled)
+                        .forEach(b => b.click());
+                }
             }
-            Triple(fio, bDate, Pair(score, card))
+            clickButtonInRow(["речь"], data.speech || "СОХРАНЕНА");
+            clickButtonInRow(["лицо"], data.face || "СИММЕТРИЧНОЕ");
+            clickButtonInRow(["походка"], data.gait || "СВОБОДНАЯ");
+            clickButtonInRow(["нистагм"], data.nystagmus || "НЕТ");
+            clickButtonInRow(["печень"], data.liver || "НЕ УВЕЛИЧЕНА");
+            clickButtonInRow(["мочеиспускание"], data.urination || "НЕ НАРУШЕНО");
+            clickButtonInRow(["стул"], data.stool || "НЕ НАРУШЕН");
+
+            clickButtonInRow(["аллергия"], data.allergy || "НЕТ");
+            clickButtonInRow(["реакция на свет"], data.lightReaction || "ДА");
+            clickButtonInRow(["высыпания"], data.rash || "НЕТ");
+            clickButtonInRow(["пульс, ударов в минуту"], data.pulseExists || (data.pulse === "0" ? "НЕТ" : "ДА"));
+            clickButtonInRow(["асцит"], data.ascites || "НЕТ");
+            clickButtonInRow(["периферические отеки"], data.edema || "НЕТ");
+
+            clickButtonInRow(["запах алкоголя"], data.alcohol || "НЕТ");
+            clickButtonInRow(["запах ацетона"], data.acetone || "НЕТ");
+            clickButtonInRow(["симптомы раздражения брюшины"], data.peritoneal || "НЕТ");
+            clickButtonInRow(["перистальтика"], data.peristalsis || "ДА");
+            clickButtonInRow(["получено устное согласие на простое медицинское вмешательство", "получено устное согласие"], "ДА");
+
+            await new Promise(r => setTimeout(r, 50));
+            setAll(["комментарий (вынужденное)"], data.positionDescription ?? "", false, true);
+            setAll(["комментарий (периферические отеки)"], data.edemaDescription ?? "", false, true);
+
+            await selectDropdown(["общее состояние"], data.generalState || "Удовлетворительное", false);
+            await selectDropdown(["сознание"], data.consciousness || "Ясное", false);
+
+            await selectDropdown(["кожа"], data.skin ?? "", true, true);
+            await selectDropdown(["тоны сердца"], data.heartSounds ?? "", true, true);
+            await selectDropdown(["дыхание"], data.lungs ?? "", true, true);
+            await selectDropdown(["перкуссия легких"], data.percussion ?? "", true, true);
+            await selectDropdown(["живот"], data.abdomen ?? "", true, true);
+
+            await closeAnyOpenMenu();
+            restoreScreenPosition();
+        } catch (e) { console.error(e); } finally {
+            await new Promise(r => setTimeout(r, 60));
+            await closeAnyOpenMenu();
+            if (activeTabBefore) {
+                const curActive = Array.from(document.querySelectorAll('[role="tab"], button'))
+                    .find(b => b.getBoundingClientRect().top < 140 && (b.getAttribute('aria-selected') === 'true' || b.className.includes('Mui-selected')));
+                if (curActive !== activeTabBefore) activeTabBefore.click();
+            }
+            restoreScreenPosition();
+            setTimeout(restoreScreenPosition, 40);
+
+            document.getElementById('b103-hide-menus')?.remove();
+            if (fillBtn) fillBtn.innerText = "⚡";
+            setTimeout(() => { window.b103IsApplying = false; }, 150);
         }
-    } catch (_: Exception) { null }
+    };
 
-    inner class WebAppInterface {
-        @JavascriptInterface fun openMainMenu() = runOnUiThread { showMainModalMenu() }
-        @JavascriptInterface fun openSearchDialog() = runOnUiThread { openSearchSheet(false) }
-        @JavascriptInterface fun openBestCardsDialog() = runOnUiThread { openSearchSheet(true) }
-        @JavascriptInterface fun openMkbDialog() = runOnUiThread { openMkbSheet() }
-        @JavascriptInterface fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet("") }
-        @JavascriptInterface fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
-        @JavascriptInterface fun requestAutofill(fio: String) = runOnUiThread { showAutofillPickerSheet(fio) }
-
-        @JavascriptInterface
-        fun saveApiCardForced(jsonStr: String) = lifecycleScope.launch(Dispatchers.IO) {
-            parseServerCardJson(jsonStr)?.let { (fio, bDate, sc) ->
-                dbHelper.saveOrUpdateCard(fio, bDate, sc.first, sc.second.toString())
-                withContext(Dispatchers.Main) { toast("💾 Карта $fio сохранена в архив!") }
-            }
+    // ==========================================
+    // 3.5 АВТОПИЛОТ ДОБАВЛЕНИЯ ПРЕПАРАТОВ И РАСХОДНИКОВ
+    // ==========================================
+    window.applyMedicationsPreset = async function(jsonStr) {
+        if (window.b103IsApplying) return;
+        const sec = findMedicationsSection();
+        if (!sec) {
+            window.AndroidBridge?.notifyUser("Раздел «Лекарственные средства» не найден на экране");
+            return;
         }
-    }
-}
+        const addBtn = Array.from(sec.querySelectorAll('button'))
+            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ');
+        if (!addBtn) {
+            window.AndroidBridge?.notifyUser("Кнопка «Добавить» в препаратах не найдена");
+            return;
+        }
+
+        let items = [];
+        try {
+            const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+            items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : []);
+        } catch (e) { return; }
+        items = items.filter(it => it && cleanVal(it.name));
+        if (!items.length) return;
+
+        window.b103IsApplying = true;
+        const fillBtn = document.getElementById('btn-fill-db');
+        if (fillBtn) fillBtn.innerText = "⏳";
+
+        let hideStyle = document.getElementById('b103-hide-meds');
+        if (!hideStyle) {
+            hideStyle = document.createElement('style');
+            hideStyle.id = 'b103-hide-meds';
+            hideStyle.textContent = '.MuiDialog-root, .MuiAutocomplete-popper { opacity: 0 !important; transition: none !important; }';
+            document.head.appendChild(hideStyle);
+        }
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const setReactVal = (inp, val) => {
+            if (!inp) return;
+            const str = String(val ?? '');
+            const prev = String(inp.value ?? '');
+            if (prev === str) return;
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(inp, str); else inp.value = str;
+            if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        const isPopVis = (el) => {
+            if (!el || !el.isConnected || el.getAttribute('aria-hidden') === 'true') return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+
+        async function pickAutocomplete(autoRoot, searchStr) {
+            const inp = autoRoot?.querySelector('input');
+            const cleanTarget = cleanVal(searchStr);
+            if (!inp || !cleanTarget) return false;
+            const targetL = cleanTarget.toLowerCase();
+            const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
+            const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
+
+            try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            if (inp.value && clearBtn) {
+                clearBtn.click();
+                await sleep(45);
+            }
+            setReactVal(inp, cleanTarget);
+            await sleep(140);
+            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) {
+                popupBtn.click();
+            }
+
+            let targetOpt = null;
+            for (let w = 0; w < 15; w++) {
+                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
+                const popper = poppers[poppers.length - 1];
+                if (popper) {
+                    const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
+                        .filter(o => {
+                            const tx = cleanVal(o.innerText).toLowerCase();
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                        });
+                    if (opts.length > 0) {
+                        targetOpt = opts.find(o => cleanVal(o.innerText).toLowerCase() === targetL)
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().startsWith(targetL))
+                            || opts.find(o => cleanVal(o.innerText).toLowerCase().includes(targetL))
+                            || opts[0];
+                        if (targetOpt) break;
+                    }
+                }
+                await sleep(80);
+            }
+            if (targetOpt) {
+                targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                targetOpt.click();
+                await sleep(90);
+                return true;
+            }
+            return false;
+        }
+
+        function findOpenMedDialog() {
+            const dialogs = Array.from(document.querySelectorAll('.MuiDialog-root'));
+            for (let i = dialogs.length - 1; i >= 0; i--) {
+                const d = dialogs[i];
+                if (d.querySelector('input[name="number"]') && (d.querySelector('h2')?.innerText || '').toLowerCase().includes('добавить')) {
+                    return d;
+                }
+            }
+            return null;
+        }
+
+        let added = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        try {
+            const existingNames = new Set(scrapeScreenMedications().map(m => m.name.trim().toLowerCase()));
+
+            for (const item of items) {
+                const itemName = cleanVal(item.name);
+                if (!itemName) continue;
+                if (existingNames.has(itemName.toLowerCase())) {
+                    skipped++;
+                    continue;
+                }
+
+                addBtn.click();
+                let dlg = null;
+                for (let w = 0; w < 15; w++) {
+                    dlg = findOpenMedDialog();
+                    if (dlg) break;
+                    await sleep(60);
+                }
+                if (!dlg) { failed++; continue; }
+
+                const autos = Array.from(dlg.querySelectorAll('.MuiAutocomplete-root'));
+                const medAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('лекарственные')) || autos[0];
+                const routeAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('путь введения')) || autos[1];
+
+                const pickedMed = await pickAutocomplete(medAuto, itemName);
+                if (!pickedMed) {
+                    const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                        .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                    cancelBtn?.click();
+                    await sleep(140);
+                    failed++;
+                    continue;
+                }
+
+                const qtyInp = dlg.querySelector('input[name="number"]');
+                const qtyVal = cleanQtyNum(item.qty) || '1';
+                setReactVal(qtyInp, qtyVal);
+                await sleep(50);
+
+                const routeStr = cleanVal(item.route);
+                if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
+                    await pickAutocomplete(routeAuto, routeStr);
+                }
+
+                const noteInp = dlg.querySelector('input[name="route"]');
+                if (noteInp && cleanVal(item.note)) {
+                    setReactVal(noteInp, cleanVal(item.note));
+                }
+
+                const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                    .find(b => (b.innerText || '').toLowerCase().includes('сохранить'));
+                if (saveBtn && !saveBtn.disabled) {
+                    saveBtn.click();
+                    let closed = false;
+                    for (let w = 0; w < 20; w++) {
+                        await sleep(90);
+                        if (!findOpenMedDialog()) { closed = true; break; }
+                    }
+                    if (closed) {
+                        added++;
+                        existingNames.add(itemName.toLowerCase());
+                    } else {
+                        const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                            .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                        cancelBtn?.click();
+                        await sleep(120);
+                        failed++;
+                    }
+                } else {
+                    const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
+                        .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
+                    cancelBtn?.click();
+                    await sleep(120);
+                    failed++;
+                }
+                await sleep(100);
+            }
+
+            const msg = `💊 Добавлено: ${added}` +
+                (skipped ? `, уже в карте: ${skipped}` : '') +
+                (failed ? `, не найдено: ${failed}` : '');
+            window.AndroidBridge?.notifyUser(msg);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            document.getElementById('b103-hide-meds')?.remove();
+            if (fillBtn) fillBtn.innerText = "⚡";
+            setTimeout(() => { window.b103IsApplying = false; }, 150);
+        }
+    };
+
+    // ==========================================
+    // 4. БЫСТРАЯ ТОЧЕЧНАЯ ВСТАВКА В ПОЛЯ КАРТЫ
+    // ==========================================
+    window.insertIntoCardField = function(fieldKeyword, textToInsert, appendMode) {
+        try {
+            const kwL = String(fieldKeyword).toLowerCase();
+            const isInConclusion = window.b103IsInConclusion;
+            const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
+            
+            for (let l of labels) {
+                if (!l.innerText || l.offsetParent === null || l.children.length > 3 || isInConclusion(l)) continue;
+                
+                const t = l.innerText.trim().toLowerCase();
+                if ((t === kwL || t.includes(kwL)) && t.length < kwL.length + 35) {
+                    const fc = l.closest('.MuiFormControl-root') || l.parentElement?.parentElement;
+                    if (!fc || isInConclusion(fc)) continue;
+
+                    const inps = Array.from(fc.querySelectorAll('textarea:not([disabled]), input:not([type="hidden"]):not([disabled])'))
+                        .filter(el => !el.classList.contains('MuiSelect-nativeInput') && !el.classList.contains('MuiTextareaAutosize-shadow') && el.getAttribute('aria-hidden') !== 'true' && el.tabIndex !== -1 && !isInConclusion(el));
+
+                    if (inps.length > 0) {
+                        const inp = inps[0];
+                        const cur = (inp.value || '').trim();
+                        const finalVal = (appendMode && cur) ? (cur + "\n" + textToInsert) : textToInsert;
+                        const proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                        if (setter) setter.call(inp, finalVal); else inp.value = finalVal;
+                        if (inp._valueTracker) inp._valueTracker.setValue(cur + '__force_diff');
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }
+                }
+            }
+        } catch (e) {}
+        return false;
+    };
+})();

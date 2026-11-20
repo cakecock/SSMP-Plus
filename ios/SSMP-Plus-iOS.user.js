@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.6.0
+// @version      3.7.0
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, история пациентов, МКБ-10, 11 модулей Помощника СМП (ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -12,6 +12,7 @@
 
 (function() {
     'use strict';
+    if (!location.hostname.endsWith('103brest.by')) return;
     if (typeof window.Notification === 'undefined') {
         function MockNotification(t, o) { this.title = t; this.options = o; this.close = function() {}; }
         MockNotification.permission = 'granted';
@@ -161,18 +162,33 @@
             .slice(0, 15);
     }
 
-    function saveCustomTemplate(title, rawJsonData) {
-        const cleanTitle = String(title || '').trim();
-        if (!cleanTitle) return;
-        let cleaned = rawJsonData;
+    function cleanTemplateJson(rawJsonData) {
         try {
             const o = typeof rawJsonData === 'string' ? JSON.parse(rawJsonData) : Object.assign({}, rawJsonData);
             ['fio', 'birthDate', 'age', 'ageUnit', 'gender', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress', 'address', 'apo', 'callReason'].forEach(k => delete o[k]);
-            cleaned = JSON.stringify(o);
-        } catch (e) {}
+            return JSON.stringify(o);
+        } catch (e) { return rawJsonData; }
+    }
+
+    function saveCustomTemplate(title, rawJsonData) {
+        const cleanTitle = String(title || '').trim();
+        if (!cleanTitle) return;
         const db = loadDb();
-        db.unshift({ id: genId(), fio: cleanTitle, birth_date: '', timestamp: Date.now(), score: 100, json_data: cleaned, is_builtin: 2 });
+        db.unshift({ id: genId(), fio: cleanTitle, birth_date: '', timestamp: Date.now(), score: 100, json_data: cleanTemplateJson(rawJsonData), is_builtin: 2 });
         saveDb(db);
+    }
+
+    function updateCustomTemplate(itemRef, title, rawJsonData) {
+        const cleanTitle = String(title || '').trim();
+        if (!cleanTitle) return false;
+        const db = loadDb();
+        const idx = db.findIndex(x => x && x.is_builtin === 2 && ((itemRef.id && x.id === itemRef.id) || (x.fio === itemRef.title && x.timestamp === itemRef.timestamp)));
+        if (idx < 0) return false;
+        db[idx].fio = cleanTitle;
+        db[idx].timestamp = Date.now();
+        db[idx].json_data = cleanTemplateJson(rawJsonData);
+        saveDb(db);
+        return true;
     }
 
     function deleteRecordFromDb(itemRef) {
@@ -635,9 +651,15 @@ function formatCardText(jsonStr) {
     function scrapeCache() {
         const c = window.b103ScreenCache;
         const setValIfFound = (kw, fieldName, exact = false) => {
-            const v = findInputByKw(Array.isArray(kw) ? kw : [kw], exact)?.value?.trim();
-            if (v && !v.startsWith('__')) c[fieldName] = v;
+            const inp = findInputByKw(Array.isArray(kw) ? kw : [kw], exact);
+            if (!inp) return;
+            const v = (inp.value || '').trim();
+            if (!v.startsWith('__')) c[fieldName] = v;
         };
+
+        const fioInp = findInputByKw(['фио'], true);
+        if (fioInp && fioInp.value.trim()) c.initialFullName = fioInp.value.trim();
+
         setValIfFound('гражданство', 'citizenship', true);
         setValIfFound('нас. пункт', 'settlement');
         setValIfFound('улица', 'street');
@@ -668,10 +690,15 @@ function formatCardText(jsonStr) {
         setValIfFound('комментарий (вынужденное)', 'positionDescription');
         setValIfFound('комментарий (периферические отеки)', 'peripheralEdemaDescription');
 
-        const mkbVal = findInputByKw(['код по мкб'])?.value?.trim();
-        if (mkbVal) {
-            const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
-            if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+        const mkbInp = findInputByKw(['код по мкб']);
+        if (mkbInp) {
+            const mkbVal = (mkbInp.value || '').trim();
+            if (!mkbVal) {
+                c.icd = null;
+            } else {
+                const m = mkbVal.match(/^\[?([A-ZА-Я]\d{2}(?:\.\d+)?)\]?\s*(.*)$/i);
+                if (m) c.icd = { code: m[1].toUpperCase(), name: m[2].trim() };
+            }
         }
 
         const slashNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
@@ -683,10 +710,8 @@ function formatCardText(jsonStr) {
                 if (inps.length === 2) {
                     const tx = (pr.innerText || pr.parentElement?.innerText || '').toLowerCase();
                     const s = inps[0].value.trim(), d = inps[1].value.trim();
-                    if (s || d) {
-                        if (tx.includes('адаптированное')) c.arterialPressureAdaptive = { sys: s, dia: d };
-                        else if (tx.includes('ад (мм') || tx.includes('артериальн')) c.arterialPressure = { sys: s, dia: d };
-                    }
+                    if (tx.includes('адаптированное')) c.arterialPressureAdaptive = { sys: s, dia: d };
+                    else if (tx.includes('ад (мм') || tx.includes('артериальн')) c.arterialPressure = { sys: s, dia: d };
                     break;
                 }
                 pr = pr.parentElement;
@@ -696,8 +721,8 @@ function formatCardText(jsonStr) {
         const labels = Array.from(document.querySelectorAll('label, .MuiFormLabel-root, .MuiInputLabel-root, p'));
         const getSelectText = (kw) => {
             const kwL = kw.toLowerCase();
-            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
-            if (!l) return '';
+            const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            if (!l) return null;
             let p = l.closest('.MuiFormControl-root') || l.parentElement;
             for (let i = 0; i < 3 && p && p !== document.body; i++) {
                 const b = p.querySelector('.MuiSelect-root, [role="button"]');
@@ -707,15 +732,15 @@ function formatCardText(jsonStr) {
                 }
                 p = p.parentElement;
             }
-            return '';
+            return null;
         };
-        const gs = getSelectText('общее состояние'); if (gs) c.generalState = { type: gs };
-        const cs = getSelectText('сознание'); if (cs) c.consciousness = { type: cs };
+        const gs = getSelectText('общее состояние'); if (gs !== null) c.generalState = gs ? { type: gs } : null;
+        const cs = getSelectText('сознание'); if (cs !== null) c.consciousness = cs ? { type: cs } : null;
         const au = getSelectText('возраст (ед.)'); if (au) c.ageType = { type: au };
         const ap = getSelectText('территориальная апо') || getSelectText('апо по месту жительства'); if (ap) c.apo = ap;
         const toArr = (kw, key) => {
             const v = getSelectText(kw);
-            if (v) c[key] = v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type);
+            if (v !== null) c[key] = v ? v.split(',').map(s => ({ type: s.trim() })).filter(x => x.type) : [];
         };
         toArr('кожа', 'skins');
         toArr('тоны сердца', 'heartSounds');
@@ -725,29 +750,34 @@ function formatCardText(jsonStr) {
 
         const getActiveBtnText = (kw) => {
             const kwL = kw.toLowerCase();
-            const l = labels.find(e => e.textContent && e.offsetParent !== null && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
+            const l = labels.find(e => e.textContent && !isInConclusion(e) && (e.textContent.trim().toLowerCase() === kwL || e.textContent.trim().toLowerCase().includes(kwL)) && e.textContent.trim().length < kwL.length + 35);
             if (!l) return null;
             let p = l.closest('.MuiFormControl-root') || l.parentElement;
-            for (let i = 0; i < 3 && p && p !== document.body; i++) {
-                const btns = Array.from(p.querySelectorAll('button')).filter(b => !isInConclusion(b));
+            for (let i = 0; i < 4 && p && p !== document.body; i++) {
+                const btns = Array.from(p.querySelectorAll('button, div[role="button"]')).filter(b => !isInConclusion(b));
                 if (btns.length >= 2 && btns.length <= 6) {
-                    const act = btns.find(b => b.className.includes('MuiButton-contained'));
+                    const act = btns.find(b => {
+                        if (b.className && b.className.includes('MuiButton-contained')) return true;
+                        const s = window.getComputedStyle(b);
+                        return s.color.includes('255, 255, 255') && !s.backgroundColor.includes('rgba(0, 0, 0, 0)') && !s.backgroundColor.includes('255, 255, 255');
+                    });
                     return act ? (act.innerText || act.textContent || '').trim().toUpperCase() : '';
                 }
                 p = p.parentElement;
             }
             return null;
         };
+        const gnd = getActiveBtnText('пол'); if (gnd !== null) c._screenGender = gnd;
         const pup = getActiveBtnText('зрачки'); if (pup !== null) c.pupils = pup ? { type: pup } : null;
-        const pos = getActiveBtnText('положение'); if (pos) c.position = { type: pos };
-        const beh = getActiveBtnText('поведение'); if (beh) c.behavior = { type: beh };
-        const spc = getActiveBtnText('речь'); if (spc) c.speech = { type: spc };
-        const fac = getActiveBtnText('лицо'); if (fac) c.face = { type: fac };
-        const gat = getActiveBtnText('походка'); if (gat) c.gait = { type: gat };
-        const nys = getActiveBtnText('нистагм'); if (nys) c.nystagmus = { type: nys };
-        const stu = getActiveBtnText('стул'); if (stu) c.defecatio = { type: stu };
-        const uri = getActiveBtnText('мочеиспускание'); if (uri) c.urinations = [{ type: uri }];
-        const liv = getActiveBtnText('печень'); if (liv) c.liver = { type: liv };
+        const pos = getActiveBtnText('положение'); if (pos !== null) c.position = pos ? { type: pos } : null;
+        const beh = getActiveBtnText('поведение'); if (beh !== null) c.behavior = beh ? { type: beh } : null;
+        const spc = getActiveBtnText('речь'); if (spc !== null) c.speech = spc ? { type: spc } : null;
+        const fac = getActiveBtnText('лицо'); if (fac !== null) c.face = fac ? { type: fac } : null;
+        const gat = getActiveBtnText('походка'); if (gat !== null) c.gait = gat ? { type: gat } : null;
+        const nys = getActiveBtnText('нистагм'); if (nys !== null) c.nystagmus = nys ? { type: nys } : null;
+        const stu = getActiveBtnText('стул'); if (stu !== null) c.defecatio = stu ? { type: stu } : null;
+        const uri = getActiveBtnText('мочеиспускание'); if (uri !== null) c.urinations = uri ? [{ type: uri }] : [];
+        const liv = getActiveBtnText('печень'); if (liv !== null) c.liver = liv ? { type: liv } : null;
         const alr = getActiveBtnText('аллергия'); if (alr) c.allergy = (alr === 'ДА');
         const lgt = getActiveBtnText('реакция на свет'); if (lgt) c.pupilsLight = (lgt === 'ДА');
         const rsh = getActiveBtnText('высыпания'); if (rsh) c.skinRashes = (rsh === 'ДА');
@@ -755,6 +785,9 @@ function formatCardText(jsonStr) {
         const edm = getActiveBtnText('периферические отеки'); if (edm) c.peripheralEdema = (edm === 'ДА');
         const prt = getActiveBtnText('симптомы раздражения брюшины'); if (prt) c.stomachSymptoms = (prt === 'ДА');
         const prs = getActiveBtnText('перистальтика'); if (prs) c.peristalsis = (prs === 'ДА');
+        const pls = getActiveBtnText('пульс, ударов в минуту'); if (pls) c.pulseExists = (pls === 'ДА');
+        const cns = getActiveBtnText('получено устное согласие на простое медицинское вмешательство') ?? getActiveBtnText('получено устное согласие');
+        if (cns !== null) c.acceptsSimpleMedProcedure = (cns === 'ДА');
 
         const qtyNodes = Array.from(document.querySelectorAll('span, p, .MuiTypography-root'))
             .filter(e => e.children.length === 0 && e.textContent && e.textContent.includes('Количество:'));
@@ -1703,7 +1736,8 @@ function formatCardText(jsonStr) {
             body.innerHTML = `
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
                     <button id="tp-fill" style="flex:1;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:13.5px;cursor:pointer;">⚡ Вставить в карту</button>
-                    ${s.isCustom ? '<button id="tp-del" style="padding:12px 16px;border:none;border-radius:12px;background:#FFEBEE;color:#C62828;font-weight:700;font-size:14px;cursor:pointer;">🗑️</button>' : ''}
+                    ${s.isCustom ? '<button id="tp-edit" style="padding:12px 15px;border:1.5px solid #FFB74D;border-radius:12px;background:#FFF3E0;color:#E65100;font-weight:700;font-size:15px;cursor:pointer;">✏️</button>' : ''}
+                    ${s.isCustom ? '<button id="tp-del" style="padding:12px 15px;border:none;border-radius:12px;background:#FFEBEE;color:#C62828;font-weight:700;font-size:14px;cursor:pointer;">🗑️</button>' : ''}
                 </div>
                 <div style="font-size:14.2px;line-height:1.5;color:#263238;white-space:pre-line;user-select:text;">${escapeHtml(formatCardText(s.jsonData))}</div>
             `;
@@ -1714,6 +1748,13 @@ function formatCardText(jsonStr) {
                     window.activeAutofillData = p;
                     window.applyAutofill(p);
                 } catch (e) { showToast('Ошибка данных шаблона'); }
+            };
+            const editBtn = body.querySelector('#tp-edit');
+            if (editBtn) editBtn.onclick = () => {
+                close();
+                let parsed = {};
+                try { parsed = JSON.parse(s.jsonData || '{}'); } catch (e) {}
+                openCreateTemplateSheet(parsed, s, () => openSearchSheet(true));
             };
             const delBtn = body.querySelector('#tp-del');
             if (delBtn) delBtn.onclick = () => {
@@ -1802,19 +1843,16 @@ function formatCardText(jsonStr) {
         });
     }
 
-    function openCreateTemplateSheet(prefill = null) {
-        openIosSheet('➕ Новый клинический шаблон', '#00796B', (body, close) => {
+    function openCreateTemplateSheet(prefill = null, editingItem = null, onSaved = null) {
+        const isEdit = Boolean(editingItem);
+        openIosSheet(isEdit ? '✏️ Редактировать шаблон' : '➕ Новый клинический шаблон', isEdit ? '#E65100' : '#00796B', (body, close) => {
             body.innerHTML = `
                 <button id="ct-pull-btn" style="width:100%;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:13px;margin-bottom:12px;cursor:pointer;">📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ</button>
                 <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Название шаблона (обязательно):</div>
                 <input id="ct-title" type="text" placeholder="Напр. ГК с тошнотой / ОКС с блокадой" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid #80CBC4;background:#E0F2F1;color:#111;font-size:13.5px;font-weight:700;margin-bottom:10px;outline:none;">
 
-                <div style="display:flex;gap:8px;margin-bottom:10px;">
-                    <div style="flex:1;">
-                        <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Код по МКБ-10:</div>
-                        <input id="ct-mkb" type="text" placeholder="Напр. [I10]" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;outline:none;">
-                    </div>
-                </div>
+                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Код по МКБ-10:</div>
+                <input id="ct-mkb" type="text" placeholder="Напр. [I10]" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;">
 
                 <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Предварительный диагноз:</div>
                 <textarea id="ct-diag" rows="2" placeholder="Клинический диагноз..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
@@ -1831,7 +1869,7 @@ function formatCardText(jsonStr) {
                 <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Рекомендованная терапия / протокол:</div>
                 <textarea id="ct-ther" rows="2" placeholder="Препараты по протоколу..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:14px;outline:none;"></textarea>
 
-                <button id="ct-save-btn" style="width:100%;padding:14px;border:none;border-radius:12px;background:#00796B;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ</button>
+                <button id="ct-save-btn" style="width:100%;padding:14px;border:none;border-radius:12px;background:${isEdit ? '#E65100' : '#00796B'};color:#fff;font-weight:700;font-size:14px;cursor:pointer;">${isEdit ? '💾 СОХРАНИТЬ ИЗМЕНЕНИЯ' : '💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ'}</button>
             `;
 
             let baseCard = prefill || {};
@@ -1843,22 +1881,24 @@ function formatCardText(jsonStr) {
             const locInp = body.querySelector('#ct-loc');
             const therInp = body.querySelector('#ct-ther');
 
+            if (editingItem && editingItem.title) titleInp.value = editingItem.title;
+
             const applyDataToInputs = (d) => {
-                if (d.diagnosis) diagInp.value = cleanVal(d.diagnosis);
-                if (d.mkb) mkbInp.value = cleanVal(d.mkb);
-                if (d.complaints) compInp.value = cleanVal(d.complaints);
-                if (d.anamnesis) anamInp.value = cleanVal(d.anamnesis);
-                if (d.localStatus) locInp.value = cleanVal(d.localStatus);
-                if (d.recommendedTherapy) therInp.value = cleanVal(d.recommendedTherapy);
+                if (d.diagnosis !== undefined) diagInp.value = cleanVal(d.diagnosis);
+                if (d.mkb !== undefined) mkbInp.value = cleanVal(d.mkb);
+                if (d.complaints !== undefined) compInp.value = cleanVal(d.complaints);
+                if (d.anamnesis !== undefined) anamInp.value = cleanVal(d.anamnesis);
+                if (d.localStatus !== undefined) locInp.value = cleanVal(d.localStatus);
+                if (d.recommendedTherapy !== undefined) therInp.value = cleanVal(d.recommendedTherapy);
                 if (!titleInp.value.trim()) titleInp.value = cleanVal(d.diagnosis || d.callReason || '').slice(0, 45);
             };
 
             if (prefill) applyDataToInputs(prefill);
 
             body.querySelector('#ct-pull-btn').onclick = () => {
-                if (!isInsideCard() || !window.lastLoadedApiCard) { showToast('Откройте карту для считывания!'); return; }
+                if (!isInsideCard()) { showToast('Откройте карту для считывания!'); return; }
                 scrapeCache();
-                const merged = Object.assign({}, window.lastLoadedApiCard, window.b103ScreenCache);
+                const merged = Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache);
                 const internal = parseServerCardToInternal(merged);
                 if (internal && internal.json_data) {
                     try {
@@ -1866,6 +1906,8 @@ function formatCardText(jsonStr) {
                         applyDataToInputs(baseCard);
                         showToast('📥 Данные подтянуты из карты!');
                     } catch (e) {}
+                } else {
+                    showToast('Не удалось считать данные карты');
                 }
             };
 
@@ -1895,22 +1937,160 @@ function formatCardText(jsonStr) {
                     recommendedTherapy: therInp.value.trim()
                 });
 
-                ['fio', 'birthDate', 'age', 'ageUnit', 'gender', 'address', 'apo', 'citizenship', 'settlement', 'street', 'building', 'flat', 'clarificationAddress', 'callReason'].forEach(k => delete finalData[k]);
-
-                saveCustomTemplate(title, JSON.stringify(finalData));
-                showToast(`📌 Шаблон «${title}» сохранен!`);
+                if (isEdit) {
+                    updateCustomTemplate(editingItem, title, JSON.stringify(finalData));
+                    showToast(`✏️ Шаблон «${title}» обновлён!`);
+                } else {
+                    saveCustomTemplate(title, JSON.stringify(finalData));
+                    showToast(`📌 Шаблон «${title}» сохранен!`);
+                }
                 close();
+                if (typeof onSaved === 'function') onSaved();
             };
         });
     }
 
+    function runCardAuditIos() {
+        if (!isInsideCard()) { showToast('Откройте карту для проверки!'); return; }
+        scrapeCache();
+        const raw = Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache);
+        const p = raw.patient || {};
+
+        const fio = cleanVal(p.fullName || raw.initialFullName);
+        const ageStr = cleanVal(raw.age);
+        const scrG = cleanVal(raw._screenGender).toUpperCase();
+        const gender = scrG.startsWith('М') ? 'МУЖЧИНА' : (scrG.startsWith('Ж') ? 'ЖЕНЩИНА' : (p.gender === true ? 'МУЖЧИНА' : (p.gender === false ? 'ЖЕНЩИНА' : '')));
+
+        const diagnosis = cleanVal(raw.diagnosis);
+        const mkbCode = cleanVal(raw.icd?.code);
+        const mkbName = cleanVal(raw.icd?.type || raw.icd?.name);
+        const mkbFull = mkbCode ? `[${mkbCode}] ${mkbName}`.trim() : '';
+
+        const complaints = cleanVal(raw.complaints);
+        const anamnesis = cleanVal(raw.anamnesis);
+        const localStatus = cleanVal(raw.localStatus);
+        const ecgBefore = cleanVal(raw.electrocardiogramBefore);
+
+        const generalState = cleanVal(raw.generalState);
+        const consciousness = cleanVal(raw.consciousness);
+        const position = cleanVal(raw.position).toUpperCase();
+        const speech = cleanVal(raw.speech).toUpperCase();
+        const gait = cleanVal(raw.gait).toUpperCase();
+        const abdomen = cleanVal(raw.stomachs).toLowerCase();
+        const glasgowStr = cleanVal(raw.comaScale);
+        const glasgow = parseInt(glasgowStr, 10);
+
+        const bp = cleanBpString(raw.arterialPressure);
+        const bpP = bp.split('/');
+        const sysBp = bpP[0] ? parseInt(bpP[0].trim(), 10) : NaN;
+        const diaBp = bpP[1] ? parseInt(bpP[1].trim(), 10) : NaN;
+        const pulseStr = cleanVal(raw.pulse);
+        const pulse = parseInt(pulseStr, 10);
+        const pulseExists = raw.pulseExists !== false;
+        const rrStr = cleanVal(raw.breathCount);
+        const tempStr = cleanVal(raw.skinTemp).replace(',', '.');
+        const tempVal = parseFloat(tempStr);
+        const satStr = cleanVal(raw.saturation1);
+        const satVal = parseInt(satStr, 10);
+        const consent = raw.acceptsSimpleMedProcedure === true;
+
+        const gsL = generalState.toLowerCase();
+        const csL = consciousness.toLowerCase();
+        const isDeath = gsL.includes('смерть') || diagnosis.toLowerCase().includes('биологическая смерть');
+        const isUnconscious = isDeath || csL.includes('кома') || csL.includes('сопор') || csL.includes('отсутств');
+
+        const errors = [], warnings = [];
+
+        if (!fio) warnings.push('Не указано ФИО пациента');
+        if (!ageStr) warnings.push('Не указан возраст пациента');
+        if (!gender) warnings.push('Не указан пол пациента');
+
+        if (!diagnosis) errors.push('Не заполнен «Предварительный диагноз»');
+        if (!mkbCode) errors.push('Не выбран «Код по МКБ-10»');
+        if (!complaints) errors.push(isUnconscious ? 'Пустое поле «Жалобы» (при коме/смерти укажите: контакт невозможен / жалоб нет ввиду тяжести состояния)' : 'Не заполнено поле «Жалобы»');
+        if (anamnesis.length < 15) errors.push('Не заполнен или слишком короткий «Анамнез заболевания»');
+        if (!generalState) errors.push('Не выбрано «Общее состояние»');
+        if (!consciousness) errors.push('Не выбрано «Сознание»');
+        if (!isUnconscious && !consent) errors.push('Не отмечено «Устное согласие на простое мед. вмешательство» (ДА)');
+
+        if (!isDeath) {
+            if (isNaN(sysBp) || isNaN(diaBp)) errors.push('Не заполнено АД (мм рт.ст.)');
+            if (pulseExists && !pulseStr) errors.push('Не заполнен пульс');
+            if (!rrStr) warnings.push('Не указана частота дыхания (ЧДД)');
+            if (!tempStr) warnings.push('Не указана температура тела (°C)');
+            if (!satStr) warnings.push('Не указана сатурация (SpO₂)');
+        }
+
+        if (isUnconscious) {
+            if (abdomen.includes('безболезн')) warnings.push('При коме/сопоре нельзя указывать «живот безболезненный» (нет речевого контакта)');
+            if (gait === 'СВОБОДНАЯ') warnings.push('При коме/сопоре стоит «Походка: СВОБОДНАЯ» — смените на «НЕ ОЦЕНИВАЛАСЬ»');
+            if (speech === 'СОХРАНЕНА') warnings.push('При коме/сопоре стоит «Речь: СОХРАНЕНА» — проверьте поле «Речь»');
+            if (position === 'АКТИВНОЕ') warnings.push('При коме/сопоре стоит «Положение: АКТИВНОЕ» — должно быть «ПАССИВНОЕ»');
+        }
+
+        if (!isNaN(glasgow)) {
+            if (csL.includes('ясное') && glasgow < 15) warnings.push(`Сознание «Ясное», но по шкале Глазго указано ${glasgow} б. (для ясного сознания — 15 б.)`);
+            if (csL.includes('кома') && glasgow > 8) warnings.push(`Сознание «Кома», но по шкале Глазго указано ${glasgow} б. (кома — ≤ 8 б.)`);
+        }
+
+        if (!isDeath) {
+            const blob = `${diagnosis} ${mkbFull} ${complaints}`.toLowerCase();
+            const cardioKw = ['окс', 'инфаркт', 'стенокард', 'фибрилл', 'аритм', 'тахикард', 'тэла', 'гипертонический криз', 'боль за грудин', 'боли за грудин', 'давящ', 'жгуч', '[i20', '[i21', '[i26', '[i47', '[i48', '[i49', '[i50'];
+            const highRisk = (!isNaN(sysBp) && sysBp >= 180) || (!isNaN(pulse) && (pulse >= 115 || (pulse >= 1 && pulse <= 50)));
+            if ((cardioKw.some(k => blob.includes(k)) || highRisk) && !ecgBefore) {
+                warnings.push('Кардио-профиль / высокое АД или ЧСС — не заполнено поле «ЭКГ до оказания помощи»');
+            }
+            const localKw = ['перелом', 'рана', 'ушиб', 'ожог', 'травм', 'чмт', 'сгм', 'онмк', 'инсульт', '[s', '[t2', '[t3', '[i61', '[i63'];
+            if (localKw.some(k => blob.includes(k)) && !localStatus) {
+                warnings.push('При травме / ОНМК рекомендуется подробно заполнить «Локальный статус»');
+            }
+            if (gsL.includes('удовлетворительн') && ((!isNaN(sysBp) && sysBp > 0 && sysBp < 90) || (!isNaN(satVal) && satVal > 0 && satVal < 92) || (!isNaN(tempVal) && tempVal >= 39.0))) {
+                warnings.push(`Выбрано «Удовлетворительное» состояние при критических витальных (АД ${bp} / SpO₂ ${satStr}% / Т° ${tempStr})`);
+            }
+        }
+
+        const bannerBg = errors.length ? '#C62828' : (warnings.length ? '#EF6C00' : '#2E7D32');
+        const bannerTxt = (!errors.length && !warnings.length)
+            ? '✅ Карта заполнена грамотно!\nПропусков и нестыковок не найдено.'
+            : (!errors.length ? `⚠️ Критичных пропусков нет\nНайдено рекомендаций: ${warnings.length}`
+                : `🔴 Найдены пропуски перед сдачей\nКритичных: ${errors.length} | Рекомендаций: ${warnings.length}`);
+
+        const summary = [
+            `👤 Пациент: ${fio || '—'} (${ageStr || '?'}, ${gender || '?'})`,
+            `📋 Диагноз: ${diagnosis || '—'}`,
+            `🏷️ МКБ-10: ${mkbFull || '—'}`,
+            `🩺 Состояние: ${generalState || '—'} | Сознание: ${consciousness || '—'} (ШКГ ${glasgowStr || '—'})`,
+            `❤️ АД: ${(!isNaN(sysBp) && !isNaN(diaBp)) ? `${sysBp}/${diaBp}` : '—'} | 💓 ЧСС: ${pulseStr || '—'} | 🫁 ЧДД: ${rrStr || '—'} | SpO₂: ${satStr || '—'}% | 🌡️ ${tempStr || '—'}°C`,
+            `✍️ Устное согласие: ${consent ? 'ДА ✅' : 'НЕТ / не отмечено'}`
+        ].join('\n');
+
+        openIosSheet('🩺 Аудит открытой карты', '#1565C0', (body, close) => {
+            body.innerHTML = `
+                <div style="padding:14px;border-radius:14px;background:${bannerBg};color:#fff;font-weight:700;font-size:14px;text-align:center;white-space:pre-line;margin-bottom:12px;">${escapeHtml(bannerTxt)}</div>
+                ${errors.length ? `<div style="font-size:12px;font-weight:700;color:#B71C1C;margin-bottom:6px;">🔴 КРИТИЧНЫЕ ПРОПУСКИ:</div>${errors.map(m => `<div style="padding:11px 13px;border-radius:11px;background:#FFEBEE;border:1px solid #EF9A9A;color:#263238;font-size:13px;margin-bottom:7px;">• ${escapeHtml(m)}</div>`).join('')}` : ''}
+                ${warnings.length ? `<div style="font-size:12px;font-weight:700;color:#E65100;margin:8px 0 6px 0;">⚠️ ЭКСПЕРТНЫЕ РЕКОМЕНДАЦИИ:</div>${warnings.map(m => `<div style="padding:11px 13px;border-radius:11px;background:#FFF8E1;border:1px solid #FFE082;color:#263238;font-size:13px;margin-bottom:7px;">• ${escapeHtml(m)}</div>`).join('')}` : ''}
+                <div style="font-size:12px;font-weight:700;color:#37474F;margin:10px 0 6px 0;">📊 СВОДКА СЧИТАННОЙ КАРТЫ:</div>
+                <div style="padding:12px 14px;border-radius:12px;background:#F5F7F8;border:1px solid #CFD8DC;color:#263238;font-size:12.8px;line-height:1.5;white-space:pre-line;user-select:text;margin-bottom:12px;">${escapeHtml(summary)}</div>
+                <div style="display:flex;gap:8px;">
+                    <button id="aud-recheck" style="flex:1;padding:13px;border:none;border-radius:12px;background:#1565C0;color:#fff;font-weight:700;font-size:13px;cursor:pointer;">🔄 ПЕРЕПРОВЕРИТЬ</button>
+                    <button id="aud-close" style="flex:0.7;padding:13px;border:none;border-radius:12px;background:#ECEFF1;color:#37474F;font-weight:700;font-size:13px;cursor:pointer;">ЗАКРЫТЬ</button>
+                </div>
+            `;
+            body.querySelector('#aud-recheck').onclick = () => { close(); runCardAuditIos(); };
+            body.querySelector('#aud-close').onclick = close;
+        });
+    }
+    
     function openAutofillSheet() {
         const currentFio = (findInputByKw(['фио'], true)?.value || '').trim();
         const exactCardJson = currentFio.length >= 3 ? getBestCardForPatient(currentFio) : null;
 
         openIosSheet('⚡ Автозаполнение и Помощник', '#0288D1', (body, close) => {
             body.innerHTML = `
-                <button id="ios-open-helper" style="width:100%;padding:13px;border:none;border-radius:12px;background:#00897B;color:#fff;font-weight:700;font-size:13.5px;margin-bottom:10px;cursor:pointer;">🧰 ОТКРЫТЬ ПОМОЩНИК СМП / ЭКГ / СЛР / ДОЗЫ</button>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button id="ios-open-helper" style="flex:1.15;padding:13px 8px;border:none;border-radius:12px;background:#00897B;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;">🧰 ПОМОЩНИК СМП</button>
+                    <button id="ios-open-audit" style="flex:1;padding:13px 8px;border:none;border-radius:12px;background:#1565C0;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;">🩺 АУДИТ КАРТЫ</button>
+                </div>
                 ${exactCardJson ? `<button id="ios-exact-fill" style="width:100%;padding:13px;border:none;border-radius:12px;background:#2E7D32;color:#fff;font-weight:700;font-size:13.5px;margin-bottom:10px;cursor:pointer;">👤 ЗАПОЛНИТЬ ИЗ АРХИВА: ${escapeHtml(currentFio.toUpperCase())}</button>` : ''}
                 <div style="display:flex;gap:8px;margin-bottom:10px;">
                     <button id="tab-tpl" style="flex:1;padding:11px;border:none;border-radius:11px;background:#00796B;color:#fff;font-weight:700;font-size:13px;">⭐ Образцы (${BUILTIN_TEMPLATES.length})</button>
@@ -1925,6 +2105,7 @@ function formatCardText(jsonStr) {
             const tTpl = body.querySelector('#tab-tpl'), tArch = body.querySelector('#tab-arch');
 
             body.querySelector('#ios-open-helper').onclick = () => { close(); openHelperMenuSheet(); };
+            body.querySelector('#ios-open-audit').onclick = () => { close(); runCardAuditIos(); };
             body.querySelector('#ios-create-tpl-btn').onclick = () => { close(); openCreateTemplateSheet(); };
             if (exactCardJson) {
                 body.querySelector('#ios-exact-fill').onclick = () => {
@@ -1983,8 +2164,9 @@ function formatCardText(jsonStr) {
     // 8. ПОМОЩНИК СМП (ВСЕ 11 МОДУЛЕЙ 1-В-1)
     // ==========================================
     function openHelperMenuSheet() {
-        openIosSheet('Помощник СМП (11 модулей)', '#0277BD', (body) => {
+        openIosSheet('Помощник СМП (12 модулей)', '#0277BD', (body) => {
             const tools = [
+                { t: '🩺 АУДИТ ОТКРЫТОЙ КАРТЫ (ПРОВЕРКА)', c: '#1565C0', fn: runCardAuditIos },
                 { t: '📈 КОНСТРУКТОР ЭКГ (В КАРТУ)', c: '#00897B', fn: openEcgBuilderIos },
                 { t: '⏱️ ТАЙМЕР И ПРОТОКОЛ СЛР', c: '#D32F2F', fn: openCprTimerIos },
                 { t: '📝 ФРАЗЫ: ОТКАЗЫ И ПРИМЕЧАНИЯ', c: '#5D4037', fn: openQuickPhrasesIos },

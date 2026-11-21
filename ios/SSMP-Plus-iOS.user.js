@@ -10,17 +10,34 @@
 // @grant        none
 // ==/UserScript==
 
-(function() {
+function ssmpPlusMain() {
     'use strict';
     if (!location.hostname.endsWith('103brest.by')) return;
+    try { if (document.documentElement) document.documentElement.dataset.ssmpPageRan = '1'; } catch (e) {}
+
+    window.__b103BootErrors = window.__b103BootErrors || [];
+    if (!window.__b103ErrHooked) {
+        window.__b103ErrHooked = true;
+        window.addEventListener('error', (ev) => {
+            window.__b103BootErrors.push(String(ev.message || ev.error || 'Error'));
+        });
+        window.addEventListener('unhandledrejection', (ev) => {
+            window.__b103BootErrors.push('Promise: ' + String(ev.reason?.message || ev.reason || 'Rejected'));
+        });
+    }
+
     if (typeof window.Notification === 'undefined') {
         function MockNotification(t, o) { this.title = t; this.options = o; this.close = function() {}; }
         MockNotification.permission = 'granted';
+        MockNotification.maxActions = 2;
         MockNotification.requestPermission = function(cb) {
             if (typeof cb === 'function') cb('granted');
             return Promise.resolve('granted');
         };
         window.Notification = MockNotification;
+    }
+    if (typeof window.PushManager === 'undefined') {
+        window.PushManager = function MockPushManager() {};
     }
     if (window.b103IosInitialized) return;
     window.b103IosInitialized = true;
@@ -3969,4 +3986,51 @@ function formatCardText(jsonStr) {
         updateVisibility();
     }
     setInterval(updateVisibility, 400);
+
+    setTimeout(() => {
+        const rootEl = document.getElementById('root') || document.getElementById('app');
+        const isWhiteScreen = !rootEl || (rootEl.innerText || '').trim().length < 5;
+        if (!isWhiteScreen) return;
+        const diag = document.createElement('div');
+        diag.id = 'b103-white-diag';
+        diag.style.cssText = 'position:fixed;left:10px;right:10px;bottom:70px;z-index:999999;background:#263238;color:#fff;padding:12px 14px;border-radius:12px;font-size:12px;line-height:1.45;font-family:-apple-system,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.35);';
+        const errs = (window.__b103BootErrors || []).slice(0, 4).join('\n• ');
+        const pageMode = document.documentElement?.dataset?.ssmpInjectMode || 'direct';
+        const hasNotif = typeof window.Notification;
+        diag.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>🩺 SSMP Plus диагностика белого экрана</b><button id="b103-diag-x" style="border:none;background:#455A64;color:#fff;border-radius:6px;padding:2px 8px;font-weight:700;">✕</button></div>`
+            + `<div>Режим: ${escapeHtml(pageMode)} | Notification: ${escapeHtml(hasNotif)} | readyState: ${escapeHtml(document.readyState)}</div>`
+            + `<div style="margin-top:4px;color:#FFCC80;white-space:pre-line;">${errs ? '• ' + escapeHtml(errs) : 'Ошибок JS не поймано (скрипт мог запуститься позже старта сайта или страница ещё грузится).'}</div>`;
+        document.body?.appendChild(diag);
+        const xBtn = document.getElementById('b103-diag-x');
+        if (xBtn) xBtn.onclick = () => diag.remove();
+        const watch = setInterval(() => {
+            const r = document.getElementById('root') || document.getElementById('app');
+            if (r && (r.innerText || '').trim().length >= 5) { diag.remove(); clearInterval(watch); }
+        }, 500);
+    }, 3500);
+}
+
+(function bootSsmpPlus() {
+    'use strict';
+    if (!location.hostname.endsWith('103brest.by')) return;
+    const root = document.documentElement;
+    if (root && root.dataset.ssmpBooted === '1') return;
+    if (root) root.dataset.ssmpBooted = '1';
+
+    try {
+        const parent = document.head || document.documentElement;
+        if (parent) {
+            const s = document.createElement('script');
+            s.textContent = '(' + ssmpPlusMain.toString() + ')();';
+            parent.prepend(s);
+            s.remove();
+        }
+    } catch (e) {}
+
+    if (root && root.dataset.ssmpPageRan === '1') {
+        root.dataset.ssmpInjectMode = 'page-script';
+    } else {
+        if (root) root.dataset.ssmpInjectMode = 'sandbox-fallback';
+        ssmpPlusMain();
+    }
 })();

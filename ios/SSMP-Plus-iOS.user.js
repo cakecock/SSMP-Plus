@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.8.0
+// @version      3.9.0
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, наборы препаратов с выпадающим каталогом сайта, история пациентов, МКБ-10, 12 модулей Помощника СМП (Аудит карты, ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -47,10 +47,28 @@ function ssmpPlusMain() {
     const MKB_STORE = 'mkb';
     const MED_CATALOG_KEY = 'b103_med_catalog_v1';
     const ROUTE_CATALOG_KEY = 'b103_route_catalog_v1';
+    const TEAM_KEY = 'b103_team_number_v1';
     function loadJsonStore(k, def) { try { const p = JSON.parse(localStorage.getItem(k) || 'null'); return Array.isArray(p) ? p : def; } catch (e) { return def; } }
     function saveJsonStore(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    function getTeamNumber() {
+        const fromCard = window.lastLoadedApiCard?.teamNumber;
+        if (fromCard) {
+            try { localStorage.setItem(TEAM_KEY, String(fromCard)); } catch (e) {}
+            return String(fromCard);
+        }
+        try {
+            const saved = localStorage.getItem(TEAM_KEY);
+            if (saved) return saved;
+        } catch (e) {}
+        return '34';
+    }
+    function saveTeamNumber(num) {
+        if (!num) return;
+        try { localStorage.setItem(TEAM_KEY, String(num)); } catch (e) {}
+    }
     window.b103MedCatalog = window.b103MedCatalog || loadJsonStore(MED_CATALOG_KEY, []);
     window.b103RouteCatalog = window.b103RouteCatalog || loadJsonStore(ROUTE_CATALOG_KEY, []);
+    window.b103AuthHeader = window.b103AuthHeader || '';
     window.lastLoadedApiCard = window.lastLoadedApiCard || null;
     window.activeAutofillData = window.activeAutofillData || null;
     window.b103ScreenCache = window.b103ScreenCache || {};
@@ -289,13 +307,17 @@ function ssmpPlusMain() {
         }
     }
 
-    function harvestCatalogFromPayload(data) {
-        if (!data || typeof data !== 'object') return;
-        const foundMeds = [], foundRoutes = [];
+    function extractMedsAndRoutesFromPayload(data, urlHint = '') {
+        const foundMeds = [];
+        const foundRoutes = [];
+        if (!data || typeof data !== 'object') return { foundMeds, foundRoutes };
+
+        const uL = String(urlHint || '').toLowerCase();
+
         if (Array.isArray(data.medications)) {
             for (const m of data.medications) {
                 if (!m || typeof m !== 'object') continue;
-                const medObj = m.medication;
+                const medObj = m.medication || m.medicine;
                 if (medObj && typeof medObj.name === 'string' && medObj.name.trim()) {
                     foundMeds.push({ n: medObj.name.trim(), u: cleanVal(medObj.type?.name || medObj.unitsType?.name) });
                 }
@@ -303,46 +325,76 @@ function ssmpPlusMain() {
                 if (rd) foundRoutes.push(rd);
             }
         }
-        const arr = Array.isArray(data) ? data : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
+
+        const arr = Array.isArray(data)
+            ? data
+            : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
+
         if (arr && arr.length > 0) {
-            const sample = arr.find(x => x && typeof x === 'object');
-            if (sample) {
-                if (typeof sample.name === 'string' && ('isMedicalSupplies' in sample || 'isNarcotic' in sample || 'isAccountable' in sample || 'activeIngredient' in sample)) {
-                    for (const x of arr) {
-                        if (x && typeof x.name === 'string' && x.name.trim() && x.active !== false) {
-                            foundMeds.push({ n: x.name.trim(), u: cleanVal(x.type?.name || x.unitsType?.name) });
-                        }
-                    }
+            const isBrigadeUrl = uL.includes('brigade-amount') || uL.includes('medication') || uL.includes('medicine');
+            const isRouteUrl = uL.includes('/dictionary/route');
+
+            for (const x of arr) {
+                if (!x || typeof x !== 'object') continue;
+
+                const med = (x.medicine && typeof x.medicine === 'object')
+                    ? x.medicine
+                    : ((x.medication && typeof x.medication === 'object') ? x.medication : null);
+
+                if (med && typeof med.name === 'string' && med.name.trim() && med.active !== false) {
+                    foundMeds.push({ n: med.name.trim(), u: cleanVal(med.type?.name || med.unitsType?.name) });
+                    continue;
                 }
-                if (typeof sample.display === 'string' && typeof sample.code === 'string') {
-                    for (const x of arr) {
-                        if (x && typeof x.display === 'string' && x.display.trim()) foundRoutes.push(x.display.trim());
-                    }
+
+                if (typeof x.name === 'string' && x.name.trim() && x.active !== false &&
+                    (isBrigadeUrl || 'isMedicalSupplies' in x || 'isNarcotic' in x || 'isAccountable' in x || 'activeIngredient' in x)) {
+                    foundMeds.push({ n: x.name.trim(), u: cleanVal(x.type?.name || x.unitsType?.name) });
+                }
+
+                if (typeof x.display === 'string' && x.display.trim() && (isRouteUrl || 'code' in x)) {
+                    foundRoutes.push(x.display.trim());
+                } else if (isRouteUrl && typeof x.type === 'string' && x.type.trim()) {
+                    foundRoutes.push(x.type.trim());
                 }
             }
         }
+
+        return { foundMeds, foundRoutes };
+    }
+
+    function harvestCatalogFromPayload(data, urlHint = '') {
+        const { foundMeds, foundRoutes } = extractMedsAndRoutesFromPayload(data, urlHint);
         if (foundMeds.length || foundRoutes.length) mergeMedCatalog(foundMeds, foundRoutes);
     }
 
     // ==========================================
-    // 2. ПЕРЕХВАТ API, ПАРСЕР СЕРВЕРА И FORMATTER
+    // 2. ПЕРЕХВАТ API, ТОКЕНА, СПРАВОЧНИКОВ И FORMATTER
     // ==========================================
-    const origFetch = window.fetch;
+    const origFetch = window.b103OrigFetch || window.fetch.bind(window);
+    window.b103OrigFetch = origFetch;
     window.fetch = async function(...args) {
         try {
             const opts = args[1] || {};
+            if (opts.headers) {
+                const h = opts.headers;
+                const auth = typeof h.get === 'function' ? (h.get('Authorization') || h.get('authorization')) : (h.Authorization || h.authorization);
+                if (auth) window.b103AuthHeader = String(auth);
+            }
             if (opts.body && typeof opts.body === 'string' && opts.body.includes('"patient"')) {
                 const s = JSON.parse(opts.body);
                 if (s && s.patient) window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, s);
             }
         } catch (e) {}
-        const res = await origFetch.apply(this, args);
+        const res = await origFetch.apply(window, args);
         try {
             const url = typeof args[0] === 'string' ? args[0] : (args[0] ? args[0].url : '');
+            const tm = url && url.match(/brigade-amount\/(\d+)/i);
+            if (tm) saveTeamNumber(tm[1]);
             if (url && url.includes('/api/')) {
                 res.clone().json().then(d => {
                     if (!d) return;
-                    harvestCatalogFromPayload(d);
+                    if (d.teamNumber) saveTeamNumber(d.teamNumber);
+                    harvestCatalogFromPayload(d, url);
                     if (url.includes('/api/card/') && !url.includes('/short') && d.patient) {
                         if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                             window.activeAutofillData = null; window.b103ScreenCache = {};
@@ -356,8 +408,24 @@ function ssmpPlusMain() {
     };
 
     const origOpen = XMLHttpRequest.prototype.open;
+    const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
     const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(m, u) { this._url = u; return origOpen.apply(this, arguments); };
+    XMLHttpRequest.prototype.open = function(m, u) {
+        this._url = u;
+        try {
+            const tm = u && String(u).match(/brigade-amount\/(\d+)/i);
+            if (tm) saveTeamNumber(tm[1]);
+        } catch (e) {}
+        return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+        try {
+            if (k && String(k).toLowerCase() === 'authorization' && v) {
+                window.b103AuthHeader = String(v);
+            }
+        } catch (e) {}
+        return origSetHeader.apply(this, arguments);
+    };
     XMLHttpRequest.prototype.send = function(body) {
         try {
             if (body && typeof body === 'string' && body.includes('"patient"')) {
@@ -370,7 +438,8 @@ function ssmpPlusMain() {
                 if (this._url && this._url.includes('/api/') && this.responseText && (this.responseText[0] === '{' || this.responseText[0] === '[')) {
                     const d = JSON.parse(this.responseText);
                     if (!d) return;
-                    harvestCatalogFromPayload(d);
+                    if (d.teamNumber) saveTeamNumber(d.teamNumber);
+                    harvestCatalogFromPayload(d, this._url);
                     if (this._url.includes('/api/card/') && !this._url.includes('/short') && d.patient) {
                         if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                             window.activeAutofillData = null; window.b103ScreenCache = {};
@@ -381,6 +450,69 @@ function ssmpPlusMain() {
             } catch (e) {}
         });
         return origSend.apply(this, arguments);
+    };
+
+    function buildAuthHeaders() {
+        const headers = { 'Accept': 'application/json' };
+        if (window.b103AuthHeader) {
+            headers['Authorization'] = window.b103AuthHeader;
+        } else {
+            try {
+                for (const key of ['token', 'accessToken', 'access_token', 'jwt', 'authToken']) {
+                    const v = localStorage.getItem(key) || sessionStorage.getItem(key);
+                    if (v && v.length > 20) {
+                        headers['Authorization'] = v.startsWith('Bearer ') ? v : ('Bearer ' + v.replace(/^"|"$/g, ''));
+                        break;
+                    }
+                }
+            } catch (e) {}
+        }
+        return headers;
+    }
+
+    window.searchMedsOnline = async function(query) {
+        const q = String(query || '').trim();
+        const team = getTeamNumber();
+        try {
+            const url = `/ssmp_proxy_api/ssmp/api/brigade-amount/${encodeURIComponent(team)}?search=${encodeURIComponent(q)}&sort=zerosLast%2Casc&sort=medicine.name%2Casc&medicine.active=true&size=60`;
+            const resp = await origFetch(url, { credentials: 'include', headers: buildAuthHeaders() });
+            if (resp.ok) {
+                const data = await resp.json();
+                const { foundMeds } = extractMedsAndRoutesFromPayload(data, url);
+                if (foundMeds.length > 0) mergeMedCatalog(foundMeds, []);
+                const seen = new Set();
+                return foundMeds.filter(m => {
+                    const k = m.n.toLowerCase();
+                    if (seen.has(k)) return false;
+                    seen.add(k); return true;
+                });
+            }
+        } catch (e) {}
+        return [];
+    };
+
+    window.syncFullMedCatalog = async function() {
+        const team = getTeamNumber();
+        let total = 0;
+        try {
+            const medUrl = `/ssmp_proxy_api/ssmp/api/brigade-amount/${encodeURIComponent(team)}?search=&sort=zerosLast%2Casc&sort=medicine.name%2Casc&medicine.active=true&size=500`;
+            const r1 = await origFetch(medUrl, { credentials: 'include', headers: buildAuthHeaders() });
+            if (r1.ok) {
+                const d1 = await r1.json();
+                const { foundMeds } = extractMedsAndRoutesFromPayload(d1, medUrl);
+                if (foundMeds.length) { mergeMedCatalog(foundMeds, []); total = foundMeds.length; }
+            }
+        } catch (e) {}
+        try {
+            const rtUrl = `/ssmp_proxy_api/ssmp/api/dictionary/route?search=&size=100`;
+            const r2 = await origFetch(rtUrl, { credentials: 'include', headers: buildAuthHeaders() });
+            if (r2.ok) {
+                const d2 = await r2.json();
+                const { foundRoutes } = extractMedsAndRoutesFromPayload(d2, rtUrl);
+                if (foundRoutes.length) mergeMedCatalog([], foundRoutes);
+            }
+        } catch (e) {}
+        return total;
     };
 
     function cleanBpString(raw) {
@@ -641,7 +773,7 @@ function formatCardText(jsonStr) {
     function saveCardToLocalArchive() {
         if (!isInsideCard()) { showToast('Откройте карту для сохранения'); return; }
         scrapeCache();
-        const merged = Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache););
+        const merged = Object.assign({}, window.lastLoadedApiCard || {}, window.b103ScreenCache);
         const entry = parseServerCardToInternal(merged);
         if (!entry) { showToast('Не удалось определить ФИО пациента'); return; }
         const db = loadDb();
@@ -1623,11 +1755,7 @@ function formatCardText(jsonStr) {
 };
     window.applyMedicationsPreset = async function(jsonStr) {
         if (window.b103IsApplying) return;
-        const sec = findMedicationsSection();
-        if (!sec) { showToast('Раздел «Лекарственные средства» не найден на экране'); return; }
-        const addBtn = Array.from(sec.querySelectorAll('button'))
-            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ');
-        if (!addBtn) { showToast('Кнопка «Добавить» в препаратах не найдена'); return; }
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
         let items = [];
         try {
@@ -1636,6 +1764,24 @@ function formatCardText(jsonStr) {
         } catch (e) { return; }
         items = items.filter(it => it && cleanVal(it.name));
         if (!items.length) return;
+
+        let sec = findMedicationsSection();
+        let addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+
+        if (!addBtn || addBtn.offsetParent === null) {
+            const helpTab = Array.from(document.querySelectorAll('[role="tab"], button'))
+                .find(b => b.getBoundingClientRect().top < 150 && (b.innerText || '').toUpperCase().includes('МЕДИЦИНСКАЯ ПОМОЩЬ'));
+            if (helpTab) {
+                helpTab.click();
+                await sleep(320);
+                sec = findMedicationsSection();
+                addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+                    .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+            }
+        }
+
+        if (!addBtn) { showToast('Перейдите на вкладку «Медицинская помощь» и повторите'); return; }
 
         window.b103IsApplying = true;
         const fillBtn = document.getElementById('btn-fill-db');
@@ -1649,12 +1795,10 @@ function formatCardText(jsonStr) {
             document.head.appendChild(hideStyle);
         }
 
-        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х');
+        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х').replace(/\s+/g, ' ');
         const setReactVal = (inp, val) => {
             if (!inp) return;
             const str = String(val ?? ''), prev = String(inp.value ?? '');
-            if (prev === str) return;
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (setter) setter.call(inp, str); else inp.value = str;
             if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
@@ -1669,40 +1813,49 @@ function formatCardText(jsonStr) {
             return r.width > 0 && r.height > 0;
         };
 
-        async function tryPickOnce(autoRoot, queryText, fullTargetNorm) {
+        async function tryPickOnce(autoRoot, queryText, fullTargetNorm, requireStrongMatch = false) {
             const inp = autoRoot?.querySelector('input');
-            if (!inp) return false;
+            if (!inp || !queryText || queryText.length < 2) return false;
             const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
-            if (inp.value && clearBtn) { clearBtn.click(); await sleep(45); }
+            if (inp.value && clearBtn) { clearBtn.click(); await sleep(60); }
             setReactVal(inp, queryText);
-            await sleep(140);
-            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) popupBtn.click();
+            await sleep(360);
 
             let targetOpt = null;
-            for (let w = 0; w < 12; w++) {
+            let noOptTicks = 0;
+            for (let w = 0; w < 32; w++) {
                 const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
+                if (!popper && w === 4 && popupBtn) popupBtn.click();
                 if (popper) {
+                    const popText = cleanVal(popper.innerText).toLowerCase();
+                    if (popText.includes('нет вариантов') || popText.includes('no options')) {
+                        noOptTicks++;
+                        if (noOptTicks >= 3) break;
+                    }
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
-                        .filter(o => { const tx = cleanVal(o.innerText).toLowerCase(); return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов'); });
+                        .filter(o => {
+                            const tx = cleanVal(o.innerText).toLowerCase();
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов') && !tx.includes('no options');
+                        });
                     if (opts.length > 0) {
                         const qNorm = normX(queryText);
                         targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
                             || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
                             || opts.find(o => normX(o.innerText).includes(fullTargetNorm))
-                            || opts.find(o => normX(o.innerText).includes(qNorm))
-                            || opts[0];
+                            || (requireStrongMatch ? null : (opts.find(o => normX(o.innerText).includes(qNorm)) || opts[0]));
                         if (targetOpt) break;
+                        if (requireStrongMatch) break;
                     }
                 }
-                await sleep(75);
+                await sleep(100);
             }
             if (targetOpt) {
                 targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 targetOpt.click();
-                await sleep(90);
+                await sleep(120);
                 return true;
             }
             return false;
@@ -1710,13 +1863,16 @@ function formatCardText(jsonStr) {
 
         async function pickAutocomplete(autoRoot, searchStr) {
             const cleanTarget = cleanVal(searchStr);
-            if (!autoRoot || !cleanTarget) return false;
+            if (!autoRoot || cleanTarget.length < 2) return false;
             const fullNorm = normX(cleanTarget);
-            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm)) return true;
+            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm, false)) return true;
             const swapped = /[xX]/.test(cleanTarget) ? cleanTarget.replace(/[xX]/g, 'х') : cleanTarget.replace(/[хХ]/g, 'x');
-            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm)) return true;
-            const firstWord = cleanTarget.split(/\s+/)[0];
-            if (firstWord && firstWord.length >= 3 && firstWord !== cleanTarget) return await tryPickOnce(autoRoot, firstWord, fullNorm);
+            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm, false)) return true;
+            const firstWord = cleanTarget.split(/[\s,/%]+/)[0];
+            if (firstWord && firstWord.length >= 2 && firstWord !== cleanTarget) {
+                if (await tryPickOnce(autoRoot, firstWord, fullNorm, true)) return true;
+                if (firstWord.length >= 4 && await tryPickOnce(autoRoot, firstWord.slice(0, 4), fullNorm, true)) return true;
+            }
             return false;
         }
 
@@ -1739,7 +1895,7 @@ function formatCardText(jsonStr) {
 
                 addBtn.click();
                 let dlg = null;
-                for (let w = 0; w < 15; w++) { dlg = findOpenMedDialog(); if (dlg) break; await sleep(60); }
+                for (let w = 0; w < 20; w++) { dlg = findOpenMedDialog(); if (dlg) break; await sleep(60); }
                 if (!dlg) { failed++; continue; }
 
                 const autos = Array.from(dlg.querySelectorAll('.MuiAutocomplete-root'));
@@ -1749,11 +1905,11 @@ function formatCardText(jsonStr) {
                 const pickedMed = await pickAutocomplete(medAuto, itemName);
                 if (!pickedMed) {
                     Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
-                    await sleep(140); failed++; continue;
+                    await sleep(160); failed++; continue;
                 }
 
                 setReactVal(dlg.querySelector('input[name="number"]'), cleanQtyNum(item.qty) || '1');
-                await sleep(50);
+                await sleep(60);
 
                 const routeStr = cleanVal(item.route);
                 if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
@@ -1767,17 +1923,17 @@ function formatCardText(jsonStr) {
                 if (saveBtn && !saveBtn.disabled) {
                     saveBtn.click();
                     let closed = false;
-                    for (let w = 0; w < 20; w++) { await sleep(90); if (!findOpenMedDialog()) { closed = true; break; } }
+                    for (let w = 0; w < 25; w++) { await sleep(90); if (!findOpenMedDialog()) { closed = true; break; } }
                     if (closed) { added++; existingNames.add(normX(itemName)); }
                     else {
                         Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
-                        await sleep(120); failed++;
+                        await sleep(140); failed++;
                     }
                 } else {
                     Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
-                    await sleep(120); failed++;
+                    await sleep(140); failed++;
                 }
-                await sleep(100);
+                await sleep(120);
             }
             showToast(`💊 Добавлено: ${added}${skipped ? `, уже в карте: ${skipped}` : ''}${failed ? `, не найдено: ${failed}` : ''}`);
         } catch (e) { console.error(e); } finally {
@@ -2484,7 +2640,6 @@ function formatCardText(jsonStr) {
         try { if (prefillJson) items = (JSON.parse(prefillJson).items || []).slice(); } catch (e) {}
 
         openIosSheet(isEdit ? '✏️ Редактировать набор препаратов' : '💊 Новый набор препаратов', '#6A1B9A', (body, close) => {
-            const catCount = (window.b103MedCatalog || []).length;
             body.innerHTML = `
                 <button id="cm-pull" style="width:100%;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:12.5px;margin-bottom:10px;cursor:pointer;">📥 ПОДТЯНУТЬ ПРЕПАРАТЫ ИЗ ОТКРЫТОЙ КАРТЫ</button>
                 <div style="font-size:12px;font-weight:700;color:#4A148C;margin-bottom:4px;">Название набора (обязательно):</div>
@@ -2495,12 +2650,13 @@ function formatCardText(jsonStr) {
 
                 <div style="padding:12px;border-radius:12px;background:#F5F7F8;border:1px solid #CFD8DC;margin-bottom:12px;">
                     <div style="font-size:12.5px;font-weight:700;color:#263238;margin-bottom:3px;">➕ Добавить позицию в набор:</div>
-                    <div style="font-size:11.5px;color:#546E7A;margin-bottom:8px;">${catCount ? `📚 Справочник сайта загружен (${catCount} поз.) — выберите из списка ниже` : '💡 Откройте 1 раз окно «Добавить» на сайте, чтобы кэшировать весь справочник препаратов'}</div>
+                    <div id="cm-cat-status" style="font-size:11.5px;color:#546E7A;margin-bottom:8px;"></div>
                     <div style="display:flex;gap:6px;margin-bottom:6px;">
-                        <input id="cm-name" type="text" placeholder="Начните ввод препарата (или ▼)..." style="flex:1;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
-                        <button id="cm-drop" style="padding:0 14px;border:1px solid #CE93D8;border-radius:9px;background:#EDE7F6;color:#4A148C;font-weight:700;font-size:13px;cursor:pointer;">▼</button>
+                        <input id="cm-name" type="text" placeholder="Введите 2+ буквы для поиска с сервера..." style="flex:1;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
+                        <button id="cm-drop" title="Показать весь кэш" style="padding:0 12px;border:1px solid #CE93D8;border-radius:9px;background:#EDE7F6;color:#4A148C;font-weight:700;font-size:13px;cursor:pointer;">▼</button>
+                        <button id="cm-sync" title="Загрузить весь справочник с сервера" style="padding:0 11px;border:1px solid #90CAF9;border-radius:9px;background:#E3F2FD;color:#1565C0;font-weight:700;font-size:13px;cursor:pointer;">🔄</button>
                     </div>
-                    <div id="cm-sug" style="display:none;flex-direction:column;gap:4px;margin-bottom:8px;max-height:180px;overflow-y:auto;"></div>
+                    <div id="cm-sug" style="display:none;flex-direction:column;gap:4px;margin-bottom:8px;max-height:190px;overflow-y:auto;"></div>
                     <div style="display:flex;gap:6px;margin-bottom:6px;">
                         <input id="cm-qty" type="number" step="0.5" value="1" placeholder="Кол-во" style="width:82px;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
                         <input id="cm-route" type="text" placeholder="Путь введения (или пусто)" style="flex:1;padding:10px;border-radius:9px;border:1px solid #B0BEC5;background:#fff;color:#111;font-size:13px;outline:none;">
@@ -2515,6 +2671,7 @@ function formatCardText(jsonStr) {
 
             const titleInp = body.querySelector('#cm-title');
             const itemsBox = body.querySelector('#cm-items');
+            const catStatus = body.querySelector('#cm-cat-status');
             const nameInp = body.querySelector('#cm-name');
             const qtyInp = body.querySelector('#cm-qty');
             const routeInp = body.querySelector('#cm-route');
@@ -2523,29 +2680,43 @@ function formatCardText(jsonStr) {
             const rChips = body.querySelector('#cm-rchips');
 
             const normX = (s) => String(s || '').trim().toLowerCase().replace(/x/g, 'х');
+            let searchTimer = null;
+            let searchSeq = 0;
 
-            const routesMerged = Array.from(new Set([
-                'путь введения не определен', 'внутривенный', 'внутримышечный', 'подкожный', 'внутрь', 'сублингвальный', 'ингаляционный',
-                ...(window.b103RouteCatalog || [])
-            ]));
-            routesMerged.forEach(full => {
-                const short = full.includes('не определен') ? 'не определен' : full.startsWith('внутривенн') ? 'в/в' : full.startsWith('внутримышечн') ? 'в/м' : full.startsWith('подкожн') ? 'п/к' : full;
-                const sp = document.createElement('span');
-                sp.style.cssText = 'white-space:nowrap;padding:6px 10px;border-radius:10px;background:#EDE7F6;color:#4A148C;font-size:11.5px;cursor:pointer;';
-                sp.innerText = short;
-                sp.onclick = () => { routeInp.value = full; };
-                rChips.appendChild(sp);
-            });
+            function updateCatStatus(extra = '') {
+                const cnt = (window.b103MedCatalog || []).length;
+                catStatus.innerText = extra || (cnt
+                    ? `📚 Справочник сайта: ${cnt} поз. (бригада ${getTeamNumber()}, живой поиск)`
+                    : `🌐 Живой поиск с сервера (бригада ${getTeamNumber()}) — начните ввод или нажмите 🔄`);
+            }
 
-            function renderSug(forceOpen = false) {
-                const cat = window.b103MedCatalog || [];
-                const q = normX(nameInp.value);
-                if (!cat.length || (!forceOpen && !q)) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; return; }
-                const matches = cat.filter(m => !q || normX(m.n).includes(q)).slice(0, 14);
-                if (!matches.length) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; return; }
+            function renderRouteChips() {
+                rChips.innerHTML = '';
+                const routesMerged = Array.from(new Set([
+                    'путь введения не определен', 'внутривенный', 'внутримышечный', 'подкожный', 'внутрь', 'сублингвальный', 'ингаляционный',
+                    ...(window.b103RouteCatalog || [])
+                ]));
+                routesMerged.forEach(full => {
+                    const short = full.includes('не определен') ? 'не определен' : full.startsWith('внутривенн') ? 'в/в' : full.startsWith('внутримышечн') ? 'в/м' : full.startsWith('подкожн') ? 'п/к' : full;
+                    const sp = document.createElement('span');
+                    sp.style.cssText = 'white-space:nowrap;padding:6px 10px;border-radius:10px;background:#EDE7F6;color:#4A148C;font-size:11.5px;cursor:pointer;';
+                    sp.innerText = short;
+                    sp.onclick = () => { routeInp.value = full; };
+                    rChips.appendChild(sp);
+                });
+            }
+
+            function drawSugList(matches, loadingNote = false) {
                 sugBox.innerHTML = '';
+                if (!matches.length && !loadingNote) { sugBox.style.display = 'none'; return; }
                 sugBox.style.display = 'flex';
-                matches.forEach(m => {
+                if (loadingNote) {
+                    const ld = document.createElement('div');
+                    ld.style.cssText = 'padding:7px 10px;font-size:12px;color:#1565C0;';
+                    ld.innerText = '⏳ Поиск на сервере СМП...';
+                    sugBox.appendChild(ld);
+                }
+                matches.slice(0, 25).forEach(m => {
                     const el = document.createElement('div');
                     el.style.cssText = 'padding:9px 11px;border-radius:8px;background:#fff;border:1px solid #CE93D8;font-size:12.8px;color:#263238;cursor:pointer;';
                     el.innerText = m.u ? `${m.n}  [${m.u}]` : m.n;
@@ -2559,17 +2730,63 @@ function formatCardText(jsonStr) {
                 });
             }
 
+            function getLocalMatches(qNorm) {
+                const cat = window.b103MedCatalog || [];
+                return cat.filter(m => !qNorm || normX(m.n).includes(qNorm));
+            }
+
+            function renderSug(forceOpen = false) {
+                const rawQ = nameInp.value.trim();
+                const q = normX(rawQ);
+                clearTimeout(searchTimer);
+
+                if (!forceOpen && !q) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; return; }
+                const local = getLocalMatches(q);
+                const shouldQueryServer = rawQ.length >= 2;
+                drawSugList(local, shouldQueryServer && local.length < 5);
+
+                if (shouldQueryServer) {
+                    const mySeq = ++searchSeq;
+                    searchTimer = setTimeout(async () => {
+                        const remote = await window.searchMedsOnline(rawQ);
+                        if (mySeq !== searchSeq || !nameInp.isConnected) return;
+                        const seen = new Set();
+                        const merged = [...remote, ...getLocalMatches(normX(nameInp.value))].filter(m => {
+                            const k = m.n.toLowerCase();
+                            if (seen.has(k)) return false;
+                            seen.add(k); return true;
+                        });
+                        updateCatStatus();
+                        drawSugList(merged, false);
+                    }, 260);
+                }
+            }
+
             nameInp.oninput = () => renderSug(false);
-            body.querySelector('#cm-drop').onclick = () => {
-                if (!(window.b103MedCatalog || []).length) { showToast('Справочник ещё пуст — откройте 1 раз «Добавить» на сайте'); return; }
-                if (sugBox.style.display === 'flex') sugBox.style.display = 'none';
-                else renderSug(true);
+            body.querySelector('#cm-drop').onclick = async () => {
+                if (sugBox.style.display === 'flex') { sugBox.style.display = 'none'; return; }
+                if (!(window.b103MedCatalog || []).length) {
+                    updateCatStatus('⏳ Загружаю справочник с сервера...');
+                    await window.syncFullMedCatalog();
+                    updateCatStatus();
+                    renderRouteChips();
+                }
+                const list = getLocalMatches(normX(nameInp.value));
+                if (!list.length) { showToast('Справочник пуст — войдите на сайт и нажмите 🔄'); return; }
+                drawSugList(list, false);
+            };
+            body.querySelector('#cm-sync').onclick = async () => {
+                updateCatStatus('⏳ Синхронизация справочника бригады...');
+                const n = await window.syncFullMedCatalog();
+                updateCatStatus();
+                renderRouteChips();
+                showToast(n ? `📚 Загружено позиций: ${n}` : 'Не удалось загрузить — проверьте авторизацию на сайте');
             };
 
             function renderItems() {
                 itemsBox.innerHTML = '';
                 if (!items.length) {
-                    itemsBox.innerHTML = '<div style="padding:11px 13px;border-radius:10px;background:#FAFAFA;border:1px solid #E0E0E0;color:#607D8B;font-size:12.5px;">Пока пусто. Подтяните из открытой карты или выберите из списка ниже.</div>';
+                    itemsBox.innerHTML = '<div style="padding:11px 13px;border-radius:10px;background:#FAFAFA;border:1px solid #E0E0E0;color:#607D8B;font-size:12.5px;">Пока пусто. Подтяните из открытой карты или найдите препарат ниже.</div>';
                     return;
                 }
                 items.forEach((it, idx) => {
@@ -2616,7 +2833,7 @@ function formatCardText(jsonStr) {
                 let pulled = scrapeScreenMedications();
                 if (!pulled.length && Array.isArray(window.lastLoadedApiCard?.medications)) {
                     pulled = window.lastLoadedApiCard.medications.map(m => {
-                        const nm = cleanVal(m?.medication?.name || m?.medication || m?.name);
+                        const nm = cleanVal(m?.medication?.name || m?.medicine?.name || m?.medication || m?.name);
                         if (!nm) return null;
                         return { name: nm, qty: cleanQtyNum(m.number || m.count || '1') || '1', route: cleanVal(m?.routeDict?.display), note: cleanVal(m?.route) };
                     }).filter(Boolean);
@@ -2643,7 +2860,17 @@ function formatCardText(jsonStr) {
                 if (typeof onSaved === 'function') onSaved();
             };
 
+            updateCatStatus();
+            renderRouteChips();
             renderItems();
+
+            if ((window.b103MedCatalog || []).length < 50) {
+                window.syncFullMedCatalog().then(() => {
+                    if (!catStatus.isConnected) return;
+                    updateCatStatus();
+                    renderRouteChips();
+                });
+            }
         });
     }
 

@@ -42,6 +42,10 @@ class MainActivity : AppCompatActivity() {
     private val prefsName = "ssmp_plus_prefs"
     private val keyMedCatalog = "med_catalog_json"
 
+    private var activeMedSearchReqId: String = ""
+    private var onMedSearchCallback: ((List<Pair<String, String>>) -> Unit)? = null
+    private var onMedCatalogUpdated: ((String) -> Unit)? = null
+
     private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -97,6 +101,20 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {}
         return meds to routes
+    }
+
+    private fun parseMedItemsArray(raw: String): List<Pair<String, String>> {
+        val out = mutableListOf<Pair<String, String>>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val it = arr.optJSONObject(i) ?: continue
+                val n = it.optString("n").trim()
+                val u = it.optString("u").trim()
+                if (n.isNotEmpty()) out.add(n to u)
+            }
+        } catch (_: Exception) {}
+        return out
     }
 
     private fun loadCachedMedCatalog(): Pair<List<Pair<String, String>>, List<String>> {
@@ -509,7 +527,7 @@ class MainActivity : AppCompatActivity() {
         }
         lay.addView(itemsListLay)
 
-        // Форма добавления одной позиции в набор + живой выпадающий список из базы сайта
+        // Форма добавления одной позиции в набор + живой серверный поиск по базе сайта
         val addBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 16, 20, 16)
@@ -533,16 +551,21 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 4 }
         }
         val nameInp = EditText(this).apply {
-            hint = "Начните ввод препарата (или ▼)..."
+            hint = "Введите 2+ буквы для поиска с сервера..."
             setPadding(20, 14, 20, 14)
             MedicalTools.styleEditText(this, "#FFFFFF", "#B0BEC5", 10f)
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 6 }
         }
         val dropToggleBtn = TextView(this).apply {
             text = "▼"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#4A148C")); gravity = Gravity.CENTER
-            setPadding(18, 14, 18, 14); background = roundBg("#EDE7F6", 10f, "#CE93D8")
+            setPadding(16, 14, 16, 14); background = roundBg("#EDE7F6", 10f, "#CE93D8")
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
         }
-        nameRow.addView(nameInp); nameRow.addView(dropToggleBtn)
+        val syncCatalogBtn = TextView(this).apply {
+            text = "🔄"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER
+            setPadding(14, 14, 14, 14); background = roundBg("#E3F2FD", 10f, "#90CAF9")
+        }
+        nameRow.addView(nameInp); nameRow.addView(dropToggleBtn); nameRow.addView(syncCatalogBtn)
         addBox.addView(nameRow)
 
         val suggestionsLay = LinearLayout(this).apply {
@@ -595,26 +618,23 @@ class MainActivity : AppCompatActivity() {
 
         fun normX(s: String) = s.trim().lowercase().replace('x', 'х')
         var suppressSug = false
+        var searchJob: Job? = null
 
-        fun renderSuggestions(forceOpen: Boolean = false) {
+        fun drawSuggestionsList(matches: List<Pair<String, String>>, loadingNote: Boolean = false) {
             suggestionsLay.removeAllViews()
-            if (suppressSug || catalogMeds.isEmpty()) {
-                suggestionsLay.visibility = View.GONE
-                return
-            }
-            val rawQ = nameInp.text.toString().trim()
-            if (!forceOpen && rawQ.isEmpty()) {
-                suggestionsLay.visibility = View.GONE
-                return
-            }
-            val qn = normX(rawQ)
-            val matches = catalogMeds.filter { (n, _) -> qn.isEmpty() || normX(n).contains(qn) }.take(12)
-            if (matches.isEmpty()) {
+            if (matches.isEmpty() && !loadingNote) {
                 suggestionsLay.visibility = View.GONE
                 return
             }
             suggestionsLay.visibility = View.VISIBLE
-            matches.forEach { (medName, unit) ->
+            if (loadingNote) {
+                suggestionsLay.addView(TextView(this).apply {
+                    text = "⏳ Поиск на сервере СМП..."
+                    textSize = 12f; setTextColor(Color.parseColor("#1565C0"))
+                    setPadding(10, 6, 10, 8)
+                })
+            }
+            matches.take(25).forEach { (medName, unit) ->
                 val display = if (unit.isNotEmpty()) "$medName  [$unit]" else medName
                 suggestionsLay.addView(TextView(this).apply {
                     text = display; textSize = 13f; setTextColor(Color.parseColor("#263238"))
@@ -630,6 +650,46 @@ class MainActivity : AppCompatActivity() {
                         qtyInp.selectAll()
                     }
                 })
+            }
+        }
+
+        fun getLocalMatches(qn: String): List<Pair<String, String>> =
+            catalogMeds.filter { (n, _) -> qn.isEmpty() || normX(n).contains(qn) }
+
+        fun renderSuggestions(forceOpen: Boolean = false) {
+            searchJob?.cancel()
+            if (suppressSug) {
+                suggestionsLay.visibility = View.GONE
+                return
+            }
+            val rawQ = nameInp.text.toString().trim()
+            if (!forceOpen && rawQ.isEmpty()) {
+                suggestionsLay.visibility = View.GONE
+                return
+            }
+            val qn = normX(rawQ)
+            val local = getLocalMatches(qn)
+            val shouldQueryServer = rawQ.length >= 2
+            drawSuggestionsList(local, shouldQueryServer && local.size < 5)
+
+            if (shouldQueryServer) {
+                searchJob = lifecycleScope.launch {
+                    delay(260)
+                    val reqId = System.currentTimeMillis().toString()
+                    activeMedSearchReqId = reqId
+                    onMedSearchCallback = { remote ->
+                        if (bs.isShowing && !suppressSug) {
+                            val seen = HashSet<String>()
+                            val curLocal = getLocalMatches(normX(nameInp.text.toString()))
+                            val merged = (remote + curLocal).filter { seen.add(it.first.lowercase()) }
+                            drawSuggestionsList(merged, false)
+                        }
+                    }
+                    webView.evaluateJavascript(
+                        "window.searchMedsOnline && window.searchMedsOnline(${JSONObject.quote(rawQ)}, ${JSONObject.quote(reqId)});",
+                        null
+                    )
+                }
             }
         }
 
@@ -662,13 +722,46 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        fun updateCatalogStatus() {
-            catalogStatusTv.text = if (catalogMeds.isNotEmpty()) {
-                "📚 Справочник сайта загружен (${catalogMeds.size} поз.) — выберите из списка ниже"
+        fun updateCatalogStatus(customText: String? = null) {
+            catalogStatusTv.text = customText ?: if (catalogMeds.isNotEmpty()) {
+                "📚 Справочник сайта: ${catalogMeds.size} поз. (живой поиск с сервера)"
             } else {
-                "💡 Откройте 1 раз окно «Добавить» на сайте, чтобы кэшировать весь справочник препаратов"
+                "🌐 Живой поиск с сервера — начните ввод или нажмите 🔄"
             }
             renderRouteChips()
+        }
+
+        fun triggerCatalogSync(withToast: Boolean) {
+            if (withToast) updateCatalogStatus("⏳ Синхронизация справочника бригады...")
+            val notifyJs = if (withToast) {
+                "window.AndroidBridge && window.AndroidBridge.notifyUser(n ? ('📚 Загружено позиций: ' + n) : 'Не удалось загрузить — проверьте авторизацию на сайте');"
+            } else ""
+            val js = """
+                (async function(){
+                    var n = window.syncFullMedCatalog ? await window.syncFullMedCatalog() : 0;
+                    if (window.AndroidBridge && window.AndroidBridge.cacheMedCatalog && window.getMedCatalogJson) {
+                        window.AndroidBridge.cacheMedCatalog(window.getMedCatalogJson());
+                    }
+                    $notifyJs
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+        }
+
+        onMedCatalogUpdated = { rawCat ->
+            if (bs.isShowing) {
+                val (m, r) = parseMedCatalogJson(rawCat)
+                if (m.isNotEmpty()) catalogMeds = m
+                if (r.isNotEmpty()) catalogRoutes = r
+                updateCatalogStatus()
+            }
+        }
+
+        bs.setOnDismissListener {
+            searchJob?.cancel()
+            activeMedSearchReqId = ""
+            onMedSearchCallback = null
+            onMedCatalogUpdated = null
         }
 
         updateCatalogStatus()
@@ -687,6 +780,9 @@ class MainActivity : AppCompatActivity() {
                     updateCatalogStatus()
                 }
             }
+            if (catalogMeds.size < 50) {
+                triggerCatalogSync(false)
+            }
         }
 
         nameInp.addTextChangedListener(object : TextWatcher {
@@ -695,20 +791,23 @@ class MainActivity : AppCompatActivity() {
             override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
         })
         dropToggleBtn.setOnClickListener {
-            if (catalogMeds.isEmpty()) {
-                toast("Справочник ещё пуст — откройте 1 раз «Добавить» в карте на сайте")
-            } else if (suggestionsLay.visibility == View.VISIBLE) {
+            if (suggestionsLay.visibility == View.VISIBLE) {
                 suggestionsLay.visibility = View.GONE
+            } else if (catalogMeds.isEmpty()) {
+                triggerCatalogSync(true)
             } else {
-                renderSuggestions(true)
+                drawSuggestionsList(getLocalMatches(normX(nameInp.text.toString())), false)
             }
+        }
+        syncCatalogBtn.setOnClickListener {
+            triggerCatalogSync(true)
         }
 
         fun renderItems() {
             itemsListLay.removeAllViews()
             if (items.isEmpty()) {
                 itemsListLay.addView(TextView(this).apply {
-                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или выберите позиции из списка ниже."
+                    text = "Пока пусто. Нажмите «📥 Подтянуть из открытой карты» или найдите препарат ниже."
                     textSize = 12.8f; setTextColor(Color.parseColor("#607D8B"))
                     setPadding(16, 14, 16, 14); background = roundBg("#FAFAFA", 10f, "#E0E0E0")
                 })
@@ -1957,7 +2056,19 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet("") }
         @JavascriptInterface fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
         @JavascriptInterface fun requestAutofill(fio: String) = runOnUiThread { showAutofillPickerSheet(fio) }
-        @JavascriptInterface fun cacheMedCatalog(jsonStr: String) = saveCachedMedCatalog(jsonStr)
+
+        @JavascriptInterface
+        fun cacheMedCatalog(jsonStr: String) {
+            saveCachedMedCatalog(jsonStr)
+            runOnUiThread { onMedCatalogUpdated?.invoke(jsonStr) }
+        }
+
+        @JavascriptInterface
+        fun onMedSearchResult(reqId: String, jsonStr: String) = runOnUiThread {
+            if (reqId == activeMedSearchReqId) {
+                onMedSearchCallback?.invoke(parseMedItemsArray(jsonStr))
+            }
+        }
 
         @JavascriptInterface
         fun saveApiCardForced(jsonStr: String) = lifecycleScope.launch(Dispatchers.IO) {

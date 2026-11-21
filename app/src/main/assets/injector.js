@@ -5,9 +5,11 @@
     window.activeAutofillData = window.activeAutofillData || null;
     window.b103ScreenCache = window.b103ScreenCache || {};
     window.b103IsApplying = false;
+    window.b103AuthHeader = window.b103AuthHeader || '';
 
     const MED_CATALOG_KEY = 'b103_med_catalog_v1';
     const ROUTE_CATALOG_KEY = 'b103_route_catalog_v1';
+    const TEAM_KEY = 'b103_team_number_v1';
 
     function loadJsonStore(key, defVal) {
         try {
@@ -19,6 +21,22 @@
     }
     function saveJsonStore(key, val) {
         try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+    }
+    function getTeamNumber() {
+        const fromCard = window.lastLoadedApiCard?.teamNumber;
+        if (fromCard) {
+            try { localStorage.setItem(TEAM_KEY, String(fromCard)); } catch (e) {}
+            return String(fromCard);
+        }
+        try {
+            const saved = localStorage.getItem(TEAM_KEY);
+            if (saved) return saved;
+        } catch (e) {}
+        return '34';
+    }
+    function saveTeamNumber(num) {
+        if (!num) return;
+        try { localStorage.setItem(TEAM_KEY, String(num)); } catch (e) {}
     }
 
     window.b103MedCatalog = window.b103MedCatalog || loadJsonStore(MED_CATALOG_KEY, []);
@@ -107,16 +125,18 @@
         }
     }
 
-    function harvestCatalogFromPayload(data) {
-        if (!data || typeof data !== 'object') return;
+    function extractMedsAndRoutesFromPayload(data, urlHint = '') {
         const foundMeds = [];
         const foundRoutes = [];
+        if (!data || typeof data !== 'object') return { foundMeds, foundRoutes };
 
-        // 1. Препараты и пути внутри открытой карты
+        const uL = String(urlHint || '').toLowerCase();
+
+        // 1. Внутри открытой карты
         if (Array.isArray(data.medications)) {
             for (const m of data.medications) {
                 if (!m || typeof m !== 'object') continue;
-                const medObj = m.medication;
+                const medObj = m.medication || m.medicine;
                 if (medObj && typeof medObj.name === 'string' && medObj.name.trim()) {
                     foundMeds.push({ n: medObj.name.trim(), u: cleanVal(medObj.type?.name || medObj.unitsType?.name) });
                 }
@@ -125,34 +145,48 @@
             }
         }
 
-        // 2. Справочники (массив или Spring Page { content: [...] })
+        // 2. Справочники brigade-amount и dictionary/route (массив или Page { content: [...] })
         const arr = Array.isArray(data)
             ? data
             : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
 
         if (arr && arr.length > 0) {
-            const sample = arr.find(x => x && typeof x === 'object');
-            if (sample) {
-                const isMedDict = typeof sample.name === 'string' &&
-                    ('isMedicalSupplies' in sample || 'isNarcotic' in sample || 'isAccountable' in sample || 'activeIngredient' in sample);
-                if (isMedDict) {
-                    for (const x of arr) {
-                        if (x && typeof x.name === 'string' && x.name.trim() && x.active !== false) {
-                            foundMeds.push({ n: x.name.trim(), u: cleanVal(x.type?.name || x.unitsType?.name) });
-                        }
-                    }
+            const isBrigadeUrl = uL.includes('brigade-amount') || uL.includes('medication') || uL.includes('medicine');
+            const isRouteUrl = uL.includes('/dictionary/route');
+
+            for (const x of arr) {
+                if (!x || typeof x !== 'object') continue;
+
+                // Формат /api/brigade-amount/34 -> { medicine: { name, type: { name }, active }, amount, ... }
+                const med = (x.medicine && typeof x.medicine === 'object')
+                    ? x.medicine
+                    : ((x.medication && typeof x.medication === 'object') ? x.medication : null);
+
+                if (med && typeof med.name === 'string' && med.name.trim() && med.active !== false) {
+                    foundMeds.push({ n: med.name.trim(), u: cleanVal(med.type?.name || med.unitsType?.name) });
+                    continue;
                 }
-                const isRouteDict = typeof sample.display === 'string' && typeof sample.code === 'string';
-                if (isRouteDict) {
-                    for (const x of arr) {
-                        if (x && typeof x.display === 'string' && x.display.trim()) {
-                            foundRoutes.push(x.display.trim());
-                        }
-                    }
+
+                // Прямой формат препарата
+                if (typeof x.name === 'string' && x.name.trim() && x.active !== false &&
+                    (isBrigadeUrl || 'isMedicalSupplies' in x || 'isNarcotic' in x || 'isAccountable' in x || 'activeIngredient' in x)) {
+                    foundMeds.push({ n: x.name.trim(), u: cleanVal(x.type?.name || x.unitsType?.name) });
+                }
+
+                // Формат /api/dictionary/route -> { id, code, display }
+                if (typeof x.display === 'string' && x.display.trim() && (isRouteUrl || 'code' in x)) {
+                    foundRoutes.push(x.display.trim());
+                } else if (isRouteUrl && typeof x.type === 'string' && x.type.trim()) {
+                    foundRoutes.push(x.type.trim());
                 }
             }
         }
 
+        return { foundMeds, foundRoutes };
+    }
+
+    function harvestCatalogFromPayload(data, urlHint = '') {
+        const { foundMeds, foundRoutes } = extractMedsAndRoutesFromPayload(data, urlHint);
         if (foundMeds.length || foundRoutes.length) {
             mergeMedCatalog(foundMeds, foundRoutes);
         }
@@ -193,26 +227,36 @@
     window.b103IsInConclusion = isInConclusion;
 
     // ==========================================
-    // 1. СЕТЕВОЙ ПЕРЕХВАТЧИК КАРТЫ И СПРАВОЧНИКОВ СЕРВЕРА
+    // 1. СЕТЕВОЙ ПЕРЕХВАТЧИК КАРТЫ, ТОКЕНА И СПРАВОЧНИКОВ
     // ==========================================
+    const rawFetch = window.b103OrigFetch || window.fetch.bind(window);
+    window.b103OrigFetch = rawFetch;
+
     if (!window.b103NetHooked) {
         window.b103NetHooked = true;
-        const origFetch = window.fetch;
         window.fetch = async function(...args) {
             try {
                 const opts = args[1] || {};
+                if (opts.headers) {
+                    const h = opts.headers;
+                    const auth = typeof h.get === 'function' ? (h.get('Authorization') || h.get('authorization')) : (h.Authorization || h.authorization);
+                    if (auth) window.b103AuthHeader = String(auth);
+                }
                 if (opts.body && typeof opts.body === 'string' && opts.body.includes('"patient"')) {
                     const s = JSON.parse(opts.body);
                     if (s && s.patient) window.lastLoadedApiCard = Object.assign(window.lastLoadedApiCard || {}, s);
                 }
             } catch (e) {}
-            const res = await origFetch.apply(this, args);
+            const res = await rawFetch.apply(window, args);
             try {
                 const url = typeof args[0] === 'string' ? args[0] : (args[0] ? args[0].url : '');
+                const tm = url && url.match(/brigade-amount\/(\d+)/i);
+                if (tm) saveTeamNumber(tm[1]);
                 if (url && url.includes('/api/')) {
                     res.clone().json().then(d => {
                         if (!d) return;
-                        harvestCatalogFromPayload(d);
+                        if (d.teamNumber) saveTeamNumber(d.teamNumber);
+                        harvestCatalogFromPayload(d, url);
                         if (url.includes('/api/card/') && !url.includes('/short') && d.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                                 window.activeAutofillData = null; window.b103ScreenCache = {};
@@ -226,8 +270,24 @@
         };
 
         const origOpen = XMLHttpRequest.prototype.open;
+        const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
         const origSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(m, u) { this._url = u; return origOpen.apply(this, arguments); };
+        XMLHttpRequest.prototype.open = function(m, u) {
+            this._url = u;
+            try {
+                const tm = u && String(u).match(/brigade-amount\/(\d+)/i);
+                if (tm) saveTeamNumber(tm[1]);
+            } catch (e) {}
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+            try {
+                if (k && String(k).toLowerCase() === 'authorization' && v) {
+                    window.b103AuthHeader = String(v);
+                }
+            } catch (e) {}
+            return origSetHeader.apply(this, arguments);
+        };
         XMLHttpRequest.prototype.send = function(body) {
             try {
                 if (body && typeof body === 'string' && body.includes('"patient"')) {
@@ -240,7 +300,8 @@
                     if (this._url && this._url.includes('/api/') && this.responseText && (this.responseText[0] === '{' || this.responseText[0] === '[')) {
                         const d = JSON.parse(this.responseText);
                         if (!d) return;
-                        harvestCatalogFromPayload(d);
+                        if (d.teamNumber) saveTeamNumber(d.teamNumber);
+                        harvestCatalogFromPayload(d, this._url);
                         if (this._url.includes('/api/card/') && !this._url.includes('/short') && d.patient) {
                             if (window.lastLoadedApiCard && window.lastLoadedApiCard.id !== d.id) {
                                 window.activeAutofillData = null; window.b103ScreenCache = {};
@@ -253,6 +314,77 @@
             return origSend.apply(this, arguments);
         };
     }
+
+    // Прямой живой поиск препаратов и путей на сервере СМП (использует сессию/токен сайта)
+    function buildAuthHeaders() {
+        const headers = { 'Accept': 'application/json' };
+        if (window.b103AuthHeader) {
+            headers['Authorization'] = window.b103AuthHeader;
+        } else {
+            try {
+                for (const key of ['token', 'accessToken', 'access_token', 'jwt', 'authToken']) {
+                    const v = localStorage.getItem(key) || sessionStorage.getItem(key);
+                    if (v && v.length > 20) {
+                        headers['Authorization'] = v.startsWith('Bearer ') ? v : ('Bearer ' + v.replace(/^"|"$/g, ''));
+                        break;
+                    }
+                }
+            } catch (e) {}
+        }
+        return headers;
+    }
+
+    window.searchMedsOnline = async function(query, reqId) {
+        const q = String(query || '').trim();
+        const team = getTeamNumber();
+        try {
+            const url = `/ssmp_proxy_api/ssmp/api/brigade-amount/${encodeURIComponent(team)}?search=${encodeURIComponent(q)}&sort=zerosLast%2Casc&sort=medicine.name%2Casc&medicine.active=true&size=60`;
+            const resp = await rawFetch(url, { credentials: 'include', headers: buildAuthHeaders() });
+            if (resp.ok) {
+                const data = await resp.json();
+                const { foundMeds } = extractMedsAndRoutesFromPayload(data, url);
+                if (foundMeds.length > 0) mergeMedCatalog(foundMeds, []);
+                const seen = new Set();
+                const uniq = foundMeds.filter(m => {
+                    const k = m.n.toLowerCase();
+                    if (seen.has(k)) return false;
+                    seen.add(k); return true;
+                });
+                if (reqId && window.AndroidBridge?.onMedSearchResult) {
+                    window.AndroidBridge.onMedSearchResult(String(reqId), JSON.stringify(uniq));
+                }
+                return uniq;
+            }
+        } catch (e) {}
+        if (reqId && window.AndroidBridge?.onMedSearchResult) {
+            window.AndroidBridge.onMedSearchResult(String(reqId), '[]');
+        }
+        return [];
+    };
+
+    window.syncFullMedCatalog = async function() {
+        const team = getTeamNumber();
+        let total = 0;
+        try {
+            const medUrl = `/ssmp_proxy_api/ssmp/api/brigade-amount/${encodeURIComponent(team)}?search=&sort=zerosLast%2Casc&sort=medicine.name%2Casc&medicine.active=true&size=500`;
+            const r1 = await rawFetch(medUrl, { credentials: 'include', headers: buildAuthHeaders() });
+            if (r1.ok) {
+                const d1 = await r1.json();
+                const { foundMeds } = extractMedsAndRoutesFromPayload(d1, medUrl);
+                if (foundMeds.length) { mergeMedCatalog(foundMeds, []); total = foundMeds.length; }
+            }
+        } catch (e) {}
+        try {
+            const rtUrl = `/ssmp_proxy_api/ssmp/api/dictionary/route?search=&size=100`;
+            const r2 = await rawFetch(rtUrl, { credentials: 'include', headers: buildAuthHeaders() });
+            if (r2.ok) {
+                const d2 = await r2.json();
+                const { foundRoutes } = extractMedsAndRoutesFromPayload(d2, rtUrl);
+                if (foundRoutes.length) mergeMedCatalog([], foundRoutes);
+            }
+        } catch (e) {}
+        return total;
+    };
 
     // ==========================================
     // 2. DOM-СБОР КЭША С ЭКРАНА (💾, ШАБЛОНЫ, ПРЕПАРАТЫ И АУДИТ)
@@ -506,7 +638,7 @@
             let items = scrapeScreenMedications();
             if (!items.length && Array.isArray(window.lastLoadedApiCard?.medications)) {
                 items = window.lastLoadedApiCard.medications.map(m => {
-                    const name = cleanVal(m?.medication?.name || m?.medication || m?.name);
+                    const name = cleanVal(m?.medication?.name || m?.medicine?.name || m?.medication || m?.name);
                     if (!name) return null;
                     const qty = cleanQtyNum(m.number || m.count || m.amount || m.quantity || '1') || '1';
                     const route = cleanVal(m?.routeDict?.display || m?.wayOfAdministration?.type || m?.way);
@@ -1425,21 +1557,11 @@
     };
 
     // ==========================================
-    // 3.5 АВТОПИЛОТ ДОБАВЛЕНИЯ ПРЕПАРАТОВ И РАСХОДНИКОВ
+    // 3.5 АВТОПИЛОТ ДОБАВЛЕНИЯ ПРЕПАРАТОВ И РАСХОДНИКОВ (СЕРВЕРНЫЙ ПОИСК)
     // ==========================================
     window.applyMedicationsPreset = async function(jsonStr) {
         if (window.b103IsApplying) return;
-        const sec = findMedicationsSection();
-        if (!sec) {
-            window.AndroidBridge?.notifyUser("Раздел «Лекарственные средства» не найден на экране");
-            return;
-        }
-        const addBtn = Array.from(sec.querySelectorAll('button'))
-            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ');
-        if (!addBtn) {
-            window.AndroidBridge?.notifyUser("Кнопка «Добавить» в препаратах не найдена");
-            return;
-        }
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
         let items = [];
         try {
@@ -1448,6 +1570,28 @@
         } catch (e) { return; }
         items = items.filter(it => it && cleanVal(it.name));
         if (!items.length) return;
+
+        // Авто-переход на вкладку «МЕДИЦИНСКАЯ ПОМОЩЬ», если раздел не виден
+        let sec = findMedicationsSection();
+        let addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+            .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+
+        if (!addBtn || addBtn.offsetParent === null) {
+            const helpTab = Array.from(document.querySelectorAll('[role="tab"], button'))
+                .find(b => b.getBoundingClientRect().top < 150 && (b.innerText || '').toUpperCase().includes('МЕДИЦИНСКАЯ ПОМОЩЬ'));
+            if (helpTab) {
+                helpTab.click();
+                await sleep(320);
+                sec = findMedicationsSection();
+                addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+                    .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+            }
+        }
+
+        if (!addBtn) {
+            window.AndroidBridge?.notifyUser("Перейдите на вкладку «Медицинская помощь» и повторите");
+            return;
+        }
 
         window.b103IsApplying = true;
         const fillBtn = document.getElementById('btn-fill-db');
@@ -1461,13 +1605,11 @@
             document.head.appendChild(hideStyle);
         }
 
-        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х');
+        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х').replace(/\s+/g, ' ');
         const setReactVal = (inp, val) => {
             if (!inp) return;
             const str = String(val ?? '');
             const prev = String(inp.value ?? '');
-            if (prev === str) return;
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (setter) setter.call(inp, str); else inp.value = str;
             if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
@@ -1483,49 +1625,56 @@
             return r.width > 0 && r.height > 0;
         };
 
-        async function tryPickOnce(autoRoot, queryText, fullTargetNorm) {
+        async function tryPickOnce(autoRoot, queryText, fullTargetNorm, requireStrongMatch = false) {
             const inp = autoRoot?.querySelector('input');
-            if (!inp) return false;
+            if (!inp || !queryText || queryText.length < 2) return false;
             const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
 
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
             if (inp.value && clearBtn) {
                 clearBtn.click();
-                await sleep(45);
+                await sleep(60);
             }
             setReactVal(inp, queryText);
-            await sleep(140);
-            if (!Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).some(isPopVis) && popupBtn) {
-                popupBtn.click();
-            }
+            // Ждём debounce React (~300-400 мс) перед проверкой поппера
+            await sleep(360);
 
             let targetOpt = null;
-            for (let w = 0; w < 12; w++) {
+            let noOptTicks = 0;
+            for (let w = 0; w < 32; w++) {
                 const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
+                if (!popper && w === 4 && popupBtn) {
+                    popupBtn.click();
+                }
                 if (popper) {
+                    const popText = cleanVal(popper.innerText).toLowerCase();
+                    if (popText.includes('нет вариантов') || popText.includes('no options')) {
+                        noOptTicks++;
+                        if (noOptTicks >= 3) break;
+                    }
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
                             const tx = cleanVal(o.innerText).toLowerCase();
-                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов');
+                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов') && !tx.includes('no options');
                         });
                     if (opts.length > 0) {
                         const qNorm = normX(queryText);
                         targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
                             || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
                             || opts.find(o => normX(o.innerText).includes(fullTargetNorm))
-                            || opts.find(o => normX(o.innerText).includes(qNorm))
-                            || opts[0];
+                            || (requireStrongMatch ? null : (opts.find(o => normX(o.innerText).includes(qNorm)) || opts[0]));
                         if (targetOpt) break;
+                        if (requireStrongMatch) break;
                     }
                 }
-                await sleep(75);
+                await sleep(100);
             }
             if (targetOpt) {
                 targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 targetOpt.click();
-                await sleep(90);
+                await sleep(120);
                 return true;
             }
             return false;
@@ -1533,16 +1682,23 @@
 
         async function pickAutocomplete(autoRoot, searchStr) {
             const cleanTarget = cleanVal(searchStr);
-            if (!autoRoot || !cleanTarget) return false;
+            if (!autoRoot || cleanTarget.length < 2) return false;
             const fullNorm = normX(cleanTarget);
-            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm)) return true;
+
+            // 1. Полное название
+            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm, false)) return true;
+
+            // 2. Замена латинской x <-> кириллической х
             const swapped = /[xX]/.test(cleanTarget)
                 ? cleanTarget.replace(/[xX]/g, 'х')
                 : cleanTarget.replace(/[хХ]/g, 'x');
-            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm)) return true;
-            const firstWord = cleanTarget.split(/\s+/)[0];
-            if (firstWord && firstWord.length >= 3 && firstWord !== cleanTarget) {
-                return await tryPickOnce(autoRoot, firstWord, fullNorm);
+            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm, false)) return true;
+
+            // 3. Поиск по первому слову (устойчиво к %, №, пробелам и единицам), затем точный выбор нужной строки
+            const firstWord = cleanTarget.split(/[\s,/%]+/)[0];
+            if (firstWord && firstWord.length >= 2 && firstWord !== cleanTarget) {
+                if (await tryPickOnce(autoRoot, firstWord, fullNorm, true)) return true;
+                if (firstWord.length >= 4 && await tryPickOnce(autoRoot, firstWord.slice(0, 4), fullNorm, true)) return true;
             }
             return false;
         }
@@ -1575,7 +1731,7 @@
 
                 addBtn.click();
                 let dlg = null;
-                for (let w = 0; w < 15; w++) {
+                for (let w = 0; w < 20; w++) {
                     dlg = findOpenMedDialog();
                     if (dlg) break;
                     await sleep(60);
@@ -1591,7 +1747,7 @@
                     const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                         .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                     cancelBtn?.click();
-                    await sleep(140);
+                    await sleep(160);
                     failed++;
                     continue;
                 }
@@ -1599,7 +1755,7 @@
                 const qtyInp = dlg.querySelector('input[name="number"]');
                 const qtyVal = cleanQtyNum(item.qty) || '1';
                 setReactVal(qtyInp, qtyVal);
-                await sleep(50);
+                await sleep(60);
 
                 const routeStr = cleanVal(item.route);
                 if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
@@ -1616,7 +1772,7 @@
                 if (saveBtn && !saveBtn.disabled) {
                     saveBtn.click();
                     let closed = false;
-                    for (let w = 0; w < 20; w++) {
+                    for (let w = 0; w < 25; w++) {
                         await sleep(90);
                         if (!findOpenMedDialog()) { closed = true; break; }
                     }
@@ -1627,17 +1783,17 @@
                         const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                             .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                         cancelBtn?.click();
-                        await sleep(120);
+                        await sleep(140);
                         failed++;
                     }
                 } else {
                     const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                         .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                     cancelBtn?.click();
-                    await sleep(120);
+                    await sleep(140);
                     failed++;
                 }
-                await sleep(100);
+                await sleep(120);
             }
 
             const msg = `💊 Добавлено: ${added}` +

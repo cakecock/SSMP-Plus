@@ -1908,17 +1908,31 @@
 
                 const qtyInp = dlg.querySelector('input[name="number"]');
                 const qtyVal = cleanQtyNum(item.qty) || '1';
-                setReactVal(qtyInp, qtyVal);
-                await sleep(60);
+                if (qtyInp) {
+                    try { qtyInp.focus({ preventScroll: true }); } catch (e) { qtyInp.focus(); }
+                    setReactVal(qtyInp, qtyVal);
+                    qtyInp.dispatchEvent(new Event('blur', { bubbles: true }));
+                }
+                await sleep(80);
 
                 const routeStr = cleanVal(item.route);
-                if (routeAuto && routeStr && !routeStr.toLowerCase().includes('не определен')) {
-                    await pickAutocomplete(routeAuto, routeStr);
+                const curRouteVal = cleanVal(routeAuto?.querySelector('input')?.value);
+                let routeOk = true;
+                if (routeAuto) {
+                    if (routeStr && !routeStr.toLowerCase().includes('не определен')) {
+                        routeOk = await pickAutocomplete(routeAuto, routeStr);
+                        if (!routeOk && !cleanVal(routeAuto.querySelector('input')?.value)) {
+                            await pickAutocomplete(routeAuto, 'путь введения не определен');
+                        }
+                    } else if (!curRouteVal) {
+                        routeOk = await pickAutocomplete(routeAuto, routeStr || 'путь введения не определен');
+                    }
                 }
 
                 const noteInp = dlg.querySelector('input[name="route"]');
                 if (noteInp && cleanVal(item.note)) {
                     setReactVal(noteInp, cleanVal(item.note));
+                    noteInp.dispatchEvent(new Event('blur', { bubbles: true }));
                 }
 
                 const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
@@ -1942,7 +1956,11 @@
                         existingNames.add(normX(itemName));
                     } else {
                         const errs = Array.from(dlg.querySelectorAll('.MuiFormHelperText-root.Mui-error, .MuiAlert-message')).map(e => cleanVal(e.innerText)).filter(Boolean);
-                        diagLog.push(`ITEM "${itemName}": save timeout (errs=[${errs.join('; ')}])`);
+                        const errFields = Array.from(dlg.querySelectorAll('.MuiFormControl-root'))
+                            .filter(fc => fc.querySelector('.Mui-error'))
+                            .map(fc => `${cleanVal(fc.querySelector('label')?.innerText)}="${cleanVal(fc.querySelector('input')?.value)}"`)
+                            .filter(Boolean);
+                        diagLog.push(`ITEM "${itemName}": save timeout (routeOk=${routeOk}, med="${cleanVal(medAuto?.querySelector('input')?.value)}", rt="${cleanVal(routeAuto?.querySelector('input')?.value)}", qty="${cleanVal(qtyInp?.value)}", errs=[${errs.join('; ')}], fields=[${errFields.join('; ')}])`);
                         const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                             .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                         cancelBtn?.click();
@@ -1951,7 +1969,11 @@
                     }
                 } else {
                     const errs = Array.from(dlg.querySelectorAll('.MuiFormHelperText-root.Mui-error, .MuiAlert-message')).map(e => cleanVal(e.innerText)).filter(Boolean);
-                    diagLog.push(`ITEM "${itemName}": saveBtn=${!!saveBtn}, disabled=${saveBtn?.disabled}, medInp="${medAuto?.querySelector('input')?.value}", errs=[${errs.join('; ')}]`);
+                    const errFields = Array.from(dlg.querySelectorAll('.MuiFormControl-root'))
+                        .filter(fc => fc.querySelector('.Mui-error'))
+                        .map(fc => `${cleanVal(fc.querySelector('label')?.innerText)}="${cleanVal(fc.querySelector('input')?.value)}"`)
+                        .filter(Boolean);
+                    diagLog.push(`ITEM "${itemName}": saveBtn=${!!saveBtn}, disabled=${saveBtn?.disabled}, med="${cleanVal(medAuto?.querySelector('input')?.value)}", rt="${cleanVal(routeAuto?.querySelector('input')?.value)}", qty="${cleanVal(qtyInp?.value)}", errs=[${errs.join('; ')}], fields=[${errFields.join('; ')}]`);
                     const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                         .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                     cancelBtn?.click();

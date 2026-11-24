@@ -1732,7 +1732,11 @@
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (setter) setter.call(inp, str); else inp.value = str;
             if (inp._valueTracker) inp._valueTracker.setValue(prev + '__force_diff');
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            try {
+                inp.dispatchEvent(new InputEvent('input', { bubbles: true, data: str, inputType: str ? 'insertText' : 'deleteContentBackward' }));
+            } catch (e) {
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+            }
             inp.dispatchEvent(new Event('change', { bubbles: true }));
         };
 
@@ -1744,13 +1748,20 @@
             return r.width > 0 && r.height > 0;
         };
 
-        async function tryPickOnce(autoRoot, queryText, fullTargetNorm, requireStrongMatch = false) {
+        const diagLog = [];
+
+        async function tryPickOnce(autoRoot, queryText, fullTargetNorm, requireStrongMatch = false, tag = 'q') {
             const inp = autoRoot?.querySelector('input');
-            if (!inp || !queryText || queryText.length < 2) return false;
+            if (!inp || !queryText || queryText.length < 2) {
+                diagLog.push(`  [${tag}] skip: inp=${!!inp}, q="${queryText}"`);
+                return false;
+            }
             const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
 
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+            inp.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+            inp.click();
             if (inp.value) {
                 if (clearBtn) clearBtn.click();
                 else setReactVal(inp, '');
@@ -1762,14 +1773,18 @@
 
             let targetOpt = null;
             let noOptTicks = 0;
+            let lastPopSummary = 'none';
+            let lastOpts = [];
             for (let w = 0; w < 38; w++) {
-                const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
+                const allPops = Array.from(document.querySelectorAll('.MuiAutocomplete-popper, [role="presentation"].MuiPopper-root'));
+                const poppers = allPops.filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
                 if (!popper && (w === 3 || w === 10) && popupBtn) {
                     popupBtn.click();
                 }
                 if (popper) {
                     const popText = cleanVal(popper.innerText).toLowerCase();
+                    lastPopSummary = popText.slice(0, 80);
                     const isLoading = popText.includes('загрузка') || popText.includes('loading');
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
@@ -1778,6 +1793,7 @@
                         });
                     if (opts.length > 0) {
                         noOptTicks = 0;
+                        lastOpts = opts.slice(0, 3).map(o => cleanVal(o.innerText).slice(0, 45));
                         const qNorm = normX(queryText);
                         targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
                             || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
@@ -1793,6 +1809,8 @@
                             if (noOptTicks >= 6) break;
                         }
                     }
+                } else {
+                    lastPopSummary = `no-vis(all=${allPops.length},lb=${document.querySelectorAll('[role="listbox"]').length})`;
                 }
                 await sleep(100);
             }
@@ -1802,28 +1820,32 @@
                 await sleep(140);
                 return true;
             }
+            diagLog.push(`  [${tag}] q="${queryText}" -> fail; inp="${inp.value}"; pop="${lastPopSummary}"; opts=[${lastOpts.join(' | ')}]`);
             return false;
         }
 
         async function pickAutocomplete(autoRoot, searchStr) {
             const cleanTarget = cleanVal(searchStr);
-            if (!autoRoot || cleanTarget.length < 2) return false;
+            if (!autoRoot || cleanTarget.length < 2) {
+                diagLog.push(`  pick skip: auto=${!!autoRoot}, s="${cleanTarget}"`);
+                return false;
+            }
             const fullNorm = normX(cleanTarget);
 
             // 1. Полное название
-            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm, false)) return true;
+            if (await tryPickOnce(autoRoot, cleanTarget, fullNorm, false, 'full')) return true;
 
             // 2. Замена латинской x <-> кириллической х
             const swapped = /[xX]/.test(cleanTarget)
                 ? cleanTarget.replace(/[xX]/g, 'х')
                 : cleanTarget.replace(/[хХ]/g, 'x');
-            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm, false)) return true;
+            if (swapped !== cleanTarget && await tryPickOnce(autoRoot, swapped, fullNorm, false, 'swap')) return true;
 
             // 3. Поиск по первому слову (устойчиво к %, №, пробелам и единицам), затем точный выбор нужной строки
             const firstWord = cleanTarget.split(/[\s,/%]+/)[0];
             if (firstWord && firstWord.length >= 2 && firstWord !== cleanTarget) {
-                if (await tryPickOnce(autoRoot, firstWord, fullNorm, true)) return true;
-                if (firstWord.length >= 4 && await tryPickOnce(autoRoot, firstWord.slice(0, 4), fullNorm, true)) return true;
+                if (await tryPickOnce(autoRoot, firstWord, fullNorm, true, 'word')) return true;
+                if (firstWord.length >= 4 && await tryPickOnce(autoRoot, firstWord.slice(0, 4), fullNorm, true, 'p4')) return true;
             }
             return false;
         }
@@ -1832,7 +1854,8 @@
             const dialogs = Array.from(document.querySelectorAll('.MuiDialog-root'));
             for (let i = dialogs.length - 1; i >= 0; i--) {
                 const d = dialogs[i];
-                if (d.querySelector('input[name="number"]') && (d.querySelector('h2')?.innerText || '').toLowerCase().includes('добавить')) {
+                const h2 = (d.querySelector('h2')?.innerText || '').toLowerCase();
+                if (d.querySelector('input[name="number"]') && (h2.includes('добав') || d.querySelector('.MuiAutocomplete-root'))) {
                     return d;
                 }
             }
@@ -1844,6 +1867,7 @@
         let failed = 0;
 
         try {
+            diagLog.push(`team=${getTeamNumber()}, url=${location.pathname}, items=${items.length}`);
             const existingNames = new Set(scrapeScreenMedications().map(m => normX(m.name)));
 
             for (const item of items) {
@@ -1861,7 +1885,11 @@
                     if (dlg) break;
                     await sleep(60);
                 }
-                if (!dlg) { failed++; continue; }
+                if (!dlg) {
+                    const dlgs = Array.from(document.querySelectorAll('.MuiDialog-root')).map(d => cleanVal(d.querySelector('h2')?.innerText || d.innerText).slice(0, 40));
+                    diagLog.push(`ITEM "${itemName}": dialog NOT found; dlgs=[${dlgs.join(' | ')}]`);
+                    failed++; continue;
+                }
 
                 const autos = Array.from(dlg.querySelectorAll('.MuiAutocomplete-root'));
                 const medAuto = autos.find(a => (a.innerText || '').toLowerCase().includes('лекарственные')) || autos[0];
@@ -1869,6 +1897,7 @@
 
                 const pickedMed = await pickAutocomplete(medAuto, itemName);
                 if (!pickedMed) {
+                    diagLog.push(`ITEM "${itemName}": medAuto fail (autos=${autos.length})`);
                     const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                         .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                     cancelBtn?.click();
@@ -1912,6 +1941,8 @@
                         added++;
                         existingNames.add(normX(itemName));
                     } else {
+                        const errs = Array.from(dlg.querySelectorAll('.MuiFormHelperText-root.Mui-error, .MuiAlert-message')).map(e => cleanVal(e.innerText)).filter(Boolean);
+                        diagLog.push(`ITEM "${itemName}": save timeout (errs=[${errs.join('; ')}])`);
                         const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                             .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                         cancelBtn?.click();
@@ -1919,6 +1950,8 @@
                         failed++;
                     }
                 } else {
+                    const errs = Array.from(dlg.querySelectorAll('.MuiFormHelperText-root.Mui-error, .MuiAlert-message')).map(e => cleanVal(e.innerText)).filter(Boolean);
+                    diagLog.push(`ITEM "${itemName}": saveBtn=${!!saveBtn}, disabled=${saveBtn?.disabled}, medInp="${medAuto?.querySelector('input')?.value}", errs=[${errs.join('; ')}]`);
                     const cancelBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                         .find(b => (b.innerText || '').toLowerCase().includes('отмен'));
                     cancelBtn?.click();
@@ -1932,6 +1965,9 @@
                 (skipped ? `, уже в карте: ${skipped}` : '') +
                 (failed ? `, не найдено: ${failed}` : '');
             window.AndroidBridge?.notifyUser(msg);
+            if (failed > 0 && diagLog.length) {
+                window.AndroidBridge?.showDebugDialog?.('🩺 Диагностика препаратов', diagLog.join('\n'));
+            }
         } catch (e) {
             console.error(e);
         } finally {

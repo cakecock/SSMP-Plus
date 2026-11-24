@@ -2640,6 +2640,18 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface fun openMkbDialog() = runOnUiThread { openMkbSheet() }
         @JavascriptInterface fun openAutofillPicker() = runOnUiThread { showAutofillPickerSheet("") }
         @JavascriptInterface fun notifyUser(msg: String) = runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
+        @JavascriptInterface fun showDebugDialog(title: String, body: String) = runOnUiThread {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(title)
+                .setMessage(body)
+                .setPositiveButton("📋 Копировать") { _, _ ->
+                    (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                        .setPrimaryClip(ClipData.newPlainText("SSMP Debug", body))
+                    toast("📋 Лог скопирован")
+                }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
         @JavascriptInterface fun requestAutofill(fio: String) = runOnUiThread { showAutofillPickerSheet(fio) }
 
         @JavascriptInterface

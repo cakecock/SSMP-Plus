@@ -6,7 +6,7 @@ plugins {
 }
 
 val vCode = project.findProperty("appVersionCode")?.toString()?.toIntOrNull() ?: 1
-val vName = project.findProperty("appVersionName")?.toString() ?: "1.0.0"
+val vName = project.findProperty("appVersionName")?.toString() ?: "3.10.0"
 
 android {
     namespace = "by.brest103.ssmpplus"

@@ -10,6 +10,8 @@
     const MED_CATALOG_KEY = 'b103_med_catalog_v1';
     const ROUTE_CATALOG_KEY = 'b103_route_catalog_v1';
     const TEAM_KEY = 'b103_team_number_v1';
+    const MKB_SITE_KEY = 'b103_site_mkb_v1';
+    const MKB_ICD_URL_KEY = 'b103_icd_url_v1';
 
     function loadJsonStore(key, defVal) {
         try {
@@ -41,6 +43,7 @@
 
     window.b103MedCatalog = window.b103MedCatalog || loadJsonStore(MED_CATALOG_KEY, []);
     window.b103RouteCatalog = window.b103RouteCatalog || loadJsonStore(ROUTE_CATALOG_KEY, []);
+    window.b103SiteMkb = window.b103SiteMkb || loadJsonStore(MKB_SITE_KEY, []);
 
     // ==========================================
     // 0. БАЗОВЫЕ УТИЛИТЫ И ГРАНИЦА «ЗАКЛЮЧЕНИЕ»
@@ -185,11 +188,76 @@
         return { foundMeds, foundRoutes };
     }
 
+    function mergeSiteMkb(newItems) {
+        if (!Array.isArray(newItems) || !newItems.length) return false;
+        const map = new Map();
+        for (const it of window.b103SiteMkb) {
+            if (it && it.c) map.set(String(it.c).toUpperCase(), { c: String(it.c).toUpperCase(), n: String(it.n || '') });
+        }
+        let changed = false;
+        for (const it of newItems) {
+            if (!it || !it.c) continue;
+            const code = String(it.c).trim().toUpperCase();
+            const name = String(it.n || '').trim();
+            if (!/^[A-ZА-Я]\d{2}(?:\.\d+)?$/.test(code)) continue;
+            const ex = map.get(code);
+            if (!ex || (!ex.n && name) || (name && name.length > ex.n.length)) {
+                map.set(code, { c: code, n: name });
+                changed = true;
+            }
+        }
+        if (changed) {
+            window.b103SiteMkb = Array.from(map.values()).sort((a, b) => a.c.localeCompare(b.c));
+            saveJsonStore(MKB_SITE_KEY, window.b103SiteMkb);
+            if (window.AndroidBridge?.cacheSiteMkb) {
+                try { window.AndroidBridge.cacheSiteMkb(JSON.stringify(window.b103SiteMkb)); } catch (e) {}
+            }
+        }
+        return changed;
+    }
+
+    function extractMkbFromPayload(data, urlHint = '') {
+        const found = [];
+        if (!data || typeof data !== 'object') return found;
+        const uL = String(urlHint || '').toLowerCase();
+        const isIcdUrl = uL.includes('/icd') || uL.includes('mkb');
+
+        if (data.icd && typeof data.icd === 'object' && typeof data.icd.code === 'string') {
+            const c = data.icd.code.trim().toUpperCase();
+            const n = cleanVal(data.icd.type || data.icd.name || data.icd.title);
+            if (/^[A-ZА-Я]\d{2}(?:\.\d+)?$/.test(c)) found.push({ c, n });
+        }
+
+        const arr = Array.isArray(data)
+            ? data
+            : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
+
+        if (arr && arr.length > 0) {
+            for (const x of arr) {
+                if (!x || typeof x !== 'object') continue;
+                const c = typeof x.code === 'string' ? x.code.trim().toUpperCase() : '';
+                if (/^[A-Z]\d{2}(?:\.\d+)?$/.test(c)) {
+                    const n = cleanVal(x.type || x.name || x.title || x.display);
+                    if (n || isIcdUrl) found.push({ c, n });
+                }
+            }
+            if (isIcdUrl && found.length > 0 && urlHint) {
+                try {
+                    const base = String(urlHint).split('?')[0];
+                    if (base.includes('/api/')) localStorage.setItem(MKB_ICD_URL_KEY, base);
+                } catch (e) {}
+            }
+        }
+        return found;
+    }
+
     function harvestCatalogFromPayload(data, urlHint = '') {
         const { foundMeds, foundRoutes } = extractMedsAndRoutesFromPayload(data, urlHint);
         if (foundMeds.length || foundRoutes.length) {
             mergeMedCatalog(foundMeds, foundRoutes);
         }
+        const foundMkb = extractMkbFromPayload(data, urlHint);
+        if (foundMkb.length) mergeSiteMkb(foundMkb);
     }
 
     if ((window.b103MedCatalog.length || window.b103RouteCatalog.length) && window.AndroidBridge?.cacheMedCatalog) {
@@ -199,6 +267,9 @@
                 routes: window.b103RouteCatalog
             }));
         } catch (e) {}
+    }
+    if (window.b103SiteMkb.length && window.AndroidBridge?.cacheSiteMkb) {
+        try { window.AndroidBridge.cacheSiteMkb(JSON.stringify(window.b103SiteMkb)); } catch (e) {}
     }
 
     let cachedAnchor = null;
@@ -384,6 +455,45 @@
             }
         } catch (e) {}
         return total;
+    };
+
+    window.searchMkbOnline = async function(query, reqId) {
+        const q = String(query || '').trim();
+        const learned = (() => { try { return localStorage.getItem(MKB_ICD_URL_KEY) || ''; } catch (e) { return ''; } })();
+        const bases = Array.from(new Set([
+            learned,
+            '/ssmp_proxy_api/ssmp/api/icd',
+            '/ssmp_proxy_api/ssmp/api/dictionary/icd',
+            '/ssmp_proxy_api/ssmp/api/mkb'
+        ].filter(Boolean)));
+
+        let result = [];
+        for (const base of bases) {
+            try {
+                const url = `${base}?search=${encodeURIComponent(q)}&size=60`;
+                const resp = await rawFetch(url, { credentials: 'include', headers: buildAuthHeaders() });
+                if (!resp.ok) continue;
+                const data = await resp.json();
+                const found = extractMkbFromPayload(data, url);
+                if (found.length > 0) {
+                    mergeSiteMkb(found);
+                    const seen = new Set();
+                    result = found.filter(it => {
+                        if (seen.has(it.c)) return false;
+                        seen.add(it.c); return true;
+                    });
+                    break;
+                }
+            } catch (e) {}
+        }
+        if (reqId && window.AndroidBridge?.onMkbSearchResult) {
+            window.AndroidBridge.onMkbSearchResult(String(reqId), JSON.stringify(result));
+        }
+        return result;
+    };
+
+    window.getSiteMkbJson = function() {
+        try { return JSON.stringify(window.b103SiteMkb || []); } catch (e) { return '[]'; }
     };
 
     // ==========================================
@@ -604,6 +714,8 @@
         const edm = getActiveBtnText("периферические отеки"); if (edm) c.peripheralEdema = (edm === "ДА");
         const prt = getActiveBtnText("симптомы раздражения брюшины"); if (prt) c.stomachSymptoms = (prt === "ДА");
         const prs = getActiveBtnText("перистальтика"); if (prs) c.peristalsis = (prs === "ДА");
+        const alc = getActiveBtnText("запах алкоголя"); if (alc) c.alcoholSmell = (alc === "ДА");
+        const act = getActiveBtnText("запах ацетона"); if (act) c.acetoneSmell = (act === "ДА");
         const pls = getActiveBtnText("пульс, ударов в минуту"); if (pls) c.pulseExists = (pls === "ДА");
         const cns = getActiveBtnText("получено устное согласие на простое медицинское вмешательство") ?? getActiveBtnText("получено устное согласие");
         if (cns !== null) c.acceptsSimpleMedProcedure = (cns === "ДА");
@@ -1581,10 +1693,13 @@
                 .find(b => b.getBoundingClientRect().top < 150 && (b.innerText || '').toUpperCase().includes('МЕДИЦИНСКАЯ ПОМОЩЬ'));
             if (helpTab) {
                 helpTab.click();
-                await sleep(320);
-                sec = findMedicationsSection();
-                addBtn = sec ? Array.from(sec.querySelectorAll('button'))
-                    .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+                for (let w = 0; w < 12; w++) {
+                    await sleep(100);
+                    sec = findMedicationsSection();
+                    addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+                        .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+                    if (addBtn && addBtn.offsetParent !== null) break;
+                }
             }
         }
 
@@ -1605,7 +1720,11 @@
             document.head.appendChild(hideStyle);
         }
 
-        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х').replace(/\s+/g, ' ');
+        const normX = (s) => cleanVal(s).toLowerCase()
+            .replace(/x/g, 'х').replace(/c/g, 'с').replace(/a/g, 'а').replace(/e/g, 'е')
+            .replace(/o/g, 'о').replace(/p/g, 'р').replace(/k/g, 'к').replace(/m/g, 'м')
+            .replace(/t/g, 'т').replace(/h/g, 'н').replace(/b/g, 'в')
+            .replace(/,/g, '.').replace(/\s+/g, ' ');
         const setReactVal = (inp, val) => {
             if (!inp) return;
             const str = String(val ?? '');
@@ -1632,41 +1751,47 @@
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
 
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
-            if (inp.value && clearBtn) {
-                clearBtn.click();
-                await sleep(60);
+            if (inp.value) {
+                if (clearBtn) clearBtn.click();
+                else setReactVal(inp, '');
+                await sleep(100);
             }
             setReactVal(inp, queryText);
-            // Ждём debounce React (~300-400 мс) перед проверкой поппера
-            await sleep(360);
+            // Ждём debounce React + начало сетевого запроса
+            await sleep(420);
 
             let targetOpt = null;
             let noOptTicks = 0;
-            for (let w = 0; w < 32; w++) {
+            for (let w = 0; w < 38; w++) {
                 const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
-                if (!popper && w === 4 && popupBtn) {
+                if (!popper && (w === 3 || w === 10) && popupBtn) {
                     popupBtn.click();
                 }
                 if (popper) {
                     const popText = cleanVal(popper.innerText).toLowerCase();
-                    if (popText.includes('нет вариантов') || popText.includes('no options')) {
-                        noOptTicks++;
-                        if (noOptTicks >= 3) break;
-                    }
+                    const isLoading = popText.includes('загрузка') || popText.includes('loading');
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
                             const tx = cleanVal(o.innerText).toLowerCase();
-                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов') && !tx.includes('no options');
+                            return tx && !tx.includes('загрузка') && !tx.includes('loading') && !tx.includes('нет вариантов') && !tx.includes('no options');
                         });
                     if (opts.length > 0) {
+                        noOptTicks = 0;
                         const qNorm = normX(queryText);
                         targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
                             || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
                             || opts.find(o => normX(o.innerText).includes(fullTargetNorm))
                             || (requireStrongMatch ? null : (opts.find(o => normX(o.innerText).includes(qNorm)) || opts[0]));
                         if (targetOpt) break;
-                        if (requireStrongMatch) break;
+                        if (requireStrongMatch && !isLoading && w >= 8) break;
+                    } else if (isLoading) {
+                        noOptTicks = 0;
+                    } else if (popText.includes('нет вариантов') || popText.includes('no options')) {
+                        if (w >= 14) {
+                            noOptTicks++;
+                            if (noOptTicks >= 6) break;
+                        }
                     }
                 }
                 await sleep(100);
@@ -1674,7 +1799,7 @@
             if (targetOpt) {
                 targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 targetOpt.click();
-                await sleep(120);
+                await sleep(140);
                 return true;
             }
             return false;
@@ -1769,12 +1894,19 @@
 
                 const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button'))
                     .find(b => (b.innerText || '').toLowerCase().includes('сохранить'));
+                for (let w = 0; w < 12 && saveBtn && saveBtn.disabled; w++) {
+                    await sleep(80);
+                }
                 if (saveBtn && !saveBtn.disabled) {
                     saveBtn.click();
                     let closed = false;
-                    for (let w = 0; w < 25; w++) {
-                        await sleep(90);
+                    for (let w = 0; w < 45; w++) {
+                        await sleep(100);
                         if (!findOpenMedDialog()) { closed = true; break; }
+                    }
+                    if (!closed) {
+                        const nowOnScreen = scrapeScreenMedications().some(m => normX(m.name) === normX(itemName));
+                        if (nowOnScreen) closed = true;
                     }
                     if (closed) {
                         added++;

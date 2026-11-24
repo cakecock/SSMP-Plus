@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.9.0
+// @version      3.10.0
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, наборы препаратов с выпадающим каталогом сайта, история пациентов, МКБ-10, 12 модулей Помощника СМП (Аудит карты, ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ).
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -48,6 +48,8 @@ function ssmpPlusMain() {
     const MED_CATALOG_KEY = 'b103_med_catalog_v1';
     const ROUTE_CATALOG_KEY = 'b103_route_catalog_v1';
     const TEAM_KEY = 'b103_team_number_v1';
+    const MKB_SITE_KEY = 'b103_site_mkb_v1';
+    const MKB_ICD_URL_KEY = 'b103_icd_url_v1';
     function loadJsonStore(k, def) { try { const p = JSON.parse(localStorage.getItem(k) || 'null'); return Array.isArray(p) ? p : def; } catch (e) { return def; } }
     function saveJsonStore(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
     function getTeamNumber() {
@@ -68,6 +70,7 @@ function ssmpPlusMain() {
     }
     window.b103MedCatalog = window.b103MedCatalog || loadJsonStore(MED_CATALOG_KEY, []);
     window.b103RouteCatalog = window.b103RouteCatalog || loadJsonStore(ROUTE_CATALOG_KEY, []);
+    window.b103SiteMkb = window.b103SiteMkb || loadJsonStore(MKB_SITE_KEY, []);
     window.b103AuthHeader = window.b103AuthHeader || '';
     window.lastLoadedApiCard = window.lastLoadedApiCard || null;
     window.activeAutofillData = window.activeAutofillData || null;
@@ -362,9 +365,71 @@ function ssmpPlusMain() {
         return { foundMeds, foundRoutes };
     }
 
+    function mergeSiteMkb(newItems) {
+        if (!Array.isArray(newItems) || !newItems.length) return false;
+        const map = new Map();
+        for (const it of window.b103SiteMkb) {
+            if (it && it.c) map.set(String(it.c).toUpperCase(), { c: String(it.c).toUpperCase(), n: String(it.n || '') });
+        }
+        let changed = false;
+        for (const it of newItems) {
+            if (!it || !it.c) continue;
+            const code = String(it.c).trim().toUpperCase();
+            const name = String(it.n || '').trim();
+            if (!/^[A-ZА-Я]\d{2}(?:\.\d+)?$/.test(code)) continue;
+            const ex = map.get(code);
+            if (!ex || (!ex.n && name) || (name && name.length > ex.n.length)) {
+                map.set(code, { c: code, n: name });
+                changed = true;
+            }
+        }
+        if (changed) {
+            window.b103SiteMkb = Array.from(map.values()).sort((a, b) => a.c.localeCompare(b.c));
+            saveJsonStore(MKB_SITE_KEY, window.b103SiteMkb);
+        }
+        return changed;
+    }
+
+    function extractMkbFromPayload(data, urlHint = '') {
+        const found = [];
+        if (!data || typeof data !== 'object') return found;
+        const uL = String(urlHint || '').toLowerCase();
+        const isIcdUrl = uL.includes('/icd') || uL.includes('mkb');
+
+        if (data.icd && typeof data.icd === 'object' && typeof data.icd.code === 'string') {
+            const c = data.icd.code.trim().toUpperCase();
+            const n = cleanVal(data.icd.type || data.icd.name || data.icd.title);
+            if (/^[A-ZА-Я]\d{2}(?:\.\d+)?$/.test(c)) found.push({ c, n });
+        }
+
+        const arr = Array.isArray(data)
+            ? data
+            : (Array.isArray(data.content) ? data.content : (Array.isArray(data.data) ? data.data : null));
+
+        if (arr && arr.length > 0) {
+            for (const x of arr) {
+                if (!x || typeof x !== 'object') continue;
+                const c = typeof x.code === 'string' ? x.code.trim().toUpperCase() : '';
+                if (/^[A-Z]\d{2}(?:\.\d+)?$/.test(c)) {
+                    const n = cleanVal(x.type || x.name || x.title || x.display);
+                    if (n || isIcdUrl) found.push({ c, n });
+                }
+            }
+            if (isIcdUrl && found.length > 0 && urlHint) {
+                try {
+                    const base = String(urlHint).split('?')[0];
+                    if (base.includes('/api/')) localStorage.setItem(MKB_ICD_URL_KEY, base);
+                } catch (e) {}
+            }
+        }
+        return found;
+    }
+
     function harvestCatalogFromPayload(data, urlHint = '') {
         const { foundMeds, foundRoutes } = extractMedsAndRoutesFromPayload(data, urlHint);
         if (foundMeds.length || foundRoutes.length) mergeMedCatalog(foundMeds, foundRoutes);
+        const foundMkb = extractMkbFromPayload(data, urlHint);
+        if (foundMkb.length) mergeSiteMkb(foundMkb);
     }
 
     // ==========================================
@@ -515,6 +580,35 @@ function ssmpPlusMain() {
         return total;
     };
 
+    window.searchMkbOnline = async function(query) {
+        const q = String(query || '').trim();
+        const learned = (() => { try { return localStorage.getItem(MKB_ICD_URL_KEY) || ''; } catch (e) { return ''; } })();
+        const bases = Array.from(new Set([
+            learned,
+            '/ssmp_proxy_api/ssmp/api/icd',
+            '/ssmp_proxy_api/ssmp/api/dictionary/icd',
+            '/ssmp_proxy_api/ssmp/api/mkb'
+        ].filter(Boolean)));
+        for (const base of bases) {
+            try {
+                const url = `${base}?search=${encodeURIComponent(q)}&size=60`;
+                const resp = await origFetch(url, { credentials: 'include', headers: buildAuthHeaders() });
+                if (!resp.ok) continue;
+                const data = await resp.json();
+                const found = extractMkbFromPayload(data, url);
+                if (found.length > 0) {
+                    mergeSiteMkb(found);
+                    const seen = new Set();
+                    return found.filter(it => {
+                        if (seen.has(it.c)) return false;
+                        seen.add(it.c); return true;
+                    });
+                }
+            } catch (e) {}
+        }
+        return [];
+    };
+
     function cleanBpString(raw) {
         if (!raw) return '';
         if (typeof raw === 'object') {
@@ -652,13 +746,15 @@ function ssmpPlusMain() {
             generalState: cleanVal(raw.generalState), consciousness: cleanVal(raw.consciousness),
             position: cleanVal(raw.position).toUpperCase(), positionDescription: cleanVal(raw.positionDescription),
             behavior: cleanVal(raw.behavior).toUpperCase(), glasgowScore: cleanVal(raw.comaScale) || '15',
-            bp, bpAdapted, pulse: cleanVal(raw.pulse), rr: cleanVal(raw.breathCount),
+            bp, bpAdapted, pulseExists: raw.pulseExists === false ? 'НЕТ' : 'ДА', pulse: cleanVal(raw.pulse), rr: cleanVal(raw.breathCount),
             temp: cleanVal(raw.skinTemp), saturation: cleanVal(raw.saturation1), glucose: cleanVal(raw.glycemia1),
             heartSounds: jArr('heartSounds'), lungs: jArr('breaths'), percussion: jArr('percussionOfLungs'),
             abdomen: jArr('stomachs'), skin: jArr('skins'), urination: jArr('urinations').toUpperCase(),
             stool: cleanVal(raw.defecatio).toUpperCase(),
             edema: raw.peripheralEdema ? 'ДА' : 'НЕТ', edemaDescription: cleanVal(raw.peripheralEdemaDescription),
             rash: raw.skinRashes ? 'ДА' : 'НЕТ', ascites: raw.ascites ? 'ДА' : 'НЕТ', peritoneal: raw.stomachSymptoms ? 'ДА' : 'НЕТ',
+            alcohol: (raw.alcoholSmell ?? raw.alcohol ?? raw.smellAlcohol) ? 'ДА' : 'НЕТ',
+            acetone: (raw.acetoneSmell ?? raw.acetone ?? raw.smellAcetone) ? 'ДА' : 'НЕТ',
             medHelp: jArr('medicalAssistanceProvided'), medications: meds,
             pupils: cleanVal(raw.pupils).toUpperCase(), lightReaction: raw.pupilsLight !== false ? 'ДА' : 'НЕТ',
             speech: cleanVal(raw.speech).toUpperCase(), gait: cleanVal(raw.gait).toUpperCase(),
@@ -1088,6 +1184,8 @@ function formatCardText(jsonStr) {
         const edm = getActiveBtnText('периферические отеки'); if (edm) c.peripheralEdema = (edm === 'ДА');
         const prt = getActiveBtnText('симптомы раздражения брюшины'); if (prt) c.stomachSymptoms = (prt === 'ДА');
         const prs = getActiveBtnText('перистальтика'); if (prs) c.peristalsis = (prs === 'ДА');
+        const alc = getActiveBtnText('запах алкоголя'); if (alc) c.alcoholSmell = (alc === 'ДА');
+        const act = getActiveBtnText('запах ацетона'); if (act) c.acetoneSmell = (act === 'ДА');
         const pls = getActiveBtnText('пульс, ударов в минуту'); if (pls) c.pulseExists = (pls === 'ДА');
         const cns = getActiveBtnText('получено устное согласие на простое медицинское вмешательство') ?? getActiveBtnText('получено устное согласие');
         if (cns !== null) c.acceptsSimpleMedProcedure = (cns === 'ДА');
@@ -1774,10 +1872,13 @@ function formatCardText(jsonStr) {
                 .find(b => b.getBoundingClientRect().top < 150 && (b.innerText || '').toUpperCase().includes('МЕДИЦИНСКАЯ ПОМОЩЬ'));
             if (helpTab) {
                 helpTab.click();
-                await sleep(320);
-                sec = findMedicationsSection();
-                addBtn = sec ? Array.from(sec.querySelectorAll('button'))
-                    .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+                for (let w = 0; w < 12; w++) {
+                    await sleep(100);
+                    sec = findMedicationsSection();
+                    addBtn = sec ? Array.from(sec.querySelectorAll('button'))
+                        .find(b => (b.innerText || b.textContent || '').trim().toUpperCase() === 'ДОБАВИТЬ') : null;
+                    if (addBtn && addBtn.offsetParent !== null) break;
+                }
             }
         }
 
@@ -1795,7 +1896,11 @@ function formatCardText(jsonStr) {
             document.head.appendChild(hideStyle);
         }
 
-        const normX = (s) => cleanVal(s).toLowerCase().replace(/x/g, 'х').replace(/\s+/g, ' ');
+        const normX = (s) => cleanVal(s).toLowerCase()
+            .replace(/x/g, 'х').replace(/c/g, 'с').replace(/a/g, 'а').replace(/e/g, 'е')
+            .replace(/o/g, 'о').replace(/p/g, 'р').replace(/k/g, 'к').replace(/m/g, 'м')
+            .replace(/t/g, 'т').replace(/h/g, 'н').replace(/b/g, 'в')
+            .replace(/,/g, '.').replace(/\s+/g, ' ');
         const setReactVal = (inp, val) => {
             if (!inp) return;
             const str = String(val ?? ''), prev = String(inp.value ?? '');
@@ -1819,35 +1924,44 @@ function formatCardText(jsonStr) {
             const popupBtn = autoRoot.querySelector('.MuiAutocomplete-popupIndicator');
             const clearBtn = autoRoot.querySelector('.MuiAutocomplete-clearIndicator');
             try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
-            if (inp.value && clearBtn) { clearBtn.click(); await sleep(60); }
+            if (inp.value) {
+                if (clearBtn) clearBtn.click();
+                else setReactVal(inp, '');
+                await sleep(100);
+            }
             setReactVal(inp, queryText);
-            await sleep(360);
+            await sleep(420);
 
             let targetOpt = null;
             let noOptTicks = 0;
-            for (let w = 0; w < 32; w++) {
+            for (let w = 0; w < 38; w++) {
                 const poppers = Array.from(document.querySelectorAll('.MuiAutocomplete-popper')).filter(isPopVis);
                 const popper = poppers[poppers.length - 1];
-                if (!popper && w === 4 && popupBtn) popupBtn.click();
+                if (!popper && (w === 3 || w === 10) && popupBtn) popupBtn.click();
                 if (popper) {
                     const popText = cleanVal(popper.innerText).toLowerCase();
-                    if (popText.includes('нет вариантов') || popText.includes('no options')) {
-                        noOptTicks++;
-                        if (noOptTicks >= 3) break;
-                    }
+                    const isLoading = popText.includes('загрузка') || popText.includes('loading');
                     const opts = Array.from(popper.querySelectorAll('li[role="option"], .MuiAutocomplete-option, .MuiMenuItem-root'))
                         .filter(o => {
                             const tx = cleanVal(o.innerText).toLowerCase();
-                            return tx && !tx.includes('загрузка') && !tx.includes('нет вариантов') && !tx.includes('no options');
+                            return tx && !tx.includes('загрузка') && !tx.includes('loading') && !tx.includes('нет вариантов') && !tx.includes('no options');
                         });
                     if (opts.length > 0) {
+                        noOptTicks = 0;
                         const qNorm = normX(queryText);
                         targetOpt = opts.find(o => normX(o.innerText) === fullTargetNorm)
                             || opts.find(o => normX(o.innerText).startsWith(fullTargetNorm))
                             || opts.find(o => normX(o.innerText).includes(fullTargetNorm))
                             || (requireStrongMatch ? null : (opts.find(o => normX(o.innerText).includes(qNorm)) || opts[0]));
                         if (targetOpt) break;
-                        if (requireStrongMatch) break;
+                        if (requireStrongMatch && !isLoading && w >= 8) break;
+                    } else if (isLoading) {
+                        noOptTicks = 0;
+                    } else if (popText.includes('нет вариантов') || popText.includes('no options')) {
+                        if (w >= 14) {
+                            noOptTicks++;
+                            if (noOptTicks >= 6) break;
+                        }
                     }
                 }
                 await sleep(100);
@@ -1855,7 +1969,7 @@ function formatCardText(jsonStr) {
             if (targetOpt) {
                 targetOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
                 targetOpt.click();
-                await sleep(120);
+                await sleep(140);
                 return true;
             }
             return false;
@@ -1920,10 +2034,12 @@ function formatCardText(jsonStr) {
                 if (noteInp && cleanVal(item.note)) setReactVal(noteInp, cleanVal(item.note));
 
                 const saveBtn = Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('сохранить'));
+                for (let w = 0; w < 12 && saveBtn && saveBtn.disabled; w++) await sleep(80);
                 if (saveBtn && !saveBtn.disabled) {
                     saveBtn.click();
                     let closed = false;
-                    for (let w = 0; w < 25; w++) { await sleep(90); if (!findOpenMedDialog()) { closed = true; break; } }
+                    for (let w = 0; w < 45; w++) { await sleep(100); if (!findOpenMedDialog()) { closed = true; break; } }
+                    if (!closed && scrapeScreenMedications().some(m => normX(m.name) === normX(itemName))) closed = true;
                     if (closed) { added++; existingNames.add(normX(itemName)); }
                     else {
                         Array.from(dlg.querySelectorAll('.MuiDialogActions-root button')).find(b => (b.innerText || '').toLowerCase().includes('отмен'))?.click();
@@ -2333,55 +2449,346 @@ function formatCardText(jsonStr) {
 
     function openCreateTemplateSheet(prefill = null, editingItem = null, onSaved = null) {
         const isEdit = Boolean(editingItem);
+        const defaultTpl = () => ({
+            pastDiseases: 'ИБС, АГ', allergy: 'НЕТ', generalState: 'Удовлетворительное', consciousness: 'Ясное',
+            position: 'АКТИВНОЕ', positionDescription: '', behavior: 'СПОКОЙНОЕ', glasgowScore: '15',
+            bp: '130/80', bpAdapted: '120/80', pulse: '78', pulseExists: 'ДА', rr: '16', temp: '36.6',
+            saturation: '98', glucose: '5.4', heartSounds: 'Ритмичные, Ясные', lungs: 'Свободное, Везикулярное',
+            percussion: 'Ясный легочный звук', abdomen: 'Участвует в акте дыхания, Мягкий, Безболезненный',
+            skin: 'Теплая, Сухая, Нормальная', tongue: 'Чистые', mucous: 'Бледно-розовые',
+            pupils: '', lightReaction: 'ДА', speech: 'СОХРАНЕНА', face: 'СИММЕТРИЧНОЕ', gait: 'СВОБОДНАЯ',
+            nystagmus: 'НЕТ', muscleTone: 'Нормальный', pathologicalReflexes: 'Отрицательные',
+            meningealSymptoms: 'Отрицательные', plegia: 'Нет', rash: 'НЕТ', ascites: 'НЕТ',
+            edema: 'НЕТ', edemaDescription: '', alcohol: 'НЕТ', acetone: 'НЕТ', peritoneal: 'НЕТ',
+            liver: 'НЕ УВЕЛИЧЕНА', peristalsis: 'ДА', urination: 'НЕ НАРУШЕНО', stool: 'НЕ НАРУШЕН',
+            localStatus: '', ecgBefore: '', ecgAfter: '', recommendedTherapy: '',
+            attack: 'КУПИРОВАН', therapyEffect: 'УЛУЧШЕНИЕ', callResult: 'ОСТАВЛЕН НА МЕСТЕ'
+        });
+
         openIosSheet(isEdit ? '✏️ Редактировать шаблон' : '➕ Новый клинический шаблон', isEdit ? '#E65100' : '#00796B', (body, close) => {
             body.innerHTML = `
-                <button id="ct-pull-btn" style="width:100%;padding:12px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:13px;margin-bottom:12px;cursor:pointer;">📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ</button>
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Название шаблона (обязательно):</div>
-                <input id="ct-title" type="text" placeholder="Напр. ГК с тошнотой / ОКС с блокадой" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid #80CBC4;background:#E0F2F1;color:#111;font-size:13.5px;font-weight:700;margin-bottom:10px;outline:none;">
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Код по МКБ-10:</div>
-                <input id="ct-mkb" type="text" placeholder="Напр. [I10]" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;">
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Предварительный диагноз:</div>
-                <textarea id="ct-diag" rows="2" placeholder="Клинический диагноз..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Жалобы:</div>
-                <textarea id="ct-comp" rows="2" placeholder="Жалобы пациента..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Анамнез заболевания:</div>
-                <textarea id="ct-anam" rows="3" placeholder="Хронология, обстоятельства..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Локальный статус:</div>
-                <textarea id="ct-loc" rows="2" placeholder="Локальный статус при травме, ранах..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:10px;outline:none;"></textarea>
-
-                <div style="font-size:12px;font-weight:700;color:#004D40;margin-bottom:4px;">Рекомендованная терапия / протокол:</div>
-                <textarea id="ct-ther" rows="2" placeholder="Препараты по протоколу..." style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:14px;outline:none;"></textarea>
-
-                <button id="ct-save-btn" style="width:100%;padding:14px;border:none;border-radius:12px;background:${isEdit ? '#E65100' : '#00796B'};color:#fff;font-weight:700;font-size:14px;cursor:pointer;">${isEdit ? '💾 СОХРАНИТЬ ИЗМЕНЕНИЯ' : '💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ'}</button>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button id="ct-pull-btn" style="flex:1;padding:11px;border:none;border-radius:12px;background:#0288D1;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;">📥 ИЗ ОТКРЫТОЙ КАРТЫ</button>
+                    <button id="ct-norm-btn" style="padding:11px 14px;border:1.5px solid #80CBC4;border-radius:12px;background:#E0F2F1;color:#004D40;font-weight:700;font-size:12.5px;cursor:pointer;">🔄 НОРМА</button>
+                </div>
+                <div id="ct-fields"></div>
+                <button id="ct-save-btn" style="width:100%;padding:14px;border:none;border-radius:12px;background:${isEdit ? '#E65100' : '#00796B'};color:#fff;font-weight:700;font-size:14px;cursor:pointer;margin-top:8px;">${isEdit ? '💾 СОХРАНИТЬ ИЗМЕНЕНИЯ' : '💾 СОХРАНИТЬ В МОИ ШАБЛОНЫ'}</button>
             `;
 
-            let baseCard = prefill || {};
-            const titleInp = body.querySelector('#ct-title');
-            const mkbInp = body.querySelector('#ct-mkb');
-            const diagInp = body.querySelector('#ct-diag');
-            const compInp = body.querySelector('#ct-comp');
-            const anamInp = body.querySelector('#ct-anam');
-            const locInp = body.querySelector('#ct-loc');
-            const therInp = body.querySelector('#ct-ther');
+            const state = Object.assign(defaultTpl(), prefill || {});
+            const host = body.querySelector('#ct-fields');
+            const binders = [];
+            const readers = [];
 
-            if (editingItem && editingItem.title) titleInp.value = editingItem.title;
+            const addSection = (txt) => {
+                const d = document.createElement('div');
+                d.style.cssText = 'font-size:13px;font-weight:700;color:#00695C;background:#EDF7F6;border:1px solid #B2DFDB;border-radius:10px;padding:9px 12px;margin:10px 0 8px 0;';
+                d.innerText = txt;
+                host.appendChild(d);
+            };
+            const addLabel = (txt) => {
+                const l = document.createElement('div');
+                l.style.cssText = 'font-size:12px;font-weight:700;color:#004D40;margin:4px 0 4px 2px;';
+                l.innerText = txt;
+                host.appendChild(l);
+            };
+            const addTextField = (key, lbl, ph, rows = 1, chips = [], bg = '#F5F7F8', br = '#B0BEC5') => {
+                addLabel(lbl);
+                const el = document.createElement(rows > 1 ? 'textarea' : 'input');
+                if (rows > 1) el.rows = rows; else el.type = 'text';
+                el.placeholder = ph;
+                el.style.cssText = `width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid ${br};background:${bg};color:#111;font-size:13px;margin-bottom:6px;outline:none;font-family:inherit;`;
+                host.appendChild(el);
+                if (chips.length) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;';
+                    chips.forEach(ch => {
+                        const c = document.createElement('span');
+                        c.style.cssText = 'white-space:nowrap;padding:5px 11px;border-radius:12px;background:#E0F2F1;color:#004D40;font-size:11.5px;cursor:pointer;';
+                        c.innerText = ch;
+                        c.onclick = () => { el.value = ch; };
+                        row.appendChild(c);
+                    });
+                    host.appendChild(row);
+                }
+                binders.push(() => { el.value = cleanVal(state[key]); });
+                readers.push(() => { state[key] = el.value.trim(); });
+                return el;
+            };
+            const addPairFields = (k1, l1, ph1, k2, l2, ph2) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:8px;margin-bottom:6px;';
+                [[k1, l1, ph1], [k2, l2, ph2]].forEach(([k, l, ph]) => {
+                    const col = document.createElement('div');
+                    col.style.cssText = 'flex:1;';
+                    col.innerHTML = `<div style="font-size:11.5px;font-weight:700;color:#004D40;margin-bottom:4px;">${escapeHtml(l)}</div>`;
+                    const inp = document.createElement('input');
+                    inp.type = 'text'; inp.placeholder = ph;
+                    inp.style.cssText = 'width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;outline:none;';
+                    col.appendChild(inp);
+                    row.appendChild(col);
+                    binders.push(() => { inp.value = cleanVal(state[k]); });
+                    readers.push(() => { state[k] = inp.value.trim(); });
+                });
+                host.appendChild(row);
+            };
+            const addButtonGroup = (key, lbl, opts, allowDeselect = false) => {
+                addLabel(lbl);
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;';
+                host.appendChild(row);
+                let sel = cleanVal(state[key]);
+                const render = () => {
+                    row.innerHTML = '';
+                    const list = [...opts];
+                    if (sel && !list.some(o => o.toLowerCase() === sel.toLowerCase())) list.push(sel);
+                    list.forEach(opt => {
+                        const on = sel.toLowerCase() === opt.toLowerCase();
+                        const b = document.createElement('button');
+                        b.type = 'button';
+                        b.style.cssText = `white-space:nowrap;padding:8px 12px;border-radius:11px;font-size:12px;cursor:pointer;font-weight:${on ? '700' : '500'};border:1px solid ${on ? '#004D40' : '#CFD8DC'};background:${on ? '#00796B' : '#F1F5F6'};color:${on ? '#fff' : '#263238'};`;
+                        b.innerText = opt;
+                        b.onclick = () => { sel = (allowDeselect && on) ? '' : opt; state[key] = sel; render(); };
+                        row.appendChild(b);
+                    });
+                };
+                binders.push(() => { sel = cleanVal(state[key]); render(); });
+                readers.push(() => { state[key] = sel; });
+            };
+            const addSingleSelect = (key, lbl, opts) => {
+                addLabel(lbl);
+                const selEl = document.createElement('select');
+                selEl.style.cssText = 'width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;margin-bottom:8px;outline:none;';
+                const fillOpts = (cur) => {
+                    selEl.innerHTML = '<option value="">— Не выбрано —</option>';
+                    const list = [...opts];
+                    if (cur && !list.some(o => o.toLowerCase() === cur.toLowerCase())) list.push(cur);
+                    list.forEach(o => {
+                        const op = document.createElement('option');
+                        op.value = o; op.text = o;
+                        if (cur && o.toLowerCase() === cur.toLowerCase()) op.selected = true;
+                        selEl.appendChild(op);
+                    });
+                };
+                host.appendChild(selEl);
+                binders.push(() => { fillOpts(cleanVal(state[key])); });
+                readers.push(() => { state[key] = selEl.value; });
+            };
+            const addMultiDropdown = (key, lbl, opts) => {
+                addLabel(lbl);
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'margin-bottom:8px;';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.style.cssText = 'width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;cursor:pointer;';
+                const panel = document.createElement('div');
+                panel.style.cssText = 'display:none;flex-wrap:wrap;gap:6px;padding:8px;margin-top:4px;border-radius:10px;border:1px solid #B2DFDB;background:#F7FAFA;';
+                wrap.appendChild(btn); wrap.appendChild(panel);
+                host.appendChild(wrap);
 
-            const applyDataToInputs = (d) => {
-                if (d.diagnosis !== undefined) diagInp.value = cleanVal(d.diagnosis);
-                if (d.mkb !== undefined) mkbInp.value = cleanVal(d.mkb);
-                if (d.complaints !== undefined) compInp.value = cleanVal(d.complaints);
-                if (d.anamnesis !== undefined) anamInp.value = cleanVal(d.anamnesis);
-                if (d.localStatus !== undefined) locInp.value = cleanVal(d.localStatus);
-                if (d.recommendedTherapy !== undefined) therInp.value = cleanVal(d.recommendedTherapy);
-                if (!titleInp.value.trim()) titleInp.value = cleanVal(d.diagnosis || d.callReason || '').slice(0, 45);
+                let selected = [];
+                const refresh = () => {
+                    const txt = selected.join(', ');
+                    btn.innerText = txt ? `${txt}   ▼` : 'Не выбрано (нажмите для выбора)   ▼';
+                    btn.style.color = txt ? '#111' : '#546E7A';
+                    panel.innerHTML = '';
+                    const all = [...opts];
+                    selected.forEach(s => { if (!all.some(a => a.toLowerCase() === s.toLowerCase())) all.push(s); });
+                    all.forEach(opt => {
+                        const on = selected.some(s => s.toLowerCase() === opt.toLowerCase());
+                        const ch = document.createElement('button');
+                        ch.type = 'button';
+                        ch.style.cssText = `padding:6px 10px;border-radius:10px;font-size:12px;cursor:pointer;border:1px solid ${on ? '#004D40' : '#CFD8DC'};background:${on ? '#00796B' : '#fff'};color:${on ? '#fff' : '#263238'};font-weight:${on ? '700' : '400'};`;
+                        ch.innerText = (on ? '✓ ' : '') + opt;
+                        ch.onclick = () => {
+                            if (on) selected = selected.filter(s => s.toLowerCase() !== opt.toLowerCase());
+                            else selected.push(opt);
+                            state[key] = selected.join(', ');
+                            refresh();
+                        };
+                        panel.appendChild(ch);
+                    });
+                };
+                btn.onclick = () => { panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'; };
+                binders.push(() => {
+                    selected = cleanVal(state[key]).split(',').map(s => s.trim()).filter(Boolean);
+                    refresh();
+                });
+                readers.push(() => { state[key] = selected.join(', '); });
             };
 
-            if (prefill) applyDataToInputs(prefill);
+            // Название шаблона
+            addLabel('Название шаблона (обязательно):');
+            const titleInp = document.createElement('input');
+            titleInp.type = 'text';
+            titleInp.placeholder = 'Напр. ГК с тошнотой / ОКС с блокадой';
+            titleInp.style.cssText = 'width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid #80CBC4;background:#E0F2F1;color:#111;font-size:13.5px;font-weight:700;margin-bottom:10px;outline:none;';
+            if (editingItem && editingItem.title) titleInp.value = editingItem.title;
+            host.appendChild(titleInp);
+
+            // Код по МКБ-10 (выпадающее меню синхронизированное с сайтом)
+            addLabel('Код по МКБ-10 (синхронизировано с сайтом):');
+            const mkbRow = document.createElement('div');
+            mkbRow.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;';
+            const mkbInp = document.createElement('input');
+            mkbInp.type = 'text';
+            mkbInp.placeholder = 'Поиск кода или диагноза (напр. I10, гипертенз)...';
+            mkbInp.style.cssText = 'flex:1;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #B0BEC5;background:#F5F7F8;color:#111;font-size:13px;outline:none;';
+            const mkbDropBtn = document.createElement('button');
+            mkbDropBtn.type = 'button';
+            mkbDropBtn.innerText = '▼';
+            mkbDropBtn.style.cssText = 'padding:0 14px;border:1px solid #80CBC4;border-radius:10px;background:#E0F2F1;color:#004D40;font-weight:700;font-size:13px;cursor:pointer;';
+            mkbRow.appendChild(mkbInp); mkbRow.appendChild(mkbDropBtn);
+            host.appendChild(mkbRow);
+
+            const mkbSug = document.createElement('div');
+            mkbSug.style.cssText = 'display:none;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;margin-bottom:8px;';
+            host.appendChild(mkbSug);
+
+            let mkbTimer = null;
+            let suppressMkb = false;
+
+            const drawMkbSug = (siteItems, loading, emptyHint = false) => {
+                mkbSug.innerHTML = '';
+                const seen = new Set();
+                const uniqueSite = (siteItems || []).filter(it => it && it.c && !seen.has(it.c) && seen.add(it.c));
+                if (!uniqueSite.length && !loading && !emptyHint) { mkbSug.style.display = 'none'; return; }
+                mkbSug.style.display = 'flex';
+                if (loading) {
+                    const st = document.createElement('div');
+                    st.style.cssText = 'font-size:12px;color:#0277BD;padding:4px 8px;';
+                    st.innerText = '⏳ Поиск МКБ-10 на сайте СМП...';
+                    mkbSug.appendChild(st);
+                } else if (!uniqueSite.length && emptyHint) {
+                    const st = document.createElement('div');
+                    st.style.cssText = 'font-size:12px;color:#546E7A;padding:8px 10px;border-radius:8px;background:#F5F7F8;border:1px solid #CFD8DC;';
+                    st.innerText = '🌐 Введите 2+ буквы кода или диагноза для поиска по базе сайта СМП';
+                    mkbSug.appendChild(st);
+                    return;
+                }
+                uniqueSite.slice(0, 25).forEach(item => {
+                    const formatted = item.n ? `[${item.c}] ${item.n}` : `[${item.c}]`;
+                    const row = document.createElement('div');
+                    row.style.cssText = 'padding:9px 11px;border-radius:8px;font-size:12.5px;color:#263238;cursor:pointer;border:1px solid #90CAF9;background:#E3F2FD;';
+                    row.innerText = '🌐 ' + formatted;
+                    row.onclick = () => {
+                        suppressMkb = true;
+                        mkbInp.value = formatted;
+                        suppressMkb = false;
+                        mkbSug.style.display = 'none';
+                    };
+                    mkbSug.appendChild(row);
+                });
+            };
+
+            const filterSiteMkb = (qRaw) => {
+                const qFull = String(qRaw || '').trim().toLowerCase();
+                const qCode = qFull.replace(/^\[/, '').split(']')[0].trim();
+                return (window.b103SiteMkb || []).filter(it => !qFull || it.c.toLowerCase().includes(qFull) || (it.n || '').toLowerCase().includes(qFull) || (qCode.length >= 2 && it.c.toLowerCase().includes(qCode))).slice(0, 25);
+            };
+
+            const triggerMkb = (forceOpen = false) => {
+                clearTimeout(mkbTimer);
+                if (suppressMkb) { mkbSug.style.display = 'none'; return; }
+                const rawQ = mkbInp.value.trim();
+                if (!forceOpen && rawQ.length < 2) { mkbSug.style.display = 'none'; return; }
+                const qSite = rawQ.replace(/[\[\]]/g, '').trim();
+                const sLoc = filterSiteMkb(rawQ);
+                drawMkbSug(sLoc, qSite.length >= 2, forceOpen && qSite.length < 2);
+                if (qSite.length >= 2) {
+                    mkbTimer = setTimeout(async () => {
+                        const remote = await window.searchMkbOnline(qSite);
+                        if (!suppressMkb && document.body.contains(mkbSug)) {
+                            const curS = filterSiteMkb(mkbInp.value);
+                            drawMkbSug([...remote, ...curS], false, true);
+                        }
+                    }, 260);
+                }
+            };
+
+            mkbInp.oninput = () => triggerMkb(false);
+            mkbDropBtn.onclick = () => {
+                if (mkbSug.style.display !== 'none') mkbSug.style.display = 'none';
+                else triggerMkb(true);
+            };
+            binders.push(() => { suppressMkb = true; mkbInp.value = cleanVal(state.mkb); suppressMkb = false; mkbSug.style.display = 'none'; });
+            readers.push(() => { state.mkb = mkbInp.value.trim(); });
+
+            addTextField('diagnosis', 'Предварительный диагноз:', 'Клинический диагноз...', 2);
+            addTextField('complaints', 'Жалобы:', 'Жалобы пациента...', 2);
+            addTextField('anamnesis', 'Анамнез заболевания:', 'Хронология, обстоятельства...', 3);
+            addTextField('pastDiseases', 'Перенесенные заболевания:', 'ИБС, АГ...', 1, ['ИБС, АГ', 'Отрицает', 'СД 2 типа', 'БА', 'ХОБЛ']);
+            addButtonGroup('allergy', 'Аллергия:', ['НЕТ', 'ДА']);
+
+            addSection('🩺 Состояние и витальные показатели');
+            addSingleSelect('generalState', 'Общее состояние:', ['Удовлетворительное', 'Средней степени тяжести', 'Тяжелое', 'Крайне тяжелое', 'Клиническая смерть', 'Биологическая смерть']);
+            addSingleSelect('consciousness', 'Сознание:', ['Ясное', 'Приглушенное', 'Оглушение', 'Сопор', 'Кома', 'Отсутствует']);
+            addTextField('glasgowScore', 'Шкала комы Глазго (баллы):', '15', 1, ['15', '14', '13', '8', '3']);
+            addButtonGroup('position', 'Положение:', ['АКТИВНОЕ', 'ПАССИВНОЕ', 'ВЫНУЖДЕННОЕ']);
+            addTextField('positionDescription', 'Комментарий (вынужденное положение):', 'Напр. сидя, ортопноэ...');
+            addButtonGroup('behavior', 'Поведение:', ['СПОКОЙНОЕ', 'ВОЗБУЖДЕННОЕ', 'АГРЕССИВНОЕ', 'ЗАТОРМОЖЕННОЕ', 'НЕАДЕКВАТНОЕ']);
+            addPairFields('bp', 'АД на вызове:', '130/80', 'bpAdapted', 'Привычное АД:', '120/80');
+            addButtonGroup('pulseExists', 'Пульс определяется:', ['ДА', 'НЕТ']);
+            addPairFields('pulse', 'Пульс (уд/мин):', '78', 'rr', 'ЧДД (в мин):', '16');
+            addPairFields('temp', 'Температура (°C):', '36.6', 'saturation', 'Сатурация (%):', '98');
+            addTextField('glucose', 'Гликемия (ммоль/л):', '5.4');
+
+            addSection('🫁 Кожа, сердце, легкие и ЖКТ');
+            addMultiDropdown('skin', 'Кожа (мультивыбор):', ['Теплая', 'Холодная', 'Сухая', 'Влажная', 'Нормальная', 'Бледная', 'Гиперемия', 'Цианоз', 'Желтушность', 'Гипостатические пятна']);
+            addButtonGroup('rash', 'Высыпания:', ['НЕТ', 'ДА']);
+            addButtonGroup('edema', 'Периферические отеки:', ['НЕТ', 'ДА']);
+            addTextField('edemaDescription', 'Комментарий (отеки):', 'Напр. Отечность голеней...');
+            addButtonGroup('ascites', 'Асцит:', ['НЕТ', 'ДА']);
+            addTextField('tongue', 'Язык:', 'Чистые', 1, ['Чистые', 'Сухой, обложен', 'Суховат, обложен', 'Следы прикуса']);
+            addTextField('mucous', 'Слизистые:', 'Бледно-розовые', 1, ['Бледно-розовые', 'Гиперемированы', 'Бледные', 'Сухие']);
+            addMultiDropdown('heartSounds', 'Тоны сердца (мультивыбор):', ['Ритмичные', 'Аритмичные', 'Ясные', 'Приглушенные', 'Глухие', 'Отсутствуют']);
+            addMultiDropdown('lungs', 'Дыхание (мультивыбор):', ['Свободное', 'Везикулярное', 'Жесткое', 'Ослабленное', 'Затрудненное', 'Отсутствует', 'Хрипы сухие', 'Хрипы влажные', 'Хрипы справа', 'Хрипы слева']);
+            addMultiDropdown('percussion', 'Перкуссия легких (мультивыбор):', ['Ясный легочный звук', 'Коробочный звук справа', 'Коробочный звук слева', 'Притупление звука справа', 'Притупление звука слева', 'Тупой звук']);
+            addMultiDropdown('abdomen', 'Живот (мультивыбор):', ['Участвует в акте дыхания', 'Не участвует в акте дыхания', 'Мягкий', 'Напряженный', 'Вздут', 'Безболезненный', 'Болезненный в области']);
+            addButtonGroup('peritoneal', 'Симптомы раздражения брюшины:', ['НЕТ', 'ДА']);
+            addButtonGroup('peristalsis', 'Перистальтика:', ['ДА', 'НЕТ']);
+            addButtonGroup('liver', 'Печень:', ['НЕ УВЕЛИЧЕНА', 'УВЕЛИЧЕНА']);
+            addButtonGroup('urination', 'Мочеиспускание:', ['НЕ НАРУШЕНО', 'УЧАЩЕНО', 'БОЛЕЗНЕННОЕ', 'ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ', 'НЕДЕРЖАНИЕ']);
+            addButtonGroup('stool', 'Стул:', ['НЕ НАРУШЕН', 'УЧАЩЕН', 'ЖИДКИЙ', 'ЗАДЕРЖКА', 'ОТСУТСТВУЕТ']);
+            addButtonGroup('alcohol', 'Запах алкоголя:', ['НЕТ', 'ДА']);
+            addButtonGroup('acetone', 'Запах ацетона:', ['НЕТ', 'ДА']);
+
+            addSection('🧠 Неврологический статус');
+            addButtonGroup('pupils', 'Зрачки (повторный тап — снять):', ['МИДРИАЗ', 'МИОЗ', 'АНИЗОКАРИЯ'], true);
+            addButtonGroup('lightReaction', 'Реакция на свет:', ['ДА', 'НЕТ']);
+            addButtonGroup('speech', 'Речь:', ['СОХРАНЕНА', 'НАРУШЕНА', 'ОТСУТСТВУЕТ']);
+            addButtonGroup('face', 'Лицо:', ['СИММЕТРИЧНОЕ', 'АСИММЕТРИЧНОЕ']);
+            addButtonGroup('gait', 'Походка:', ['СВОБОДНАЯ', 'ШАТКАЯ', 'НАРУШЕНА', 'НЕ ОЦЕНИВАЛАСЬ']);
+            addButtonGroup('nystagmus', 'Нистагм:', ['НЕТ', 'ГОРИЗОНТАЛЬНЫЙ', 'ВЕРТИКАЛЬНЫЙ', 'ДА']);
+            addTextField('muscleTone', 'Тонус мышц:', 'Нормальный', 1, ['Нормальный', 'Снижен', 'Повышен', 'Атония', 'Трупное окоченение']);
+            addTextField('pathologicalReflexes', 'Патологические рефлексы:', 'Отрицательные', 1, ['Отрицательные', 'Положительные', 'Симптом Бабинского справа', 'Симптом Бабинского слева']);
+            addTextField('meningealSymptoms', 'Менингеальные знаки:', 'Отрицательные', 1, ['Отрицательные', 'Ригидность затылочных мышц', 'Симптом Кернига (+)']);
+            addTextField('plegia', 'Плегии, парезы:', 'Нет', 1, ['Нет', 'Правосторонний гемипарез', 'Левосторонний гемипарез', 'Левосторонняя гемиплегия']);
+
+            addSection('📄 Локальный статус, ЭКГ и итог');
+            addTextField('localStatus', 'Локальный статус:', 'Локальный статус при травме, ранах...', 2);
+            addTextField('ecgBefore', 'ЭКГ до оказания помощи:', 'Ритм синусовый, правильный...', 2);
+            addTextField('ecgAfter', 'ЭКГ после оказания помощи:', 'Без динамики...', 2);
+            addTextField('recommendedTherapy', 'Рекомендованная терапия / протокол:', 'Препараты по протоколу...', 2);
+            addButtonGroup('attack', 'Приступ:', ['КУПИРОВАН', 'НЕ КУПИРОВАН', 'ЧАСТИЧНО КУПИРОВАН']);
+            addButtonGroup('therapyEffect', 'Эффект терапии:', ['УЛУЧШЕНИЕ', 'БЕЗ ЭФФЕКТА', 'УХУДШЕНИЕ']);
+            addSingleSelect('callResult', 'Результат выезда:', [
+                'ОСТАВЛЕН НА МЕСТЕ', 'ТРАНСПОРТИРОВАН В ОРГАНИЗАЦИЮ ЗДРАВООХРАНЕНИЯ',
+                'ОТКАЗ ОТ ГОСПИТАЛИЗАЦИИ', 'КОНСТАТИРОВАНА БИОЛОГИЧЕСКАЯ СМЕРТЬ', 'ПЕРЕДАН СПЕЦБРИГАДЕ'
+            ]);
+
+            const applyDataToInputs = (d) => {
+                Object.assign(state, d || {});
+                binders.forEach(fn => fn());
+                if (!titleInp.value.trim()) titleInp.value = cleanVal(d?.diagnosis || d?.callReason || '').slice(0, 45);
+            };
+            binders.forEach(fn => fn());
+
+            body.querySelector('#ct-norm-btn').onclick = () => {
+                Object.assign(state, defaultTpl());
+                binders.forEach(fn => fn());
+                showToast('🔄 Поля сброшены к норме');
+            };
 
             body.querySelector('#ct-pull-btn').onclick = () => {
                 if (!isInsideCard()) { showToast('Откройте карту для считывания!'); return; }
@@ -2390,9 +2797,8 @@ function formatCardText(jsonStr) {
                 const internal = parseServerCardToInternal(merged);
                 if (internal && internal.json_data) {
                     try {
-                        baseCard = JSON.parse(internal.json_data);
-                        applyDataToInputs(baseCard);
-                        showToast('📥 Данные подтянуты из карты!');
+                        applyDataToInputs(JSON.parse(internal.json_data));
+                        showToast('📥 Все поля подтянуты из карты!');
                     } catch (e) {}
                 } else {
                     showToast('Не удалось считать данные карты');
@@ -2402,28 +2808,8 @@ function formatCardText(jsonStr) {
             body.querySelector('#ct-save-btn').onclick = () => {
                 const title = titleInp.value.trim();
                 if (!title) { alert('Введите название шаблона!'); titleInp.focus(); return; }
-
-                const finalData = Object.assign({
-                    pastDiseases: 'ИБС, АГ', allergy: 'НЕТ', generalState: 'Удовлетворительное', consciousness: 'Ясное',
-                    position: 'АКТИВНОЕ', behavior: 'СПОКОЙНОЕ', glasgowScore: '15',
-                    bp: '130/80', bpAdapted: '120/80', pulse: '78', pulseExists: 'ДА', rr: '16', temp: '36.6',
-                    saturation: '98', glucose: '5.4', heartSounds: 'Ритмичные, Ясные', lungs: 'Свободное, Везикулярное',
-                    percussion: 'Ясный легочный звук', abdomen: 'Участвует в акте дыхания, Мягкий, Безболезненный',
-                    skin: 'Теплая, Сухая, Нормальная', tongue: 'Чистые', mucous: 'Бледно-розовые',
-                    pupils: '', lightReaction: 'ДА', speech: 'СОХРАНЕНА', face: 'СИММЕТРИЧНОЕ', gait: 'СВОБОДНАЯ',
-                    nystagmus: 'НЕТ', muscleTone: 'Нормальный', pathologicalReflexes: 'Отрицательные',
-                    meningealSymptoms: 'Отрицательные', plegia: 'Нет', rash: 'НЕТ', ascites: 'НЕТ',
-                    edema: 'НЕТ', alcohol: 'НЕТ', acetone: 'НЕТ', peritoneal: 'НЕТ',
-                    liver: 'НЕ УВЕЛИЧЕНА', peristalsis: 'ДА', urination: 'НЕ НАРУШЕНО', stool: 'НЕ НАРУШЕН',
-                    attack: 'КУПИРОВАН', therapyEffect: 'УЛУЧШЕНИЕ', callResult: 'ОСТАВЛЕН НА МЕСТЕ'
-                }, baseCard, {
-                    diagnosis: diagInp.value.trim(),
-                    mkb: mkbInp.value.trim(),
-                    complaints: compInp.value.trim(),
-                    anamnesis: anamInp.value.trim(),
-                    localStatus: locInp.value.trim(),
-                    recommendedTherapy: therInp.value.trim()
-                });
+                readers.forEach(fn => fn());
+                const finalData = Object.assign({}, state);
 
                 if (isEdit) {
                     updateCustomTemplate(editingItem, title, JSON.stringify(finalData));

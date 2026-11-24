@@ -7,6 +7,7 @@ import android.graphics.*
 import android.graphics.drawable.*
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -23,6 +24,8 @@ import androidx.webkit.*
 import com.google.android.material.bottomsheet.*
 import kotlinx.coroutines.*
 import org.json.*
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -41,10 +44,16 @@ class MainActivity : AppCompatActivity() {
     private val targetHost = "soft.103brest.by"
     private val prefsName = "ssmp_plus_prefs"
     private val keyMedCatalog = "med_catalog_json"
+    private val keySiteMkb = "site_mkb_json"
+
+    @Volatile
+    private var siteMkbList: List<MkbCodeItem> = emptyList()
 
     private var activeMedSearchReqId: String = ""
     private var onMedSearchCallback: ((List<Pair<String, String>>) -> Unit)? = null
     private var onMedCatalogUpdated: ((String) -> Unit)? = null
+    private var activeMkbSearchReqId: String = ""
+    private var onMkbSearchCallback: ((List<MkbCodeItem>) -> Unit)? = null
 
     private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let {
@@ -123,6 +132,26 @@ class MainActivity : AppCompatActivity() {
         return parseMedCatalogJson(raw)
     }
 
+    private fun parseMkbItemsArray(raw: String): List<MkbCodeItem> {
+        val out = mutableListOf<MkbCodeItem>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val it = arr.optJSONObject(i) ?: continue
+                val c = it.optString("c").trim().uppercase()
+                val n = it.optString("n").trim()
+                if (c.length >= 3) out.add(MkbCodeItem(c, n, c[0].toString()))
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
+    private fun loadCachedSiteMkb() {
+        val raw = getSharedPreferences(prefsName, Context.MODE_PRIVATE).getString(keySiteMkb, null) ?: return
+        val parsed = parseMkbItemsArray(raw)
+        if (parsed.isNotEmpty()) siteMkbList = parsed
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,6 +159,7 @@ class MainActivity : AppCompatActivity() {
 
         dbHelper = DatabaseHelper(this)
         webView = findViewById(R.id.webView)
+        loadCachedSiteMkb()
         mkbLoadJob = loadFullMkbAsync()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -310,6 +340,114 @@ class MainActivity : AppCompatActivity() {
         row.addView(half("📥 ИМПОРТ", 14) { importDbLauncher.launch(arrayOf("*/*")) })
         row.addView(half("📤 ЭКСПОРТ", 0) { exportDbLauncher.launch("ssmp_archive_${SimpleDateFormat("dd_MM_yyyy", Locale.getDefault()).format(Date())}.json") })
         card.addView(row)
+        card.addView(TextView(this).apply {
+            text = "🔄 ПРОВЕРИТЬ ОБНОВЛЕНИЕ APK (GITHUB)"
+            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(18, 22, 18, 22); background = roundBg("#1565C0", 10f)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 14 }
+            setOnClickListener { d.dismiss(); checkGithubAppUpdate() }
+        })
+    }
+
+    private fun isRemoteVersionNewer(remoteTag: String, localVerName: String): Boolean {
+        fun parseParts(v: String): List<Int> =
+            v.trim().removePrefix("v").removePrefix("V")
+                .substringBefore("-")
+                .split(".")
+                .map { it.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 0 }
+        val r = parseParts(remoteTag)
+        val l = parseParts(localVerName)
+        val len = maxOf(r.size, l.size)
+        for (i in 0 until len) {
+            val rv = r.getOrElse(i) { 0 }
+            val lv = l.getOrElse(i) { 0 }
+            if (rv != lv) return rv > lv
+        }
+        return false
+    }
+
+    private fun checkGithubAppUpdate() {
+        val pInfo = try { packageManager.getPackageInfo(packageName, 0) } catch (_: Exception) { null }
+        val localVerName = pInfo?.versionName ?: "1.0.0"
+        toast("🔄 Проверка релизов на GitHub...")
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val conn = (URL("https://api.github.com/repos/cakecock/SSMP-Plus/releases/latest").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 12000
+                    readTimeout = 12000
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "SSMP-Plus-Android/$localVerName")
+                }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                conn.disconnect()
+                if (code !in 200..299 || body.isBlank()) {
+                    withContext(Dispatchers.Main) { toast("Не удалось проверить обновления (HTTP $code)") }
+                    return@launch
+                }
+
+                val rel = JSONObject(body)
+                val tagName = rel.optString("tag_name").trim()
+                val relTitle = rel.optString("name").ifEmpty { tagName }
+                val htmlUrl = rel.optString("html_url").ifEmpty { "https://github.com/cakecock/SSMP-Plus/releases" }
+                val notes = rel.optString("body").trim()
+
+                var apkUrl = ""
+                var apkName = ""
+                var apkSizeMb = ""
+                val assets = rel.optJSONArray("assets") ?: JSONArray()
+                for (i in 0 until assets.length()) {
+                    val a = assets.optJSONObject(i) ?: continue
+                    val nm = a.optString("name")
+                    if (nm.endsWith(".apk", ignoreCase = true)) {
+                        apkName = nm
+                        apkUrl = a.optString("browser_download_url")
+                        val sz = a.optLong("size", 0L)
+                        if (sz > 0L) apkSizeMb = String.format(Locale.US, "%.1f МБ", sz / (1024.0 * 1024.0))
+                        break
+                    }
+                }
+
+                val hasUpdate = tagName.isNotEmpty() && isRemoteVersionNewer(tagName, localVerName)
+                val msg = buildString {
+                    append("Установлена версия: v$localVerName\n")
+                    append("Последний релиз: ${relTitle.ifEmpty { "—" }}\n")
+                    if (apkName.isNotEmpty()) {
+                        append("Файл: $apkName${if (apkSizeMb.isNotEmpty()) " ($apkSizeMb)" else ""}\n")
+                    }
+                    if (notes.isNotEmpty()) {
+                        append("\nОписание:\n${notes.take(700)}")
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    val builder = AlertDialog.Builder(this@MainActivity)
+                        .setTitle(if (hasUpdate) "🆕 Доступно обновление $tagName" else "✅ Установлена актуальная версия")
+                        .setMessage(msg)
+                        .setNegativeButton("Закрыть", null)
+                        .setNeutralButton("🌐 Релиз") { _, _ ->
+                            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(htmlUrl))) } catch (_: Exception) {}
+                        }
+                    if (apkUrl.isNotEmpty()) {
+                        builder.setPositiveButton(if (hasUpdate) "⬇️ Скачать APK" else "⬇️ Переустановить APK") { _, _ ->
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)))
+                            } catch (_: Exception) {
+                                toast("Не удалось открыть ссылку загрузки")
+                            }
+                        }
+                    }
+                    builder.show()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    toast("Ошибка проверки GitHub: ${e.message ?: "нет связи"}")
+                }
+            }
+        }
     }
 
     // ПОДМЕНЮ: ПОМОЩНИК СМП (12 МОДУЛЕЙ)
@@ -1226,17 +1364,36 @@ class MainActivity : AppCompatActivity() {
         val (bs, root) = createSheet(
             title = if (isEdit) "✏️ Редактировать шаблон" else "➕ Новый клинический шаблон",
             titleColor = if (isEdit) "#E65100" else "#00796B",
-            fixedHeightRatio = 0.86f
+            fixedHeightRatio = 0.90f
         )
         var baseCard: JSONObject? = try { prefillJson?.let { JSONObject(it) } } catch (_: Exception) { null }
+        val state = defaultTemplateJson()
+        baseCard?.let { src ->
+            val it = src.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                state.put(k, src.opt(k))
+            }
+        }
 
-        val pullBtn = TextView(this).apply {
-            text = "📥 ЗАПОЛНИТЬ ИЗ ОТКРЫТОЙ КАРТЫ"
-            textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(18, 16, 18, 16); background = roundBg("#0288D1", 12f)
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10 }
         }
-        root.addView(pullBtn)
+        val pullBtn = TextView(this).apply {
+            text = "📥 ИЗ ОТКРЫТОЙ КАРТЫ"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(14, 15, 14, 15); background = roundBg("#0288D1", 12f)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 8 }
+        }
+        val resetNormBtn = TextView(this).apply {
+            text = "🔄 НОРМА"
+            textSize = 12.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
+            setPadding(16, 15, 16, 15); background = roundBg("#E0F2F1", 12f, "#80CBC4")
+            layoutParams = LinearLayout.LayoutParams(-2, -2)
+        }
+        topRow.addView(pullBtn); topRow.addView(resetNormBtn)
+        root.addView(topRow)
 
         val scroll = NestedScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
@@ -1245,19 +1402,35 @@ class MainActivity : AppCompatActivity() {
         }
         val lay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 4, 0, 16)
+            setPadding(0, 4, 0, 18)
         }
         scroll.addView(lay)
         root.addView(scroll)
 
-        fun field(lbl: String, hintTxt: String, rows: Int = 1, bgHex: String = "#F5F7F8", strokeHex: String = "#B0BEC5"): EditText {
+        val binders = mutableListOf<() -> Unit>()
+        val readers = mutableListOf<() -> Unit>()
+
+        fun addSection(titleTxt: String, accentHex: String = "#00695C") {
+            lay.addView(TextView(this).apply {
+                text = titleTxt; textSize = 13.5f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor(accentHex))
+                setPadding(16, 12, 16, 12)
+                background = roundBg("#EDF7F6", 10f, "#B2DFDB")
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = 10; bottomMargin = 8 }
+            })
+        }
+
+        fun addLabel(lbl: String) {
             lay.addView(TextView(this).apply {
                 text = lbl; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.parseColor("#004D40")); setPadding(6, 6, 0, 4)
+                setTextColor(Color.parseColor("#004D40")); setPadding(6, 4, 0, 4)
             })
-            val et = EditText(this).apply {
+        }
+
+        fun makeEditText(hintTxt: String, rows: Int = 1, bgHex: String = "#F5F7F8", strokeHex: String = "#B0BEC5"): EditText =
+            EditText(this).apply {
                 hint = hintTxt
-                setPadding(26, 16, 26, 16)
+                setPadding(24, 14, 24, 14)
                 if (rows > 1) {
                     minLines = rows
                     gravity = Gravity.TOP or Gravity.START
@@ -1265,33 +1438,448 @@ class MainActivity : AppCompatActivity() {
                 MedicalTools.styleEditText(this, bgHex, strokeHex, 12f)
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
             }
+
+        fun addTextField(
+            key: String,
+            lbl: String,
+            hintTxt: String,
+            rows: Int = 1,
+            chips: List<String> = emptyList(),
+            bgHex: String = "#F5F7F8",
+            strokeHex: String = "#B0BEC5"
+        ): EditText {
+            addLabel(lbl)
+            val et = makeEditText(hintTxt, rows, bgHex, strokeHex)
             lay.addView(et)
+            if (chips.isNotEmpty()) {
+                val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setPadding(0, 0, 0, 8) }
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                chips.forEach { ch ->
+                    row.addView(TextView(this).apply {
+                        text = ch; textSize = 11.5f; setTextColor(Color.parseColor("#004D40"))
+                        setPadding(16, 7, 16, 7); background = roundBg("#E0F2F1", 12f)
+                        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 6 }
+                        setOnClickListener { et.setText(ch) }
+                    })
+                }
+                hs.addView(row)
+                lay.addView(hs)
+            }
+            binders.add { et.setText(cleanJsonVal(state.opt(key))) }
+            readers.add { state.put(key, et.text.toString().trim()) }
             return et
         }
 
-        val titleInp = field("Название шаблона (обязательно):", "Напр. ГК с тошнотой / ОКС с блокадой", 1, "#E0F2F1", "#80CBC4")
-        val mkbInp = field("Код по МКБ-10:", "Напр. [I10] или [I20.0]")
-        val diagInp = field("Предварительный диагноз:", "Клинический диагноз...", 2)
-        val compInp = field("Жалобы:", "Жалобы пациента...", 2)
-        val anamInp = field("Анамнез заболевания:", "Хронология, обстоятельства...", 3)
-        val locInp = field("Локальный статус:", "Локальный статус при травме, ранах...", 2)
-        val therInp = field("Рекомендованная терапия / протокол:", "Препараты по протоколу...", 2)
+        fun addPairFields(
+            key1: String, lbl1: String, hint1: String,
+            key2: String, lbl2: String, hint2: String
+        ) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            }
+            fun col(key: String, lbl: String, hintTxt: String, mr: Int) {
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = mr }
+                }
+                box.addView(TextView(this).apply {
+                    text = lbl; textSize = 11.5f; typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.parseColor("#004D40")); setPadding(4, 2, 0, 4)
+                })
+                val et = makeEditText(hintTxt, 1).apply {
+                    layoutParams = LinearLayout.LayoutParams(-1, -2)
+                }
+                box.addView(et)
+                row.addView(box)
+                binders.add { et.setText(cleanJsonVal(state.opt(key))) }
+                readers.add { state.put(key, et.text.toString().trim()) }
+            }
+            col(key1, lbl1, hint1, 10)
+            col(key2, lbl2, hint2, 0)
+            lay.addView(row)
+        }
 
+        fun addButtonGroup(key: String, lbl: String, options: List<String>, allowDeselect: Boolean = false) {
+            addLabel(lbl)
+            val hs = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                setPadding(0, 0, 0, 8)
+            }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            hs.addView(row)
+            lay.addView(hs)
+
+            var selected = cleanJsonVal(state.opt(key))
+            fun render() {
+                row.removeAllViews()
+                val allOpts = LinkedHashSet<String>(options).apply {
+                    if (selected.isNotEmpty() && !options.any { it.equals(selected, true) }) add(selected)
+                }
+                allOpts.forEach { opt ->
+                    val isSel = selected.equals(opt, ignoreCase = true)
+                    row.addView(TextView(this).apply {
+                        text = opt
+                        textSize = 12f
+                        typeface = if (isSel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        setTextColor(if (isSel) Color.WHITE else Color.parseColor("#263238"))
+                        setPadding(18, 11, 18, 11)
+                        background = roundBg(if (isSel) "#00796B" else "#F1F5F6", 12f, if (isSel) "#004D40" else "#CFD8DC")
+                        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 8 }
+                        setOnClickListener {
+                            selected = if (allowDeselect && isSel) "" else opt
+                            state.put(key, selected)
+                            render()
+                        }
+                    })
+                }
+            }
+            binders.add {
+                selected = cleanJsonVal(state.opt(key))
+                render()
+            }
+            readers.add { state.put(key, selected) }
+        }
+
+        fun addSingleDropdown(key: String, lbl: String, options: List<String>) {
+            addLabel(lbl)
+            val btn = TextView(this).apply {
+                textSize = 13f; setTextColor(Color.parseColor("#111111"))
+                setPadding(24, 15, 24, 15)
+                background = roundBg("#F5F7F8", 12f, "#B0BEC5")
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            }
+            lay.addView(btn)
+
+            var selected = cleanJsonVal(state.opt(key))
+            fun refresh() {
+                btn.text = if (selected.isNotEmpty()) "$selected   ▼" else "Не выбрано   ▼"
+                btn.setTextColor(Color.parseColor(if (selected.isNotEmpty()) "#111111" else "#546E7A"))
+            }
+            btn.setOnClickListener {
+                val items = LinkedHashSet<String>(options).apply {
+                    if (selected.isNotEmpty()) add(selected)
+                }.toList()
+                val idx = items.indexOfFirst { it.equals(selected, ignoreCase = true) }
+                AlertDialog.Builder(this)
+                    .setTitle(lbl.trimEnd(':'))
+                    .setSingleChoiceItems(items.toTypedArray(), idx) { dlg, which ->
+                        selected = items[which]
+                        state.put(key, selected)
+                        refresh()
+                        dlg.dismiss()
+                    }
+                    .setNeutralButton("Очистить") { _, _ ->
+                        selected = ""
+                        state.put(key, "")
+                        refresh()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+            binders.add {
+                selected = cleanJsonVal(state.opt(key))
+                refresh()
+            }
+            readers.add { state.put(key, selected) }
+        }
+
+        fun addMultiDropdown(key: String, lbl: String, options: List<String>) {
+            addLabel(lbl)
+            val btn = TextView(this).apply {
+                textSize = 13f; setTextColor(Color.parseColor("#111111"))
+                setPadding(24, 15, 24, 15)
+                background = roundBg("#F5F7F8", 12f, "#B0BEC5")
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 }
+            }
+            lay.addView(btn)
+
+            var selectedList = mutableListOf<String>()
+            fun parseVal(raw: String) {
+                selectedList = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            }
+            fun refresh() {
+                val txt = selectedList.joinToString(", ")
+                btn.text = if (txt.isNotEmpty()) "$txt   ▼" else "Не выбрано (нажмите для выбора)   ▼"
+                btn.setTextColor(Color.parseColor(if (txt.isNotEmpty()) "#111111" else "#546E7A"))
+            }
+            btn.setOnClickListener {
+                val all = LinkedHashSet<String>(options).apply { addAll(selectedList) }.toList()
+                val checked = BooleanArray(all.size) { i -> selectedList.any { it.equals(all[i], ignoreCase = true) } }
+                AlertDialog.Builder(this)
+                    .setTitle(lbl.trimEnd(':'))
+                    .setMultiChoiceItems(all.toTypedArray(), checked) { _, which, isChecked ->
+                        checked[which] = isChecked
+                    }
+                    .setPositiveButton("Готово") { _, _ ->
+                        selectedList = all.indices.filter { checked[it] }.map { all[it] }.toMutableList()
+                        state.put(key, selectedList.joinToString(", "))
+                        refresh()
+                    }
+                    .setNeutralButton("Очистить") { _, _ ->
+                        selectedList.clear()
+                        state.put(key, "")
+                        refresh()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+            binders.add {
+                parseVal(cleanJsonVal(state.opt(key)))
+                refresh()
+            }
+            readers.add { state.put(key, selectedList.joinToString(", ")) }
+        }
+
+        // --- РАЗДЕЛ 1: ОСНОВНОЕ И ДИАГНОЗ (С СИНХРОНИЗИРОВАННЫМ МКБ-10) ---
+        addLabel("Название шаблона (обязательно):")
+        val titleInp = makeEditText("Напр. ГК с тошнотой / ОКС с блокадой", 1, "#E0F2F1", "#80CBC4")
+        lay.addView(titleInp)
         if (initialTitle.isNotBlank()) titleInp.setText(initialTitle)
 
+        addLabel("Код по МКБ-10 (синхронизировано с сайтом):")
+        val mkbRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 4 }
+        }
+        val mkbInp = makeEditText("Поиск кода или диагноза (напр. I10, гипертенз)...", 1).apply {
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 6 }
+        }
+        val mkbDropBtn = TextView(this).apply {
+            text = "▼"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#004D40")); gravity = Gravity.CENTER
+            setPadding(16, 14, 16, 14); background = roundBg("#E0F2F1", 10f, "#80CBC4")
+        }
+        mkbRow.addView(mkbInp); mkbRow.addView(mkbDropBtn)
+        lay.addView(mkbRow)
+
+        val mkbSugLay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, 2, 0, 8)
+        }
+        lay.addView(mkbSugLay)
+
+        var suppressMkbSug = false
+        var mkbSearchJob: Job? = null
+
+        fun drawMkbSuggestions(siteItems: List<MkbCodeItem>, loading: Boolean, emptyHint: Boolean = false) {
+            mkbSugLay.removeAllViews()
+            val seen = HashSet<String>()
+            val uniqueSite = siteItems.filter { seen.add(it.code) }
+
+            if (uniqueSite.isEmpty() && !loading && !emptyHint) {
+                mkbSugLay.visibility = View.GONE
+                return
+            }
+            mkbSugLay.visibility = View.VISIBLE
+            if (loading) {
+                mkbSugLay.addView(TextView(this).apply {
+                    text = "⏳ Поиск МКБ-10 на сайте СМП..."
+                    textSize = 12f; setTextColor(Color.parseColor("#0277BD"))
+                    setPadding(8, 4, 8, 6)
+                })
+            } else if (uniqueSite.isEmpty() && emptyHint) {
+                mkbSugLay.addView(TextView(this).apply {
+                    text = "🌐 Введите 2+ буквы кода или диагноза для поиска по базе сайта СМП"
+                    textSize = 12f; setTextColor(Color.parseColor("#546E7A"))
+                    setPadding(12, 10, 12, 10); background = roundBg("#F5F7F8", 8f, "#CFD8DC")
+                })
+                return
+            }
+            uniqueSite.take(25).forEach { item ->
+                val formatted = if (item.name.isNotEmpty()) "[${item.code}] ${item.name}" else "[${item.code}]"
+                mkbSugLay.addView(TextView(this).apply {
+                    text = "🌐 $formatted"
+                    textSize = 12.8f; setTextColor(Color.parseColor("#263238"))
+                    setPadding(18, 12, 18, 12)
+                    background = roundBg("#E3F2FD", 8f, "#90CAF9")
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 4 }
+                    setOnClickListener {
+                        suppressMkbSug = true
+                        mkbInp.setText(formatted)
+                        mkbInp.setSelection(formatted.length)
+                        suppressMkbSug = false
+                        mkbSugLay.visibility = View.GONE
+                    }
+                })
+            }
+        }
+
+        fun filterSiteMkb(qRaw: String): List<MkbCodeItem> {
+            val q = qRaw.trim().removePrefix("[").substringBefore("]").trim().lowercase()
+            val qFull = qRaw.trim().lowercase()
+            return siteMkbList.filter {
+                qFull.isEmpty() || it.code.lowercase().contains(qFull) || it.name.lowercase().contains(qFull) || (q.length >= 2 && it.code.lowercase().contains(q))
+            }.take(25)
+        }
+
+        fun triggerMkbSearch(forceOpen: Boolean = false) {
+            mkbSearchJob?.cancel()
+            if (suppressMkbSug) { mkbSugLay.visibility = View.GONE; return }
+            val rawQ = mkbInp.text.toString().trim()
+            if (!forceOpen && rawQ.length < 2) { mkbSugLay.visibility = View.GONE; return }
+            val queryForSite = rawQ.replace("[", "").replace("]", "").trim()
+            val sLoc = filterSiteMkb(rawQ)
+            drawMkbSuggestions(sLoc, queryForSite.length >= 2, forceOpen && queryForSite.length < 2)
+            if (queryForSite.length >= 2) {
+                mkbSearchJob = lifecycleScope.launch {
+                    delay(260)
+                    val reqId = System.currentTimeMillis().toString()
+                    activeMkbSearchReqId = reqId
+                    onMkbSearchCallback = { remote ->
+                        if (bs.isShowing && !suppressMkbSug) {
+                            val curS = filterSiteMkb(mkbInp.text.toString())
+                            drawMkbSuggestions(remote + curS, false, true)
+                        }
+                    }
+                    webView.evaluateJavascript(
+                        "window.searchMkbOnline && window.searchMkbOnline(${JSONObject.quote(queryForSite)}, ${JSONObject.quote(reqId)});",
+                        null
+                    )
+                }
+            }
+        }
+
+        mkbInp.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) = triggerMkbSearch(false)
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+        })
+        mkbDropBtn.setOnClickListener {
+            if (mkbSugLay.visibility == View.VISIBLE) mkbSugLay.visibility = View.GONE
+            else triggerMkbSearch(true)
+        }
+        binders.add {
+            suppressMkbSug = true
+            mkbInp.setText(cleanJsonVal(state.opt("mkb")))
+            suppressMkbSug = false
+            mkbSugLay.visibility = View.GONE
+        }
+        readers.add { state.put("mkb", mkbInp.text.toString().trim()) }
+
+        webView.evaluateJavascript("window.getSiteMkbJson ? window.getSiteMkbJson() : '[]';") { rawRes ->
+            val unwrapped = try {
+                if (rawRes.isNullOrBlank() || rawRes == "null") ""
+                else (JSONTokener(rawRes).nextValue() as? String) ?: ""
+            } catch (_: Exception) { "" }
+            val parsed = parseMkbItemsArray(unwrapped)
+            if (parsed.isNotEmpty()) siteMkbList = parsed
+        }
+
+        addTextField("diagnosis", "Предварительный диагноз:", "Клинический диагноз...", 2)
+        addTextField("complaints", "Жалобы:", "Жалобы пациента...", 2)
+        addTextField("anamnesis", "Анамнез заболевания:", "Хронология, обстоятельства...", 3)
+        addTextField("pastDiseases", "Перенесенные заболевания:", "ИБС, АГ...", 1, listOf("ИБС, АГ", "Отрицает", "СД 2 типа", "БА", "ХОБЛ"))
+        addButtonGroup("allergy", "Аллергия:", listOf("НЕТ", "ДА"))
+
+        // --- РАЗДЕЛ 2: ОБЩЕЕ СОСТОЯНИЕ И ВИТАЛЬНЫЕ ПОКАЗАТЕЛИ ---
+        addSection("🩺 Состояние и витальные показатели")
+        addSingleDropdown("generalState", "Общее состояние:", listOf(
+            "Удовлетворительное", "Средней степени тяжести", "Тяжелое",
+            "Крайне тяжелое", "Клиническая смерть", "Биологическая смерть"
+        ))
+        addSingleDropdown("consciousness", "Сознание:", listOf(
+            "Ясное", "Приглушенное", "Оглушение", "Сопор", "Кома", "Отсутствует"
+        ))
+        addTextField("glasgowScore", "Шкала комы Глазго (баллы):", "15", 1, listOf("15", "14", "13", "8", "3"))
+        addButtonGroup("position", "Положение:", listOf("АКТИВНОЕ", "ПАССИВНОЕ", "ВЫНУЖДЕННОЕ"))
+        addTextField("positionDescription", "Комментарий (вынужденное положение):", "Напр. сидя, ортопноэ...")
+        addButtonGroup("behavior", "Поведение:", listOf("СПОКОЙНОЕ", "ВОЗБУЖДЕННОЕ", "АГРЕССИВНОЕ", "ЗАТОРМОЖЕННОЕ", "НЕАДЕКВАТНОЕ"))
+        addPairFields("bp", "АД на вызове:", "130/80", "bpAdapted", "Привычное АД:", "120/80")
+        addButtonGroup("pulseExists", "Пульс определяется:", listOf("ДА", "НЕТ"))
+        addPairFields("pulse", "Пульс (уд/мин):", "78", "rr", "ЧДД (в мин):", "16")
+        addPairFields("temp", "Температура (°C):", "36.6", "saturation", "Сатурация (%):", "98")
+        addTextField("glucose", "Гликемия (ммоль/л):", "5.4")
+
+        // --- РАЗДЕЛ 3: КОЖА, СЕРДЦЕ, ЛЕГКИЕ, ЖИВОТ ---
+        addSection("🫁 Кожа, сердце, легкие и ЖКТ")
+        addMultiDropdown("skin", "Кожа (мультивыбор):", listOf(
+            "Теплая", "Холодная", "Сухая", "Влажная", "Нормальная",
+            "Бледная", "Гиперемия", "Цианоз", "Желтушность", "Гипостатические пятна"
+        ))
+        addButtonGroup("rash", "Высыпания:", listOf("НЕТ", "ДА"))
+        addButtonGroup("edema", "Периферические отеки:", listOf("НЕТ", "ДА"))
+        addTextField("edemaDescription", "Комментарий (отеки):", "Напр. Отечность голеней...")
+        addButtonGroup("ascites", "Асцит:", listOf("НЕТ", "ДА"))
+        addTextField("tongue", "Язык:", "Чистые", 1, listOf("Чистые", "Сухой, обложен", "Суховат, обложен", "Следы прикуса"))
+        addTextField("mucous", "Слизистые:", "Бледно-розовые", 1, listOf("Бледно-розовые", "Гиперемированы", "Бледные", "Сухие"))
+        addMultiDropdown("heartSounds", "Тоны сердца (мультивыбор):", listOf(
+            "Ритмичные", "Аритмичные", "Ясные", "Приглушенные", "Глухие", "Отсутствуют"
+        ))
+        addMultiDropdown("lungs", "Дыхание (мультивыбор):", listOf(
+            "Свободное", "Везикулярное", "Жесткое", "Ослабленное", "Затрудненное",
+            "Отсутствует", "Хрипы сухие", "Хрипы влажные", "Хрипы справа", "Хрипы слева"
+        ))
+        addMultiDropdown("percussion", "Перкуссия легких (мультивыбор):", listOf(
+            "Ясный легочный звук", "Коробочный звук справа", "Коробочный звук слева",
+            "Притупление звука справа", "Притупление звука слева", "Тупой звук"
+        ))
+        addMultiDropdown("abdomen", "Живот (мультивыбор):", listOf(
+            "Участвует в акте дыхания", "Не участвует в акте дыхания", "Мягкий",
+            "Напряженный", "Вздут", "Безболезненный", "Болезненный в области"
+        ))
+        addButtonGroup("peritoneal", "Симптомы раздражения брюшины:", listOf("НЕТ", "ДА"))
+        addButtonGroup("peristalsis", "Перистальтика:", listOf("ДА", "НЕТ"))
+        addButtonGroup("liver", "Печень:", listOf("НЕ УВЕЛИЧЕНА", "УВЕЛИЧЕНА"))
+        addButtonGroup("urination", "Мочеиспускание:", listOf("НЕ НАРУШЕНО", "УЧАЩЕНО", "БОЛЕЗНЕННОЕ", "ЗАДЕРЖКА МОЧЕИСПУСКАНИЯ", "НЕДЕРЖАНИЕ"))
+        addButtonGroup("stool", "Стул:", listOf("НЕ НАРУШЕН", "УЧАЩЕН", "ЖИДКИЙ", "ЗАДЕРЖКА", "ОТСУТСТВУЕТ"))
+        addButtonGroup("alcohol", "Запах алкоголя:", listOf("НЕТ", "ДА"))
+        addButtonGroup("acetone", "Запах ацетона:", listOf("НЕТ", "ДА"))
+
+        // --- РАЗДЕЛ 4: НЕВРОЛОГИЧЕСКИЙ СТАТУС ---
+        addSection("🧠 Неврологический статус")
+        addButtonGroup("pupils", "Зрачки (повторный тап — снять):", listOf("МИДРИАЗ", "МИОЗ", "АНИЗОКАРИЯ"), allowDeselect = true)
+        addButtonGroup("lightReaction", "Реакция на свет:", listOf("ДА", "НЕТ"))
+        addButtonGroup("speech", "Речь:", listOf("СОХРАНЕНА", "НАРУШЕНА", "ОТСУТСТВУЕТ"))
+        addButtonGroup("face", "Лицо:", listOf("СИММЕТРИЧНОЕ", "АСИММЕТРИЧНОЕ"))
+        addButtonGroup("gait", "Походка:", listOf("СВОБОДНАЯ", "ШАТКАЯ", "НАРУШЕНА", "НЕ ОЦЕНИВАЛАСЬ"))
+        addButtonGroup("nystagmus", "Нистагм:", listOf("НЕТ", "ГОРИЗОНТАЛЬНЫЙ", "ВЕРТИКАЛЬНЫЙ", "ДА"))
+        addTextField("muscleTone", "Тонус мышц:", "Нормальный", 1, listOf("Нормальный", "Снижен", "Повышен", "Атония", "Трупное окоченение"))
+        addTextField("pathologicalReflexes", "Патологические рефлексы:", "Отрицательные", 1, listOf("Отрицательные", "Положительные", "Симптом Бабинского справа", "Симптом Бабинского слева"))
+        addTextField("meningealSymptoms", "Менингеальные знаки:", "Отрицательные", 1, listOf("Отрицательные", "Ригидность затылочных мышц", "Симптом Кернига (+)"))
+        addTextField("plegia", "Плегии, парезы:", "Нет", 1, listOf("Нет", "Правосторонний гемипарез", "Левосторонний гемипарез", "Левосторонняя гемиплегия"))
+
+        // --- РАЗДЕЛ 5: ЛОКАЛЬНЫЙ СТАТУС, ЭКГ, ТЕРАПИЯ И ИТОГ ---
+        addSection("📄 Локальный статус, ЭКГ и итог")
+        addTextField("localStatus", "Локальный статус:", "Локальный статус при травме, ранах...", 2)
+        addTextField("ecgBefore", "ЭКГ до оказания помощи:", "Ритм синусовый, правильный...", 2)
+        addTextField("ecgAfter", "ЭКГ после оказания помощи:", "Без динамики...", 2)
+        addTextField("recommendedTherapy", "Рекомендованная терапия / протокол:", "Препараты по протоколу...", 2)
+        addButtonGroup("attack", "Приступ:", listOf("КУПИРОВАН", "НЕ КУПИРОВАН", "ЧАСТИЧНО КУПИРОВАН"))
+        addButtonGroup("therapyEffect", "Эффект терапии:", listOf("УЛУЧШЕНИЕ", "БЕЗ ЭФФЕКТА", "УХУДШЕНИЕ"))
+        addSingleDropdown("callResult", "Результат выезда:", listOf(
+            "ОСТАВЛЕН НА МЕСТЕ",
+            "ТРАНСПОРТИРОВАН В ОРГАНИЗАЦИЮ ЗДРАВООХРАНЕНИЯ",
+            "ОТКАЗ ОТ ГОСПИТАЛИЗАЦИИ",
+            "КОНСТАТИРОВАНА БИОЛОГИЧЕСКАЯ СМЕРТЬ",
+            "ПЕРЕДАН СПЕЦБРИГАДЕ"
+        ))
+
         fun applyObjToFields(j: JSONObject) {
-            diagInp.setText(cleanJsonVal(j.opt("diagnosis")))
-            mkbInp.setText(cleanJsonVal(j.opt("mkb")))
-            compInp.setText(cleanJsonVal(j.opt("complaints")))
-            anamInp.setText(cleanJsonVal(j.opt("anamnesis")))
-            locInp.setText(cleanJsonVal(j.opt("localStatus")))
-            therInp.setText(cleanJsonVal(j.opt("recommendedTherapy")))
+            val it = j.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                state.put(k, j.opt(k))
+            }
+            binders.forEach { it() }
             if (titleInp.text.toString().trim().isEmpty()) {
                 titleInp.setText(cleanJsonVal(j.opt("diagnosis")).ifEmpty { cleanJsonVal(j.opt("callReason")) }.take(45))
             }
         }
 
-        baseCard?.let { applyObjToFields(it) }
+        binders.forEach { it() }
+
+        resetNormBtn.setOnClickListener {
+            val def = defaultTemplateJson()
+            val it = def.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                state.put(k, def.opt(k))
+            }
+            binders.forEach { it() }
+            toast("🔄 Поля сброшены к норме")
+        }
 
         pullBtn.setOnClickListener {
             val js = """
@@ -1318,8 +1906,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 baseCard = parsed.third.second
                 applyObjToFields(parsed.third.second)
-                toast("📥 Данные подтянуты из карты!")
+                toast("📥 Все поля подтянуты из карты!")
             }
+        }
+
+        bs.setOnDismissListener {
+            mkbSearchJob?.cancel()
+            activeMkbSearchReqId = ""
+            onMkbSearchCallback = null
         }
 
         val saveBtn = TextView(this).apply {
@@ -1334,22 +1928,8 @@ class MainActivity : AppCompatActivity() {
                     titleInp.requestFocus()
                     return@setOnClickListener
                 }
-                val finalData = defaultTemplateJson()
-                baseCard?.let { src ->
-                    val it = src.keys()
-                    while (it.hasNext()) {
-                        val k = it.next()
-                        finalData.put(k, src.opt(k))
-                    }
-                }
-                finalData.apply {
-                    put("diagnosis", diagInp.text.toString().trim())
-                    put("mkb", mkbInp.text.toString().trim())
-                    put("complaints", compInp.text.toString().trim())
-                    put("anamnesis", anamInp.text.toString().trim())
-                    put("localStatus", locInp.text.toString().trim())
-                    put("recommendedTherapy", therInp.text.toString().trim())
-                }
+                readers.forEach { it() }
+                val finalData = JSONObject(state.toString())
                 lifecycleScope.launch(Dispatchers.IO) {
                     if (editingId != null) {
                         dbHelper.updateCustomTemplate(editingId, t, finalData.toString())
@@ -2002,6 +2582,7 @@ class MainActivity : AppCompatActivity() {
                 put("glasgowScore", cleanJsonVal(raw.opt("comaScale")).ifEmpty { "15" })
                 put("bp", bp)
                 put("bpAdapted", bpAd)
+                put("pulseExists", if (raw.optBoolean("pulseExists", true)) "ДА" else "НЕТ")
                 put("pulse", cleanJsonVal(raw.opt("pulse")))
                 put("rr", cleanJsonVal(raw.opt("breathCount")))
                 put("temp", cleanJsonVal(raw.opt("skinTemp")))
@@ -2019,6 +2600,10 @@ class MainActivity : AppCompatActivity() {
                 put("rash", if (raw.optBoolean("skinRashes", false)) "ДА" else "НЕТ")
                 put("ascites", if (raw.optBoolean("ascites", false)) "ДА" else "НЕТ")
                 put("peritoneal", if (raw.optBoolean("stomachSymptoms", false)) "ДА" else "НЕТ")
+                val hasAlc = raw.optBoolean("alcoholSmell", raw.optBoolean("alcohol", raw.optBoolean("smellAlcohol", false)))
+                val hasAct = raw.optBoolean("acetoneSmell", raw.optBoolean("acetone", raw.optBoolean("smellAcetone", false)))
+                put("alcohol", if (hasAlc) "ДА" else "НЕТ")
+                put("acetone", if (hasAct) "ДА" else "НЕТ")
                 put("medHelp", jArr("medicalAssistanceProvided"))
                 put("medications", meds)
                 put("pupils", cleanJsonVal(raw.optJSONObject("pupils")?.opt("type")).uppercase())
@@ -2067,6 +2652,24 @@ class MainActivity : AppCompatActivity() {
         fun onMedSearchResult(reqId: String, jsonStr: String) = runOnUiThread {
             if (reqId == activeMedSearchReqId) {
                 onMedSearchCallback?.invoke(parseMedItemsArray(jsonStr))
+            }
+        }
+
+        @JavascriptInterface
+        fun cacheSiteMkb(jsonStr: String) {
+            val parsed = parseMkbItemsArray(jsonStr)
+            if (parsed.isNotEmpty()) {
+                siteMkbList = parsed
+                try {
+                    getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().putString(keySiteMkb, jsonStr).apply()
+                } catch (_: Exception) {}
+            }
+        }
+
+        @JavascriptInterface
+        fun onMkbSearchResult(reqId: String, jsonStr: String) = runOnUiThread {
+            if (reqId == activeMkbSearchReqId) {
+                onMkbSearchCallback?.invoke(parseMkbItemsArray(jsonStr))
             }
         }
 

@@ -4,14 +4,24 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-
-    <!-- Мягкая тень под медицинским крестом -->
+    <!-- Ушки и голова -->
     <path
-        android:fillColor="#30000000"
-        android:pathData="M47,29 L61,29 A4,4 0 0,1 65,33 L65,45 L77,45 A4,4 0 0,1 81,49 L81,63 A4,4 0 0,1 77,67 L65,67 L65,79 A4,4 0 0,1 61,83 L47,83 A4,4 0 0,1 43,79 L43,67 L31,67 A4,4 0 0,1 27,63 L27,49 A4,4 0 0,1 31,45 L43,45 L43,33 A4,4 0 0,1 47,29 Z" />
-
-    <!-- Белоснежный минималистичный крест со скругленными углами -->
+        android:fillColor="#FF85B3"
+        android:pathData="M38,34h8v4h-8z M62,34h8v4h-8z M38,38h12v4h-12z M58,38h12v4h-12z M34,42h40v28h-40z M38,70h32v4h-32z" />
+    <!-- Внутренность ушек -->
+    <path
+        android:fillColor="#FFD1E3"
+        android:pathData="M40,38h4v4h-4z M64,38h4v4h-4z" />
+    <!-- Глазки -->
+    <path
+        android:fillColor="#1E1033"
+        android:pathData="M42,52h4v8h-4z M62,52h4v8h-4z M52,60h4v3h-4z" />
+    <!-- Блики в глазах -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M47,27 L61,27 A4,4 0 0,1 65,31 L65,43 L77,43 A4,4 0 0,1 81,47 L81,61 A4,4 0 0,1 77,65 L65,65 L65,77 A4,4 0 0,1 61,81 L47,81 A4,4 0 0,1 43,77 L43,65 L31,65 A4,4 0 0,1 27,61 L27,47 A4,4 0 0,1 31,43 L43,43 L43,31 A4,4 0 0,1 47,27 Z" />
+        android:pathData="M42,52h2v2h-2z M62,52h2v2h-2z" />
+    <!-- Щёчки -->
+    <path
+        android:fillColor="#FF4D8D"
+        android:pathData="M36,60h6v4h-6z M66,60h6v4h-6z" />
 </vector>

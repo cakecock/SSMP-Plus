@@ -121,12 +121,12 @@ jobs:
       run: |
         gradle assembleRelease \
           -PappVersionCode=${{ github.run_number }} \
-          -PappVersionName=1.0.${{ github.run_number }} \
+          -PappVersionName=3.10.${{ github.run_number }} \
           --no-daemon
 
     - name: Prepare APK for Release
       run: |
-        cp app/build/outputs/apk/release/*.apk SSMP-Plus-v1.0.${{ github.run_number }}.apk
+        cp app/build/outputs/apk/release/*.apk SSMP-Plus-v3.10.${{ github.run_number }}.apk
 
     # Автоматическая очистка всех старых релизов и тегов
     - name: Cleanup Old Releases and Tags
@@ -146,20 +146,20 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         if [ -f "ios/SSMP-Plus-iOS.user.js" ]; then
-          gh release create v1.0.${{ github.run_number }} \
-            SSMP-Plus-v1.0.${{ github.run_number }}.apk \
+          gh release create v3.10.${{ github.run_number }} \
+            SSMP-Plus-v3.10.${{ github.run_number }}.apk \
             ios/SSMP-Plus-iOS.user.js \
-            --title "SSMP Plus v1.0.${{ github.run_number }} (Android + iOS)" \
-            --notes "### 🚑 SSMP Plus v1.0.${{ github.run_number }}
-            - 📱 **Android:** скачайте \`SSMP-Plus-v1.0.${{ github.run_number }}.apk\` (проверка обновлений доступна прямо в меню приложения)
+            --title "SSMP Plus v3.10.${{ github.run_number }} (Android + iOS)" \
+            --notes "### 🚑 SSMP Plus v3.10.${{ github.run_number }}
+            - 📱 **Android:** скачайте \`SSMP-Plus-v3.10.${{ github.run_number }}.apk\` (проверка обновлений доступна прямо в меню приложения)
             - 🍏 **iOS:** браузер **Orion** + **Violentmonkey** (или **Stay** / **Userscripts**) — установите \`SSMP-Plus-iOS.user.js\` (поддержка автообновлений по raw-ссылке)
             - ⚡ **Автопилот карт и препаратов:** бесшовное заполнение с защитой вкладки «Заключение», живой серверный поиск препаратов и исправленная вставка наборов в новых картах
             - 📌 **Шаблоны и архив:** 63 эталонных шаблона, полный редактор «Свои шаблоны» (все кнопки/списки карты + МКБ-10 с сайта) и архив вызовов (Импорт/Экспорт JSON)
             - 🧰 **Помощник СМП (12 модулей):** аудит карты, ЭКГ, СЛР-таймер, фразы, МКБ-10, педиатрия (Пост. №118), шкалы, калькуляторы, акушерство, яды/антидоты, лекарства и приказы МЗ РБ"
         else
-          gh release create v1.0.${{ github.run_number }} \
-            SSMP-Plus-v1.0.${{ github.run_number }}.apk \
-            --title "SSMP Plus v1.0.${{ github.run_number }}" \
-            --notes "### 🚑 SSMP Plus v1.0.${{ github.run_number }}
+          gh release create v3.10.${{ github.run_number }} \
+            SSMP-Plus-v3.10.${{ github.run_number }}.apk \
+            --title "SSMP Plus v3.10.${{ github.run_number }}" \
+            --notes "### 🚑 SSMP Plus v3.10.${{ github.run_number }}
             - Полный редактор «Свои шаблоны» (все поля карты + МКБ-10 с сайта), исправленный автопилот препаратов, проверка обновлений APK, 63 образца СМП и 12 модулей Помощника."
         fi

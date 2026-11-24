@@ -9,6 +9,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -18,12 +19,15 @@ import android.widget.*
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.*
+import androidx.core.content.FileProvider
 import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.*
 import com.google.android.material.bottomsheet.*
 import kotlinx.coroutines.*
 import org.json.*
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -54,6 +58,19 @@ class MainActivity : AppCompatActivity() {
     private var onMedCatalogUpdated: ((String) -> Unit)? = null
     private var activeMkbSearchReqId: String = ""
     private var onMkbSearchCallback: ((List<MkbCodeItem>) -> Unit)? = null
+    private var pendingApkInstallFile: File? = null
+
+    private val installPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val f = pendingApkInstallFile
+        pendingApkInstallFile = null
+        if (f != null && f.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                launchApkInstaller(f)
+            } else {
+                toast("Разрешите установку приложений для завершения обновления")
+            }
+        }
+    }
 
     private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let {
@@ -366,33 +383,50 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    private fun fetchGithubJson(urlStr: String, userAgent: String): Pair<Int, String> {
+        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            instanceFollowRedirects = true
+            connectTimeout = 12000
+            readTimeout = 12000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", userAgent)
+        }
+        return try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            code to body
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun checkGithubAppUpdate() {
         val pInfo = try { packageManager.getPackageInfo(packageName, 0) } catch (_: Exception) { null }
-        val localVerName = pInfo?.versionName ?: "1.0.0"
-        toast("🔄 Проверка релизов на GitHub...")
+        val localVerName = pInfo?.versionName ?: "3.10.0"
+        val ua = "SSMP-Plus-Android/$localVerName"
+        toast("🔄 Проверка обновлений...")
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val conn = (URL("https://api.github.com/repos/cakecock/SSMP-Plus/releases/latest").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 12000
-                    readTimeout = 12000
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "SSMP-Plus-Android/$localVerName")
+                var (code, body) = fetchGithubJson("https://api.github.com/repos/cakecock/SSMP-Plus/releases/latest", ua)
+                var rel: JSONObject? = if (code in 200..299 && body.isNotBlank()) JSONObject(body) else null
+                if (rel == null) {
+                    val (c2, b2) = fetchGithubJson("https://api.github.com/repos/cakecock/SSMP-Plus/releases?per_page=1", ua)
+                    code = c2
+                    if (c2 in 200..299 && b2.isNotBlank()) {
+                        val arr = JSONArray(b2)
+                        if (arr.length() > 0) rel = arr.optJSONObject(0)
+                    }
                 }
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
-                conn.disconnect()
-                if (code !in 200..299 || body.isBlank()) {
+                if (rel == null) {
                     withContext(Dispatchers.Main) { toast("Не удалось проверить обновления (HTTP $code)") }
                     return@launch
                 }
 
-                val rel = JSONObject(body)
                 val tagName = rel.optString("tag_name").trim()
                 val relTitle = rel.optString("name").ifEmpty { tagName }
-                val htmlUrl = rel.optString("html_url").ifEmpty { "https://github.com/cakecock/SSMP-Plus/releases" }
                 val notes = rel.optString("body").trim()
 
                 var apkUrl = ""
@@ -412,41 +446,198 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val hasUpdate = tagName.isNotEmpty() && isRemoteVersionNewer(tagName, localVerName)
+                if (!hasUpdate) {
+                    withContext(Dispatchers.Main) { toast("Обновлений нет") }
+                    return@launch
+                }
+
+                if (apkUrl.isEmpty()) {
+                    withContext(Dispatchers.Main) { toast("Найдена версия $tagName, но APK-файл ещё собирается") }
+                    return@launch
+                }
+
                 val msg = buildString {
-                    append("Установлена версия: v$localVerName\n")
-                    append("Последний релиз: ${relTitle.ifEmpty { "—" }}\n")
+                    append("Текущая версия: v$localVerName\n")
+                    append("Новая версия: ${relTitle.ifEmpty { tagName }}\n")
                     if (apkName.isNotEmpty()) {
                         append("Файл: $apkName${if (apkSizeMb.isNotEmpty()) " ($apkSizeMb)" else ""}\n")
                     }
                     if (notes.isNotEmpty()) {
-                        append("\nОписание:\n${notes.take(700)}")
+                        append("\nЧто нового:\n${notes.take(600)}")
                     }
                 }
 
                 withContext(Dispatchers.Main) {
-                    val builder = AlertDialog.Builder(this@MainActivity)
-                        .setTitle(if (hasUpdate) "🆕 Доступно обновление $tagName" else "✅ Установлена актуальная версия")
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("🆕 Доступно обновление $tagName")
                         .setMessage(msg)
-                        .setNegativeButton("Закрыть", null)
-                        .setNeutralButton("🌐 Релиз") { _, _ ->
-                            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(htmlUrl))) } catch (_: Exception) {}
+                        .setPositiveButton("⬇️ Скачать и установить") { _, _ ->
+                            downloadAndInstallApk(apkUrl, apkName.ifEmpty { "SSMP-Plus-$tagName.apk" })
                         }
-                    if (apkUrl.isNotEmpty()) {
-                        builder.setPositiveButton(if (hasUpdate) "⬇️ Скачать APK" else "⬇️ Переустановить APK") { _, _ ->
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)))
-                            } catch (_: Exception) {
-                                toast("Не удалось открыть ссылку загрузки")
-                            }
-                        }
-                    }
-                    builder.show()
+                        .setNegativeButton("Позже", null)
+                        .show()
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
-                    toast("Ошибка проверки GitHub: ${e.message ?: "нет связи"}")
+                    toast("Не удалось проверить обновления (нет связи)")
                 }
             }
+        }
+    }
+
+    private fun openConnectionFollowingRedirects(startUrl: String): HttpURLConnection {
+        var currentUrl = startUrl
+        repeat(6) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+                connectTimeout = 15000
+                readTimeout = 30000
+                setRequestProperty("User-Agent", "SSMP-Plus-Android")
+                setRequestProperty("Accept", "application/octet-stream, */*")
+            }
+            val code = conn.responseCode
+            if (code in listOf(301, 302, 303, 307, 308)) {
+                val loc = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (loc.isNullOrBlank()) throw IllegalStateException("Empty redirect")
+                currentUrl = URL(URL(currentUrl), loc).toString()
+            } else {
+                return conn
+            }
+        }
+        throw IllegalStateException("Too many redirects")
+    }
+
+    private fun downloadAndInstallApk(apkUrl: String, apkName: String) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(52, 36, 52, 24)
+        }
+        val statusTv = TextView(this).apply {
+            text = "⏳ Подключение к серверу..."
+            textSize = 14f
+            setTextColor(Color.parseColor("#263238"))
+            setPadding(0, 0, 0, 18)
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            max = 100
+        }
+        box.addView(statusTv)
+        box.addView(progressBar)
+
+        var downloadJob: Job? = null
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("⬇️ Загрузка обновления")
+            .setView(box)
+            .setCancelable(false)
+            .setNegativeButton("Отмена") { _, _ ->
+                downloadJob?.cancel()
+                toast("Загрузка отменена")
+            }
+            .create()
+        dlg.show()
+
+        downloadJob = lifecycleScope.launch(Dispatchers.IO) {
+            val updatesDir = File(cacheDir, "updates").apply { mkdirs() }
+            updatesDir.listFiles()?.forEach { old -> if (old.isFile) old.delete() }
+            val safeName = apkName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val outFile = File(updatesDir, safeName)
+            var conn: HttpURLConnection? = null
+            try {
+                conn = openConnectionFollowingRedirects(apkUrl)
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    throw IllegalStateException("HTTP $code")
+                }
+                val totalBytes = conn.contentLengthLong
+                withContext(Dispatchers.Main) {
+                    if (totalBytes > 0L) {
+                        progressBar.isIndeterminate = false
+                        progressBar.progress = 0
+                    }
+                }
+
+                conn.inputStream.use { input ->
+                    FileOutputStream(outFile).use { output ->
+                        val buf = ByteArray(16 * 1024)
+                        var downloaded = 0L
+                        var lastUiMs = 0L
+                        while (true) {
+                            ensureActive()
+                            val read = input.read(buf)
+                            if (read <= 0) break
+                            output.write(buf, 0, read)
+                            downloaded += read
+                            val now = System.currentTimeMillis()
+                            if (now - lastUiMs > 120L) {
+                                lastUiMs = now
+                                val dlMb = String.format(Locale.US, "%.1f", downloaded / (1024.0 * 1024.0))
+                                val pct = if (totalBytes > 0L) ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100) else -1
+                                val totMb = if (totalBytes > 0L) String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0)) else "?"
+                                withContext(Dispatchers.Main) {
+                                    if (dlg.isShowing) {
+                                        if (pct >= 0) {
+                                            progressBar.isIndeterminate = false
+                                            progressBar.progress = pct
+                                            statusTv.text = "⬇️ Загружено $dlMb / $totMb МБ ($pct%)"
+                                        } else {
+                                            statusTv.text = "⬇️ Загружено $dlMb МБ..."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    if (dlg.isShowing) dlg.dismiss()
+                    launchApkInstaller(outFile)
+                }
+            } catch (_: CancellationException) {
+                outFile.delete()
+            } catch (e: Exception) {
+                outFile.delete()
+                withContext(Dispatchers.Main) {
+                    if (dlg.isShowing) dlg.dismiss()
+                    toast("Ошибка загрузки APK: ${e.message ?: "сбой сети"}")
+                }
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    private fun launchApkInstaller(apkFile: File) {
+        if (!apkFile.exists()) {
+            toast("Файл обновления не найден")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            pendingApkInstallFile = apkFile
+            AlertDialog.Builder(this)
+                .setTitle("Разрешение на установку")
+                .setMessage("Разрешите установку приложений для «SSMP Plus» в настройках, затем вернитесь назад — установка продолжится автоматически.")
+                .setPositiveButton("Открыть настройки") { _, _ ->
+                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+                    installPermissionLauncher.launch(intent)
+                }
+                .setNegativeButton("Отмена") { _, _ -> pendingApkInstallFile = null }
+                .show()
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(installIntent)
+        } catch (e: Exception) {
+            toast("Не удалось запустить установку: ${e.message ?: "ошибка"}")
         }
     }
 

@@ -164,10 +164,13 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     val mime = params?.acceptTypes?.firstOrNull()
                         ?.takeIf { it.startsWith("image/") } ?: "image/*"
-                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
                         type = mime
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params?.allowMultiple == true)
+                        putExtra(
+                            Intent.EXTRA_ALLOW_MULTIPLE,
+                            params?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                        )
                     }
                     galleryLauncher.launch(Intent.createChooser(intent, "Выбрать изображение"))
                 }

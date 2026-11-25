@@ -20,7 +20,13 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import java.util.*
 import kotlin.math.min
 
-data class GuideCard(val title: String, val subtitle: String, val content: String)
+data class GuideCard(
+    val title: String,
+    val subtitle: String,
+    val content: String,
+    val category: String = "",
+    val pdfPath: String = ""
+)
 
 object MedicalTools {
 
@@ -89,7 +95,14 @@ object MedicalTools {
         return bottomSheet to root
     }
 
-    fun showDetailDialog(context: Context, title: String, body: String, accentHex: String = "#00695C") {
+    fun showDetailDialog(
+        context: Context,
+        title: String,
+        body: String,
+        accentHex: String = "#00695C",
+        actionLabel: String? = null,
+        onAction: (() -> Unit)? = null
+    ) {
         val pad = 42
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -125,24 +138,45 @@ object MedicalTools {
 
         val btnRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER
             setPadding(0, 20, 0, 0)
+        }
+        fun actionParams() = LinearLayout.LayoutParams(0, -2, 1f).apply {
+            leftMargin = 4
+            rightMargin = 4
+        }
+        if (onAction != null) {
+            btnRow.addView(TextView(context).apply {
+                text = actionLabel ?: "📄 PDF"
+                textSize = 12.5f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor(accentHex))
+                background = roundBg("#FFFFFF", 10f, accentHex)
+                gravity = Gravity.CENTER
+                setPadding(12, 16, 12, 16)
+                layoutParams = actionParams()
+                setOnClickListener { dialog.dismiss(); onAction() }
+            })
         }
         btnRow.addView(TextView(context).apply {
             text = "📋 КОПИРОВАТЬ"
-            textSize = 13f
+            textSize = 12.5f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(accentHex))
-            setPadding(28, 16, 28, 16)
+            gravity = Gravity.CENTER
+            setPadding(12, 16, 12, 16)
+            layoutParams = actionParams()
             setOnClickListener { copyToClipboard(context, title, "$title:\n$body") }
         })
         btnRow.addView(TextView(context).apply {
             text = "ЗАКРЫТЬ"
-            textSize = 13f
+            textSize = 12.5f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            setPadding(32, 16, 32, 16)
+            gravity = Gravity.CENTER
+            setPadding(12, 16, 12, 16)
             background = roundBg(accentHex, 12f)
+            layoutParams = actionParams()
             setOnClickListener { dialog.dismiss() }
         })
         root.addView(btnRow)

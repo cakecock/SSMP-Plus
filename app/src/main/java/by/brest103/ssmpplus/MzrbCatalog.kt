@@ -31,6 +31,16 @@ data class MzrbProtocol(
 object MzrbCatalog {
     private const val BASE_URL = "https://minzdrav.gov.by"
 
+    fun openPdf(context: Context, title: String, path: String) {
+        if (path.isBlank()) return
+        val fullUrl = BASE_URL + Uri.encode(path, "/")
+        val intent = Intent(context, MzrbPdfViewerActivity::class.java).apply {
+            putExtra(MzrbPdfViewerActivity.EXTRA_TITLE, title)
+            putExtra(MzrbPdfViewerActivity.EXTRA_URL, fullUrl)
+        }
+        context.startActivity(intent)
+    }
+
     private var cached: List<MzrbProtocol>? = null
 
     private fun load(context: Context): List<MzrbProtocol> {
@@ -172,12 +182,7 @@ object MzrbCatalog {
             }
             listView.setOnItemClickListener { _, _, pos, _ ->
                 val p = filtered[pos]
-                val fullUrl = BASE_URL + Uri.encode(p.path, "/")
-                val intent = Intent(context, MzrbPdfViewerActivity::class.java).apply {
-                    putExtra(MzrbPdfViewerActivity.EXTRA_TITLE, p.title)
-                    putExtra(MzrbPdfViewerActivity.EXTRA_URL, fullUrl)
-                }
-                context.startActivity(intent)
+                openPdf(context, p.title, p.path)
             }
         }
 

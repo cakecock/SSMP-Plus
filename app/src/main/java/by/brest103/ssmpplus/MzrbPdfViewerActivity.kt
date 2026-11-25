@@ -48,6 +48,8 @@ class MzrbPdfViewerActivity : AppCompatActivity() {
     private lateinit var pageView: TextView
     private lateinit var statusView: TextView
     private lateinit var imageView: ImageView
+    private lateinit var verticalScroll: ScrollView
+    private lateinit var horizontalScroll: HorizontalScrollView
     private lateinit var prevButton: Button
     private lateinit var nextButton: Button
 
@@ -94,37 +96,6 @@ class MzrbPdfViewerActivity : AppCompatActivity() {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         header.addView(titleView, LinearLayout.LayoutParams(-1, -2))
-
-        val nav = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 10, 0, 2)
-        }
-        prevButton = Button(this).apply {
-            text = "◀"
-            textSize = 15f
-            isEnabled = false
-            setAllCaps(false)
-            layoutParams = LinearLayout.LayoutParams(64, -2).apply { rightMargin = 6 }
-        }
-        pageView = TextView(this).apply {
-            text = "—"
-            gravity = Gravity.CENTER
-            textSize = 13f
-            setTextColor(Color.parseColor("#546E7A"))
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        nextButton = Button(this).apply {
-            text = "▶"
-            textSize = 15f
-            isEnabled = false
-            setAllCaps(false)
-            layoutParams = LinearLayout.LayoutParams(64, -2).apply { leftMargin = 6 }
-        }
-        nav.addView(prevButton)
-        nav.addView(pageView)
-        nav.addView(nextButton)
-        header.addView(nav)
         root.addView(header, LinearLayout.LayoutParams(-1, -2))
 
         statusView = TextView(this).apply {
@@ -135,11 +106,11 @@ class MzrbPdfViewerActivity : AppCompatActivity() {
         }
         root.addView(statusView, LinearLayout.LayoutParams(-1, -2))
 
-        val verticalScroll = ScrollView(this).apply {
+        verticalScroll = ScrollView(this).apply {
             setBackgroundColor(Color.parseColor("#ECEFF1"))
             isFillViewport = false
         }
-        val horizontalScroll = HorizontalScrollView(this).apply {
+        horizontalScroll = HorizontalScrollView(this).apply {
             isFillViewport = true
         }
         imageView = ImageView(this).apply {
@@ -149,6 +120,38 @@ class MzrbPdfViewerActivity : AppCompatActivity() {
         horizontalScroll.addView(imageView, ViewGroup.LayoutParams(-2, -2))
         verticalScroll.addView(horizontalScroll, ViewGroup.LayoutParams(-1, -2))
         root.addView(verticalScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        // Перелистывание — под документом, сразу над остальными действиями.
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12, 8, 12, 2)
+        }
+        prevButton = Button(this).apply {
+            text = "◀"
+            textSize = 16f
+            isEnabled = false
+            setAllCaps(false)
+            layoutParams = LinearLayout.LayoutParams(72, -2).apply { rightMargin = 8 }
+        }
+        pageView = TextView(this).apply {
+            text = "—"
+            gravity = Gravity.CENTER
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#546E7A"))
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        nextButton = Button(this).apply {
+            text = "▶"
+            textSize = 16f
+            isEnabled = false
+            setAllCaps(false)
+            layoutParams = LinearLayout.LayoutParams(72, -2).apply { leftMargin = 8 }
+        }
+        nav.addView(prevButton)
+        nav.addView(pageView)
+        nav.addView(nextButton)
+        root.addView(nav, LinearLayout.LayoutParams(-1, -2))
 
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -325,6 +328,13 @@ class MzrbPdfViewerActivity : AppCompatActivity() {
             bitmap = nextBitmap
             imageView.setImageBitmap(nextBitmap)
             old?.let { if (!it.isRecycled) it.recycle() }
+
+            // Новая страница должна начинаться с верхнего левого угла,
+            // иначе остаётся прокрутка предыдущей страницы.
+            verticalScroll.post {
+                verticalScroll.scrollTo(0, 0)
+                horizontalScroll.scrollTo(0, 0)
+            }
 
             currentPage = index
             pageView.text = "${index + 1} / $pageCount  •  ${Math.round(zoom * 100)}%"

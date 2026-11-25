@@ -22,7 +22,7 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-        - name: Restore release keystore from secrets
+    - name: Restore release keystore from secrets
       env:
         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
       run: |
@@ -143,7 +143,7 @@ jobs:
       with:
         gradle-version: '8.5'
 
-        - name: Build Signed APK with Auto-Version
+    - name: Build Signed APK with Auto-Version
       env:
         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}

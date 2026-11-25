@@ -1,14 +1,18 @@
 package by.brest103.ssmpplus
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.*
 import android.content.ClipboardManager
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.*
 import android.graphics.drawable.*
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
@@ -19,6 +23,7 @@ import android.widget.*
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.*
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
@@ -59,6 +64,105 @@ class MainActivity : AppCompatActivity() {
     private var activeMkbSearchReqId: String = ""
     private var onMkbSearchCallback: ((List<MkbCodeItem>) -> Unit)? = null
     private var pendingApkInstallFile: File? = null
+
+    // --- Камера / загрузка изображений из WebView ---
+    private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingWebPermissionRequest: PermissionRequest? = null
+    private var pendingAfterCameraPermission: (() -> Unit)? = null
+    private var cameraPhotoUri: Uri? = null
+
+    private fun deliverFileChooserResult(uris: Array<Uri>?) {
+        pendingFilePathCallback?.onReceiveValue(uris)
+        pendingFilePathCallback = null
+        cameraPhotoUri = null
+    }
+
+    private fun cancelFileChooser() = deliverFileChooserResult(null)
+
+    private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val action = pendingAfterCameraPermission
+        pendingAfterCameraPermission = null
+        if (granted) {
+            action?.invoke()
+        } else {
+            toast("Разрешение на камеру не получено")
+            pendingWebPermissionRequest?.deny()
+            pendingWebPermissionRequest = null
+            cancelFileChooser()
+        }
+    }
+
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = cameraPhotoUri ?: result.data?.data
+            if (uri != null) deliverFileChooserResult(arrayOf(uri)) else cancelFileChooser()
+        } else {
+            cancelFileChooser()
+        }
+    }
+
+    private val galleryLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uris = mutableListOf<Uri>()
+            result.data?.let { data ->
+                data.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri)
+                }
+                if (uris.isEmpty()) data.data?.let { uris.add(it) }
+            }
+            if (uris.isNotEmpty()) deliverFileChooserResult(uris.toTypedArray()) else cancelFileChooser()
+        } else {
+            cancelFileChooser()
+        }
+    }
+
+    private fun launchCameraCapture() {
+        try {
+            val dir = File(cacheDir, "camera").apply { mkdirs() }
+            val file = File(dir, "photo_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            cameraPhotoUri = uri
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                .putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            cameraLauncher.launch(Intent.createChooser(intent, "Съёмка фото"))
+        } catch (e: Exception) {
+            toast("Не удалось открыть камеру: ${e.message}")
+            cancelFileChooser()
+        }
+    }
+
+    private fun showImageChooser(params: WebChromeClient.FileChooserParams?) {
+        val items = arrayOf("📷 Сделать фото", "🖼 Выбрать из галереи")
+        AlertDialog.Builder(this)
+            .setTitle("Загрузка изображения")
+            .setItems(items) { _, which ->
+                if (which == 0) {
+                    pendingAfterCameraPermission = { launchCameraCapture() }
+                    if (ContextCompat.checkSelfPermission(
+                            this,
+                            android.Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        pendingAfterCameraPermission = null
+                        launchCameraCapture()
+                    } else {
+                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                    }
+                } else {
+                    val mime = params?.acceptTypes?.firstOrNull()
+                        ?.takeIf { it.startsWith("image/") } ?: "image/*"
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = mime
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params?.allowMultiple == true)
+                    }
+                    galleryLauncher.launch(Intent.createChooser(intent, "Выбрать изображение"))
+                }
+            }
+            .setOnCancelListener { cancelFileChooser() }
+            .show()
+    }
 
     private val installPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val f = pendingApkInstallFile
@@ -193,7 +297,7 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             allowFileAccess = false
-            allowContentAccess = false
+            allowContentAccess = true
             loadWithOverviewMode = true
             useWideViewPort = true
             cacheMode = WebSettings.LOAD_DEFAULT
@@ -217,6 +321,41 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(v: WebView?, u: String?, m: String?, r: JsResult?): Boolean {
                 Toast.makeText(this@MainActivity, m ?: "", Toast.LENGTH_LONG).show(); r?.confirm(); return true
+            }
+
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                cancelFileChooser()
+                pendingFilePathCallback = filePathCallback
+                showImageChooser(fileChooserParams)
+                return true
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                val resources = request?.resources ?: return
+                val video = PermissionRequest.RESOURCE_VIDEO_CAPTURE
+                val onlyVideo = resources.isNotEmpty() && resources.all { it == video }
+                if (!onlyVideo) {
+                    request.deny()
+                    return
+                }
+                if (ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        android.Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    request.grant(resources)
+                } else {
+                    pendingWebPermissionRequest = request
+                    pendingAfterCameraPermission = {
+                        pendingWebPermissionRequest?.grant(resources)
+                        pendingWebPermissionRequest = null
+                    }
+                    cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                }
             }
         }
         webView.webViewClient = object : WebViewClient() {
@@ -249,6 +388,35 @@ class MainActivity : AppCompatActivity() {
         }
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         webView.loadUrl("https://soft.103brest.by/ssmp/")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (::webView.isInitialized) webView.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::webView.isInitialized) {
+            webView.onResume()
+            // Принудительно перерисовываем WebView после снятия блокировки экрана,
+            // иначе иногда остаётся чёрный surface.
+            webView.post {
+                webView.invalidate()
+                webView.requestLayout()
+                webView.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null)
+            }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::webView.isInitialized) {
+            webView.post {
+                webView.invalidate()
+                webView.requestLayout()
+            }
+        }
     }
 
     override fun onDestroy() {

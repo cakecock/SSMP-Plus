@@ -22,25 +22,14 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Ensure Permanent Keystore Exists
+    - name: Verify Permanent Keystore
       run: |
         if [ ! -f "ssmp-release.jks" ]; then
-          echo "Generating permanent keystore..."
-          keytool -genkeypair -v \
-            -keystore ssmp-release.jks \
-            -alias ssmp_plus_key \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "SSMP_Brest_2026_Secure" \
-            -keypass "SSMP_Brest_2026_Secure" \
-            -dname "CN=SSMP Plus, OU=103 Brest, O=SSMP, L=Brest, C=BY"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ssmp-release.jks
-          git commit -m "chore: save permanent keystore [skip ci]" || true
-          git push || true
-        else
-          echo "Permanent keystore already exists."
+          echo "❌ Критично: ssmp-release.jks отсутствует."
+          echo "Сборка остановлена: генерация нового ключа сменит подпись и пользователи не смогут обновить приложение."
+          exit 1
         fi
+        echo "✅ Ключ подписи на месте, подпись обновления сохраняется."
 
     # Загрузка полноценного реестра МКБ-10 (более 12 000 кодов)
     - name: Download Full Official MKB-10 Database
@@ -103,14 +92,32 @@ jobs:
         print(f'Total MKB-10 entries saved: {len(data)}')
         "
 
-    # Проверка целостности базы МКБ-10 (сборка остановится, если файл пуст)
+    # Проверка целостности базы МКБ-10: мало просто наличие файла — проверяем JSON и число записей
     - name: Verify MKB-10 Database Integrity
       run: |
-        if [ ! -s app/src/main/assets/mkb10.json ]; then
-          echo "❌ Ошибка: Файл mkb10.json отсутствует или пуст! Сборка остановлена."
-          exit 1
+        python3 -c "
+        import json
+        p = 'app/src/main/assets/mkb10.json'
+        with open(p, encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, list) or len(data) < 5000:
+            raise SystemExit('❌ Ошибка: MKB-10 повреждён или содержит менее 5000 записей. Сборка остановлена.')
+        bad = [x for x in data[:100] if not isinstance(x, dict) or not x.get('c') or not x.get('n')]
+        if bad:
+            raise SystemExit('❌ Ошибка: неверная структура записей MKB-10. Сборка остановлена.')
+        print(f'✅ МКБ-10: {len(data)} записей, JSON корректен')
+        "
+
+    # Автообновление iOS работает только если в userscript есть @version
+    - name: Verify iOS userscript auto-update metadata
+      run: |
+        if [ -f "ios/SSMP-Plus-iOS.user.js" ]; then
+          if ! grep -q '^// @version' ios/SSMP-Plus-iOS.user.js; then
+            echo "❌ В iOS userscript отсутствует @version — автообновление не работает."
+            exit 1
+          fi
+          echo "✅ iOS @version: $(grep '^// @version' ios/SSMP-Plus-iOS.user.js | head -1 | awk '{print $3}')"
         fi
-        echo "✅ База МКБ-10 успешно проверена (размер: $(stat -c%s app/src/main/assets/mkb10.json) байт)."
 
     - name: Setup Gradle 8.5
       uses: gradle/actions/setup-gradle@v3
@@ -155,11 +162,13 @@ jobs:
             - 🍏 **iOS:** браузер **Orion** + **Violentmonkey** (или **Stay** / **Userscripts**) — установите \`SSMP-Plus-iOS.user.js\` (поддержка автообновлений по raw-ссылке)
             - ⚡ **Автопилот карт и препаратов:** бесшовное заполнение с защитой вкладки «Заключение», живой серверный поиск препаратов и исправленная вставка наборов в новых картах
             - 📌 **Шаблоны и архив:** 63 эталонных шаблона, полный редактор «Свои шаблоны» (все кнопки/списки карты + МКБ-10 с сайта) и архив вызовов (Импорт/Экспорт JSON)
-            - 🧰 **Помощник СМП (12 модулей):** аудит карты, ЭКГ, СЛР-таймер, фразы, МКБ-10, педиатрия (Пост. №118), шкалы, калькуляторы, акушерство, яды/антидоты, лекарства и приказы МЗ РБ"
+            - 📚 **Каталог МЗ РБ:** 401 клинический протокол с поиском и фильтрами, PDF открывается системным просмотрщиком
+            - 📷 **Камера/фото ЭКГ:** исправлена загрузка фото через системную камеру, без лишнего запроса разрешения
+            - 🧰 **Помощник СМП (13 модулей):** аудит карты, ЭКГ, СЛР-таймер, фразы, МКБ-10, педиатрия (Пост. №118), шкалы, калькуляторы, акушерство, яды/антидоты, лекарства, приказы и протоколы МЗ РБ"
         else
           gh release create v3.10.${{ github.run_number }} \
             SSMP-Plus-v3.10.${{ github.run_number }}.apk \
             --title "SSMP Plus v3.10.${{ github.run_number }}" \
             --notes "### 🚑 SSMP Plus v3.10.${{ github.run_number }}
-            - Полный редактор «Свои шаблоны» (все поля карты + МКБ-10 с сайта), исправленный автопилот препаратов, проверка обновлений APK, 63 образца СМП и 12 модулей Помощника."
+            - Полный редактор «Свои шаблоны», исправленный автопилот препаратов, проверка обновлений APK, 63 образца СМП, 13 модулей Помощника и каталог 401 протокола МЗ РБ."
         fi

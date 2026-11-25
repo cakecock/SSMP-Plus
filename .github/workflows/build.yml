@@ -22,14 +22,33 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Verify Permanent Keystore
+        - name: Restore release keystore from secrets
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
       run: |
-        if [ ! -f "ssmp-release.jks" ]; then
-          echo "❌ Критично: ssmp-release.jks отсутствует."
-          echo "Сборка остановлена: генерация нового ключа сменит подпись и пользователи не смогут обновить приложение."
+        if [ -z "$KEYSTORE_BASE64" ]; then
+          echo "❌ Секрет KEYSTORE_BASE64 не задан"
           exit 1
         fi
-        echo "✅ Ключ подписи на месте, подпись обновления сохраняется."
+        printf '%s' "$KEYSTORE_BASE64" | base64 -d > ssmp-release.jks
+        test -s ssmp-release.jks && echo "✅ Ключ восстановлен из Secrets"
+
+    - name: Verify signing key fingerprint
+      env:
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        EXPECTED_SHA256: ${{ secrets.KEYSTORE_SHA256 }}
+      run: |
+        EXPECTED=$(printf '%s' "$EXPECTED_SHA256" \
+          | sed 's/^SHA256:[[:space:]]*//' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        ACTUAL=$(keytool -list -v -keystore ssmp-release.jks -alias "$KEY_ALIAS" \
+          -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+          | grep -i 'SHA256:' | head -1 | awk '{print $2}' \
+          | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        echo "Ожидаемый SHA256: $EXPECTED"
+        echo "Фактический SHA256: $ACTUAL"
+        [ "$ACTUAL" = "$EXPECTED" ] || { echo "❌ Ключ не совпадает с рабочим — сборка остановлена"; exit 1; }
+        echo "✅ Подпись совпадает с рабочим ключом"
 
     # Загрузка полноценного реестра МКБ-10 (более 12 000 кодов)
     - name: Download Full Official MKB-10 Database
@@ -124,7 +143,10 @@ jobs:
       with:
         gradle-version: '8.5'
 
-    - name: Build Signed APK with Auto-Version
+        - name: Build Signed APK with Auto-Version
+      env:
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
       run: |
         gradle assembleRelease \
           -PappVersionCode=${{ github.run_number }} \

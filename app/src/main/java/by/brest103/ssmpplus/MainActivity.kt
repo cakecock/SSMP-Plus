@@ -378,7 +378,12 @@ class MainActivity : AppCompatActivity() {
             @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(v: WebView?, h: SslErrorHandler?, e: SslError?) {
                 val reqHost = try { Uri.parse(e?.url ?: "").host?.lowercase() } catch (_: Exception) { null }
-                if (reqHost == targetHost) h?.proceed() else h?.cancel()
+                val primary = e?.primaryError ?: SslError.SSL_INVALID
+                // Исключение делаем только для своего домена и только для «неизвестного CSP»,
+                // чтобы не ломать сайт из-за неполной цепочки сертификатов.
+                // Истёкший / чужой / неверный сертификат — жёстко блокируем.
+                val canProceed = reqHost == targetHost && primary == SslError.SSL_UNTRUSTED
+                if (canProceed) h?.proceed() else h?.cancel()
             }
 
             override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
@@ -436,10 +441,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        if (::webView.isInitialized) {
+            // Не оставляем WebView «висеть» после закрытия приложения:
+            // это приводило к утечке surface и чёрному экрану при повторном открытии.
+            cancelFileChooser()
+            pendingWebPermissionRequest?.deny()
+            pendingWebPermissionRequest = null
+            webView.stopLoading()
+            webView.removeAllViews()
+            (webView.parent as? ViewGroup)?.removeView(webView)
+            webView.destroy()
+        }
+        try { CookieManager.getInstance().flush() } catch (_: Exception) {}
         if (::dbHelper.isInitialized) {
             dbHelper.close()
         }
+        super.onDestroy()
     }
 
     private fun loadFullMkbAsync(): Job = lifecycleScope.launch(Dispatchers.IO) {

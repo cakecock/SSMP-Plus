@@ -104,7 +104,12 @@ object MedicalTools {
             setPadding(0, 0, 0, 16)
         })
         val scroll = NestedScrollView(context).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            // WRAP_CONTENT вместо веса 1f: в AlertDialog без фиксированной высоты
+            // вес давал высоту 0 и длинный текст приказа не отображался.
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         }
         scroll.addView(TextView(context).apply {
             text = body
@@ -142,6 +147,14 @@ object MedicalTools {
         })
         root.addView(btnRow)
         dialog.show()
+        // Ограничиваем высоту длинных приказов, чтобы кнопки оставались доступны.
+        scroll.post {
+            val maxH = (context.resources.displayMetrics.heightPixels * 0.72f).toInt()
+            if (scroll.height > maxH) {
+                scroll.layoutParams.height = maxH
+                scroll.requestLayout()
+            }
+        }
     }
 
     private fun makeLabeledInput(

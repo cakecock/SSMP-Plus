@@ -20,14 +20,19 @@ android {
         versionName = vName
     }
 
-    signingConfigs {
+        signingConfigs {
         create("release") {
             val keystoreFile = File(rootDir, "ssmp-release.jks")
-            if (keystoreFile.exists()) {
+            val storePass = System.getenv("KEYSTORE_PASSWORD").orEmpty()
+            val alias = System.getenv("KEY_ALIAS").orEmpty()
+
+            if (keystoreFile.exists() && storePass.isNotBlank() && alias.isNotBlank()) {
                 storeFile = keystoreFile
-                storePassword = "SSMP_Brest_2026_Secure"
-                keyAlias = "ssmp_plus_key"
-                keyPassword = "SSMP_Brest_2026_Secure"
+                storePassword = storePass
+                keyAlias = alias
+                // В этом keystore пароль ключа совпадает с паролем хранилища.
+                // Если позже сделаете другой пароль — заведите KEY_PASSWORD secret.
+                keyPassword = storePass
             }
         }
     }

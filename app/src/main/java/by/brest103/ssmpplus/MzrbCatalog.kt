@@ -173,8 +173,11 @@ object MzrbCatalog {
             listView.setOnItemClickListener { _, _, pos, _ ->
                 val p = filtered[pos]
                 val fullUrl = BASE_URL + Uri.encode(p.path, "/")
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(fullUrl))
-                context.startActivity(Intent.createChooser(intent, "Открыть PDF"))
+                val intent = Intent(context, MzrbPdfViewerActivity::class.java).apply {
+                    putExtra(MzrbPdfViewerActivity.EXTRA_TITLE, p.title)
+                    putExtra(MzrbPdfViewerActivity.EXTRA_URL, fullUrl)
+                }
+                context.startActivity(intent)
             }
         }
 

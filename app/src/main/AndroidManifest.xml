@@ -40,6 +40,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MzrbPdfViewerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode|smallestScreenSize|screenLayout|density|fontScale"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
+
     </application>
 
 </manifest>

@@ -164,7 +164,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     val mime = params?.acceptTypes?.firstOrNull()
                         ?.takeIf { it.startsWith("image/") } ?: "image/*"
-                         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
                         type = mime
                         addCategory(Intent.CATEGORY_OPENABLE)
                         putExtra(
@@ -846,7 +846,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ПОДМЕНЮ: ПОМОЩНИК СМП (12 МОДУЛЕЙ)
+    // ПОДМЕНЮ: ПОМОЩНИК СМП (13 МОДУЛЕЙ)
     private fun showHelperSubMenu() = showMenuDialog("Помощник СМП", scrollable = true) { d, card ->
         val scroll = NestedScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -869,7 +869,7 @@ class MainActivity : AppCompatActivity() {
         addDialogBtn(d, listLay, "🤰 АКУШЕРСТВО И ШКАЛА АПГАР", "#D81B60") { MedicalTools.showObstetricsSheet(this) }
         addDialogBtn(d, listLay, "🧪 ЯДЫ И АНТИДОТЫ", "#C62828") { MedicalTools.showAntidotesSheet(this) }
         addDialogBtn(d, listLay, "💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ", "#00695C") { MedicalReference.showDrugsAndCardGuideSheet(this) }
-        addDialogBtn(d, listLay, "📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
+        addDialogBtn(d, listLay, "📜 ТЛТ И ПРИКАЗЫ", "#37474F") { MedicalReference.showOrdersAndProtocolsSheet(this) }
         addDialogBtn(d, listLay, "📚 КЛИНИЧЕСКИЕ ПРОТОКОЛЫ МЗ РБ (PDF)", "#1565C0") { MzrbCatalog.showSheet(this) }
     }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSMP Plus (iOS / Safari Edition)
 // @namespace    https://soft.103brest.by/ssmp/
-// @version      3.10.5
+// @version      3.10.6
 // @description  Полный мобильный ассистент СМП (г. Брест): точный автопилот, 63 шаблона, личные шаблоны, наборы препаратов с выпадающим каталогом сайта, история пациентов, МКБ-10, 13 модулей Помощника СМП (Аудит карты, ЭКГ, СЛР-таймер, Пост. №118, 10 шкал, 71 яд/антидот, 20 лекарств, приказы МЗ РБ) и каталог 401 клинического протокола МЗ РБ.
 // @author       SSMP Plus & Nova
 // @match        https://soft.103brest.by/*
@@ -3457,7 +3457,7 @@ function formatCardText(jsonStr) {
                 { t: '🤰 АКУШЕРСТВО И ШКАЛА АПГАР', c: '#D81B60', fn: openObstetricsIos },
                 { t: '🧪 ЯДЫ И АНТИДОТЫ', c: '#C62828', fn: openAntidotesIos },
                 { t: '💊 ЛЕКАРСТВА И ОФОРМЛЕНИЕ КАРТ', c: '#00695C', fn: openDrugsAndGuidesIos },
-                { t: '📜 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ', c: '#37474F', fn: openOrdersIos }
+                { t: '📜 ТЛТ И ПРИКАЗЫ', c: '#37474F', fn: openOrdersIos },
                 { t: '📚 КЛИНИЧЕСКИЕ ПРОТОКОЛЫ МЗ РБ (PDF)', c: '#1565C0', fn: openMzrbCatalogIos }
             ];
             tools.forEach(item => {
@@ -4467,7 +4467,7 @@ function formatCardText(jsonStr) {
         });
     }
 
-// --- 8.11 ПРИКАЗЫ МЗ РБ, ТЛТ И ЧКВ (10) ---
+// --- 8.11 ТЛТ И ПРИКАЗЫ (10) ---
     function openOrdersIos() {
         const orders = [
             ['💉 ТЛТ при ОКС (тромболизис на этапе СМП)', 'Показания, абсолютные и относительные противопоказания (tlt.html)',

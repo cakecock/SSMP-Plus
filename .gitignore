@@ -15,5 +15,6 @@ local.properties
 captures/
 *.hprof
 
-# ВНИМАНИЕ: ssmp-release.jks НЕ игнорируем,
-# чтобы GitHub Actions мог работать с постоянным ключом подписи!
+# Ключ подписи хранится только в GitHub Secrets: KEYSTORE_BASE64.
+*.jks
+*.keystore
